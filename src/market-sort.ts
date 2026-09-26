@@ -1,4 +1,4 @@
-export type SortKey = "instId" | "momentum" | "high48" | "low48" | "oiLog" | "takerRatio" | "takerLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "bollUpper" | "bollMiddle" | "bollLower"
+export type SortKey = "instId" | "momentum" | "high48" | "low48" | "oiLog" | "takerRatio" | "volumeLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "bollUpper" | "bollMiddle" | "bollLower"
 
 export type SortableRow = {
   instId: string
@@ -8,7 +8,7 @@ export type SortableRow = {
   low48: number | null
   oiLog: number | null
   takerRatio: number | null
-  takerLog: number | null
+  volumeLog: number | null
   roc: number | null
   maroc: number | null
   rsi6: number | null
@@ -27,10 +27,15 @@ export function marketTrend(row: { price: number | null; vwap14: number | null; 
   return signals.every(value => value > 0) ? "LONG" : signals.every(value => value < 0) ? "SHORT" : "TRAP"
 }
 
-export function momentumScores(rows: Pick<SortableRow, "roc" | "maroc" | "oiLog" | "takerLog">[]): (number | null)[] {
-  const ready = rows.filter((row): row is { roc: number; maroc: number; oiLog: number; takerLog: number } =>
-    row.roc !== null && row.maroc !== null && row.oiLog !== null && row.takerLog !== null &&
-    Number.isFinite(row.roc) && Number.isFinite(row.maroc) && Number.isFinite(row.oiLog) && Number.isFinite(row.takerLog))
+export function matchesMarketFilter(row: { roc: number | null; maroc: number | null; trend: ReturnType<typeof marketTrend> }, trapOnly: boolean): boolean {
+  if (trapOnly) return row.trend === "TRAP"
+  return row.trend !== "TRAP" && (row.roc === null || row.maroc === null || Math.sign(row.roc) === Math.sign(row.maroc))
+}
+
+export function momentumScores(rows: Pick<SortableRow, "roc" | "maroc" | "oiLog" | "volumeLog">[]): (number | null)[] {
+  const ready = rows.filter((row): row is { roc: number; maroc: number; oiLog: number; volumeLog: number } =>
+    row.roc !== null && row.maroc !== null && row.oiLog !== null && row.volumeLog !== null &&
+    Number.isFinite(row.roc) && Number.isFinite(row.maroc) && Number.isFinite(row.oiLog) && Number.isFinite(row.volumeLog))
   const ranks = (values: number[]) => {
     const positive = values.filter(value => value > 0).sort((a, b) => a - b)
     return new Map(positive.map((value, index) => [value, (index + 1) * 100 / positive.length]))
@@ -38,12 +43,12 @@ export function momentumScores(rows: Pick<SortableRow, "roc" | "maroc" | "oiLog"
   const rocRanks = ranks(ready.map(row => Math.abs(row.roc)))
   const marocRanks = ranks(ready.map(row => Math.abs(row.maroc)))
   const oiRanks = ranks(ready.map(row => row.oiLog))
-  const takerRanks = ranks(ready.map(row => row.takerLog))
+  const volumeRanks = ranks(ready.map(row => row.volumeLog))
   return rows.map(row => {
-    if (row.roc === null || row.maroc === null || row.oiLog === null || row.takerLog === null ||
-      !Number.isFinite(row.roc) || !Number.isFinite(row.maroc) || !Number.isFinite(row.oiLog) || !Number.isFinite(row.takerLog)) return null
+    if (row.roc === null || row.maroc === null || row.oiLog === null || row.volumeLog === null ||
+      !Number.isFinite(row.roc) || !Number.isFinite(row.maroc) || !Number.isFinite(row.oiLog) || !Number.isFinite(row.volumeLog)) return null
     const priceMomentum = ((rocRanks.get(Math.abs(row.roc)) ?? 0) + (marocRanks.get(Math.abs(row.maroc)) ?? 0)) / 2
-    return (priceMomentum + (oiRanks.get(row.oiLog) ?? 0) + (takerRanks.get(row.takerLog) ?? 0)) / 3
+    return (priceMomentum + (oiRanks.get(row.oiLog) ?? 0) + (volumeRanks.get(row.volumeLog) ?? 0)) / 3
   })
 }
 

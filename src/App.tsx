@@ -1,15 +1,13 @@
-import { Fragment, useEffect, useMemo, useState, type FormEvent } from "react"
-import { ArrowDownUp, Radio, Search, Settings2 } from "lucide-react"
+import { Fragment, useEffect, useMemo, useState } from "react"
+import { ArrowDownUp, Radio, Search } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
-import { compareMarketRows, marketTrend, momentumScores, type SortKey } from "@/market-sort"
+import { compareMarketRows, marketTrend, matchesMarketFilter, momentumScores, type SortKey } from "@/market-sort"
 
 type MarketRow = {
   instId: string
@@ -25,7 +23,7 @@ type MarketRow = {
   buy: number | null
   sell: number | null
   takerRatio: number | null
-  takerLog: number | null
+  volumeLog: number | null
   high48: number | null
   high48Diff: number | null
   low48: number | null
@@ -42,6 +40,15 @@ type MarketRow = {
   marocChange: number | null
 }
 type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string }
+type NativeBridge = {
+  postMessage(request: { rocPeriod: number; marocPeriod: number }): Promise<Snapshot>
+  postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
+}
+declare global {
+  interface Window { webkit: { messageHandlers: { radar: NativeBridge } } }
+}
+const ROC_PERIOD = 9
+const MAROC_PERIOD = 9
 const formatLog = (value: number | null) => value === null ? "—" : value === 0
   ? "0.000000"
   : `${value > 0 ? "+" : ""}${Math.abs(value) < 0.000001 ? value.toExponential(2) : value.toFixed(6)}`
@@ -55,35 +62,21 @@ const bollClass = (price: number | null, level: number | null) => price === null
 const RSI_PERIODS = [6, 12, 24] as const
 const BOLL_LINES = [{ label: "Upper", key: "bollUpper" }, { label: "Middle", key: "bollMiddle" }, { label: "Lower", key: "bollLower" }] as const
 const math = (formula: string) => <span className="text-xs font-medium text-foreground" dangerouslySetInnerHTML={{ __html: katex.renderToString(formula) }} />
-const validPeriod = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100
-
 function App() {
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [query, setQuery] = useState("")
+  const [trapOnly, setTrapOnly] = useState(false)
   const [sort, setSort] = useState<SortKey>("momentum")
   const [descending, setDescending] = useState(true)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [periods, setPeriods] = useState(() => {
-    try {
-      const saved = JSON.parse(window.localStorage.getItem("perp-radar-periods") || "null")
-      if (validPeriod(saved?.roc) && validPeriod(saved?.maroc)) return { roc: saved.roc as number, maroc: saved.maroc as number }
-    } catch { /* Storage can be unavailable in private browsing. */ }
-    return { roc: 9, maroc: 9 }
-  })
-
   useEffect(() => {
     let stopped = false
     let timer: number
-    let controller: AbortController | undefined
     const refresh = async () => {
-      controller = new AbortController()
       try {
-        const response = await fetch(`/api/rows?rocPeriod=${periods.roc}&marocPeriod=${periods.maroc}`, { cache: "no-store", signal: controller.signal })
-        if (!response.ok) throw new Error(`Backend HTTP ${response.status}`)
-        const snapshot = await response.json() as Snapshot
+        const snapshot = await window.webkit.messageHandlers.radar.postMessage({ rocPeriod: ROC_PERIOD, marocPeriod: MAROC_PERIOD })
         if (stopped) return
         setRows(snapshot.rows)
         setUpdatedAt(snapshot.updatedAt)
@@ -92,41 +85,40 @@ function App() {
       } catch (cause) {
         if (stopped) return
         setStatus("Reconnecting")
-        setError(cause instanceof Error ? cause.message : "Cannot connect to the Python backend")
+        setError(cause instanceof Error ? cause.message : "Cannot connect to the native collector")
       }
       if (!stopped) timer = window.setTimeout(refresh, 2000)
     }
     void refresh()
-    return () => { stopped = true; controller?.abort(); window.clearTimeout(timer) }
-  }, [periods])
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [])
+
+  useEffect(() => {
+    const table = document.querySelector("table")
+    if (!table) return
+    const fit = () => { void window.webkit.messageHandlers.radar.postMessage({ fitWidth: Math.ceil(table.scrollWidth) }).catch(() => {}) }
+    const observer = new ResizeObserver(fit)
+    observer.observe(table)
+    void document.fonts.ready.then(fit)
+    return () => observer.disconnect()
+  }, [])
 
   const visible = useMemo(() => {
     const scores = momentumScores(rows)
     return rows.map((row, index) => ({ ...row, momentum: scores[index], trend: marketTrend(row) }))
-      .filter(row => row.roc === null || row.maroc === null || Math.sign(row.roc) === Math.sign(row.maroc))
-      .filter(row => row.trend !== "TRAP")
+      .filter(row => matchesMarketFilter(row, trapOnly))
       .filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase()))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
-  }, [rows, query, sort, descending])
+  }, [rows, query, sort, descending, trapOnly])
 
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
     else { setSort(key); setDescending(key !== "instId") }
   }
 
-  const savePeriods = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
-    const next = { roc: Number(form.get("rocPeriod")), maroc: Number(form.get("marocPeriod")) }
-    if (!validPeriod(next.roc) || !validPeriod(next.maroc)) return
-    setPeriods(next)
-    try { window.localStorage.setItem("perp-radar-periods", JSON.stringify(next)) } catch { /* Storage is optional. */ }
-    setSettingsOpen(false)
-  }
-
-  const header = (label: string, key: SortKey, formula?: string) => (
+  const header = (label: string, key: SortKey, formula: string) => (
     <Button variant="ghost" size="sm" className="h-auto min-h-6 gap-1" onClick={() => changeSort(key)} aria-label={`Sort by ${label}`}>
-      {formula ? math(formula) : label}<ArrowDownUp data-icon="inline-end" aria-hidden="true" />
+      {math(formula)}<ArrowDownUp data-icon="inline-end" aria-hidden="true" />
     </Button>
   )
 
@@ -136,26 +128,11 @@ function App() {
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
+        <Button variant={trapOnly ? "secondary" : "outline"} size="sm" aria-pressed={trapOnly} onClick={() => setTrapOnly(!trapOnly)}>Only TRAP</Button>
         <div className="relative min-w-48 flex-1 sm:ml-auto sm:max-w-64">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input aria-label="Search contracts" placeholder="Search contracts" value={query} onChange={event => setQuery(event.target.value)} className="pl-8" />
         </div>
-        <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
-          <PopoverTrigger asChild><Button variant="outline" size="sm"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
-          <PopoverContent align="end">
-            <PopoverHeader>
-              <PopoverTitle>Indicator settings</PopoverTitle>
-              <PopoverDescription>1h periods, from 1 to 100.</PopoverDescription>
-            </PopoverHeader>
-            <form onSubmit={savePeriods} className="flex flex-col gap-3">
-              <FieldGroup className="gap-3">
-                <Field><FieldLabel htmlFor="roc-period">ROC lookback</FieldLabel><Input id="roc-period" name="rocPeriod" type="number" min="1" max="100" step="1" required defaultValue={periods.roc} /></Field>
-                <Field><FieldLabel htmlFor="maroc-period">MAROC average</FieldLabel><Input id="maroc-period" name="marocPeriod" type="number" min="1" max="100" step="1" required defaultValue={periods.maroc} /></Field>
-              </FieldGroup>
-              <Button type="submit" size="sm">Apply</Button>
-            </form>
-          </PopoverContent>
-        </Popover>
         <Badge variant={status === "Live" ? "secondary" : "outline"} aria-live="polite">
           <Radio aria-hidden="true" />{status}
         </Badge>
@@ -166,9 +143,9 @@ function App() {
         <Table className="table-auto">
           <TableHeader>
             <TableRow className="bg-muted/30">
-              <TableHead className="text-center" aria-sort={sort === "instId" ? descending ? "descending" : "ascending" : "none"}>{header("Symbol", "instId")}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "momentum" ? descending ? "descending" : "ascending" : "none"} title="Equal-weighted price momentum (mean rank of |ROC| and |MAROC|), positive OI log change, and positive Taker log change">{header("Momentum", "momentum")}</TableHead>
-              <TableHead className="text-center" title="LONG: price above VWAP14, EMA200 and BOLL middle, with Taker Buy above Sell. SHORT: all four reversed. Otherwise TRAP.">Trend</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "instId" ? descending ? "descending" : "ascending" : "none"}>{header("Symbol", "instId", String.raw`\operatorname{Symbol}`)}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "momentum" ? descending ? "descending" : "ascending" : "none"} title="Equal-weighted price momentum (mean rank of |ROC| and |MAROC|), positive OI log change, and positive volume log change">{header("Momentum", "momentum", String.raw`\operatorname{Momentum}`)}</TableHead>
+              <TableHead className="text-center" title="LONG: price above VWAP14, EMA200 and BOLL middle, with Taker Buy above Sell. SHORT: all four reversed. Otherwise TRAP.">{math(String.raw`\operatorname{Trend}`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "high48" || sort === "low48" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {header("48h high", "high48", String.raw`\operatorname{High}_{48}=\max(H_{t-48},\ldots,H_{t-1})`)}
@@ -177,11 +154,11 @@ function App() {
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "oiLog" ? descending ? "descending" : "ascending" : "none"}>{header("OI log change", "oiLog", String.raw`\ln\left(\frac{OI_t}{OI_{t-1}}\right)`)}</TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "takerLog" ? descending ? "descending" : "ascending" : "none"}>{header("Taker log change", "takerLog", String.raw`\ln\left(\frac{Buy_t+Sell_t}{Buy_{t-1}+Sell_{t-1}}\right)`)}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "volumeLog" ? descending ? "descending" : "ascending" : "none"}>{header("Volume Log Change", "volumeLog", String.raw`\ln\left(\frac{V_t}{V_{t-1}}\right)`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header(`ROC ${periods.roc}`, "roc", String.raw`\operatorname{ROC}_{${periods.roc}}`)}
-                  {header(`MAROC ${periods.maroc}`, "maroc", String.raw`\operatorname{MAROC}_{${periods.maroc}}`)}
+                  {header(`ROC ${ROC_PERIOD}`, "roc", String.raw`\operatorname{ROC}_{${ROC_PERIOD}}`)}
+                  {header(`MAROC ${MAROC_PERIOD}`, "maroc", String.raw`\operatorname{MAROC}_{${MAROC_PERIOD}}`)}
                 </div>
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("rsi") ? descending ? "descending" : "ascending" : "none"}>
@@ -191,7 +168,7 @@ function App() {
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("boll") ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {BOLL_LINES.map(({ label, key }) => <Fragment key={key}>{header(`BOLL ${label}`, key)}</Fragment>)}
+                  {BOLL_LINES.map(({ label, key }) => <Fragment key={key}>{header(`BOLL ${label}`, key, String.raw`\operatorname{BOLL}_{\mathrm{${label}}}`)}</Fragment>)}
                 </div>
               </TableHead>
             </TableRow>
@@ -224,7 +201,7 @@ function App() {
               </TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.oiLog))} title={row.oi !== null && row.oiBase !== null ? `Current OI ${row.oi.toLocaleString("en-US")} / previous hour close ${row.oiBase.toLocaleString("en-US")}` : "Loading hourly OI history"}>{formatLog(row.oiLog)}</TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>
-              <TableCell className={cn("text-center tabular-nums", directionClass(row.takerLog))}>{formatLog(row.takerLog)}</TableCell>
+              <TableCell className={cn("text-center tabular-nums", directionClass(row.volumeLog))}>{formatLog(row.volumeLog)}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
                   <span className={directionClass(row.roc)}><span className="sr-only">ROC </span>{formatIndicator(row.roc)}</span>
@@ -243,7 +220,7 @@ function App() {
                   {BOLL_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={bollClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={10} className="py-16 text-center text-muted-foreground">{rows.length ? query.trim() ? "No matching contracts" : "No contracts pass the ROC/MAROC and Trend filters" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={10} className="py-16 text-center text-muted-foreground">{rows.length ? query.trim() ? "No matching contracts" : trapOnly ? "No TRAP contracts" : "No contracts pass the ROC/MAROC and Trend filters" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>
