@@ -75,7 +75,7 @@ final class AppUpdaterTests: XCTestCase {
         try Data(marker.utf8).write(to: contents.appendingPathComponent("Resources/marker"))
         let plist = try PropertyListSerialization.data(fromPropertyList: [
             "CFBundleExecutable": "PerpetualRadar",
-            "CFBundleIdentifier": "com.perpetualradar.app",
+            "CFBundleIdentifier": "com.perpetualradar.macos",
             "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleName": "Perpetual Radar",
             "CFBundlePackageType": "APPL",

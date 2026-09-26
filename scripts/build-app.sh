@@ -21,6 +21,7 @@ cp "$compiled/Assets.car" "$app/Contents/Resources/Assets.car"
 rm -rf "$app/Contents/Resources/Web"
 ditto dist "$app/Contents/Resources/Web"
 cp macos/Info.plist "$app/Contents/Info.plist"
+printf 'APPL????' > "$app/Contents/PkgInfo"
 revision="${APP_REVISION:-$(git rev-parse HEAD 2>/dev/null || true)}"
 if [[ -n "$revision" ]]; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleSourceRevision string $revision" "$app/Contents/Info.plist"

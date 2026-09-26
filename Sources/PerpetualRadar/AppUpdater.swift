@@ -97,7 +97,7 @@ final class AppUpdater: @unchecked Sendable {
 
     private static let appName = "Perpetual Radar"
     private static let assetName = "Perpetual.Radar.app.tar"
-    private static let bundleIdentifier = "com.perpetualradar.app"
+    private static let bundleIdentifier = "com.perpetualradar.macos"
     private static let executableName = "PerpetualRadar"
     private static let canonicalAssetURL = URL(
         string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar"
