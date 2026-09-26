@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react"
-import { ArrowDownUp, Radio, Search, Settings2 } from "lucide-react"
+import { ArrowDown, ArrowDownUp, ArrowUp, Radio, Search, Settings2 } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
 import { Badge } from "@/components/ui/badge"
@@ -134,11 +134,12 @@ function App() {
       .catch(cause => setError(cause instanceof Error ? cause.message : "Cannot save turnover setting"))
   }
 
-  const header = (label: string, key: SortKey, formula: string) => (
-    <Button variant="ghost" size="sm" className="h-auto min-h-6 gap-1" onClick={() => changeSort(key)} aria-label={`Sort by ${label}`}>
-      {math(formula)}<ArrowDownUp data-icon="inline-end" aria-hidden="true" />
+  const header = (label: string, key: SortKey, formula: string) => {
+    const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
+    return <Button variant="ghost" size="sm" className="h-auto min-h-6 gap-1" onClick={() => changeSort(key)} aria-label={`Sort by ${label}`}>
+      {math(formula)}<SortIcon data-icon="inline-end" aria-hidden="true" />
     </Button>
-  )
+  }
 
   return (
     <main className="flex min-h-svh flex-col">
