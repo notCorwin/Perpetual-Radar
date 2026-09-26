@@ -71,11 +71,15 @@ Universe
 
 定义过去 `N` 根已经完成的 1h K 线：
 
-HHN=max⁡(Ht−N,...,Ht−1)
+$$
+HH_N = \max(H_{t-N}, \ldots, H_{t-1})
+$$
 
 当前：
 
-Ct>HHN
+$$
+C_t > HH_N
+$$
 
 才叫：
 
@@ -85,7 +89,9 @@ breakout_up = true
 
 空头对称：
 
-LLN=min⁡(Lt−N,...,Lt−1)Ct<LLN
+$$
+LL_N = \min(L_{t-N}, \ldots, L_{t-1}), \qquad C_t < LL_N
+$$
 
 得到：
 
@@ -111,11 +117,15 @@ OKX 1H K线接口直接支持 `bar=1H`，而且返回 `confirm`，其中 `confir
 
 所以应该算：
 
-BreakStrength=C−HHNATR14
+$$
+\mathrm{BreakStrength}_{\mathrm{up}} = \frac{C_t - HH_N}{\mathrm{ATR}_{14}}
+$$
 
 向下则：
 
-BreakStrength=LLN−CATR14
+$$
+\mathrm{BreakStrength}_{\mathrm{down}} = \frac{LL_N - C_t}{\mathrm{ATR}_{14}}
+$$
 
 这样不同波动率的币可以比较。
 
@@ -153,7 +163,9 @@ oiUsd
 
 然后聚合成 1h：
 
-ΔOI=OIt−OIt−1OIt−1
+$$
+\Delta \mathrm{OI}_t = \frac{\mathrm{OI}_t - \mathrm{OI}_{t-1}}{\mathrm{OI}_{t-1}}
+$$
 
 ### 我们最近一直在用的四象限
 
@@ -199,11 +211,16 @@ side = sell
 
 计算美元名义成交：
 
-BuyVol=∑BuyNotionalSellVol=∑SellNotional
+$$
+\mathrm{BuyVol} = \sum \mathrm{BuyNotional}, \qquad
+\mathrm{SellVol} = \sum \mathrm{SellNotional}
+$$
 
 然后：
 
-TakerDelta=BuyVol−SellVolBuyVol+SellVol
+$$
+\mathrm{TakerDelta} = \frac{\mathrm{BuyVol} - \mathrm{SellVol}}{\mathrm{BuyVol} + \mathrm{SellVol}}
+$$
 
 范围：
 
@@ -345,7 +362,9 @@ VWAP附近停止下跌
 
 可以定义：
 
-VWAPDist=C−VWAPATR
+$$
+\mathrm{VWAPDist} = \frac{C_t - \mathrm{VWAP}_t}{\mathrm{ATR}_t}
+$$
 
 这样可以识别两种东西：
 
@@ -415,7 +434,9 @@ EMA200 slope < 0
 
 更重要的是：
 
-EMA200Slope=EMA200t−EMA200t−kATR
+$$
+\mathrm{EMA200Slope} = \frac{\mathrm{EMA200}_t - \mathrm{EMA200}_{t-k}}{\mathrm{ATR}_t}
+$$
 
 这样才能区分：
 
@@ -435,11 +456,15 @@ EMA200Slope=EMA200t−EMA200t−kATR
 
 你昨天提出：
 
-sign(ROC)=sign(MAROC)
+$$
+\operatorname{sign}(\mathrm{ROC}) = \operatorname{sign}(\mathrm{MAROC})
+$$
 
 且：
 
-∣ROC∣>∣MAROC∣>Threshold
+$$
+|\mathrm{ROC}| > |\mathrm{MAROC}| > \mathrm{Threshold}
+$$
 
 这个条件很适合作为 **Momentum Expansion Filter**。
 
@@ -618,11 +643,15 @@ BREAKOUT_NOW
 
 例如：
 
-Ht>HHN
+$$
+H_t > HH_N
+$$
 
 但：
 
-Ct<HHN
+$$
+C_t < HH_N
+$$
 
 就是典型：
 
@@ -895,7 +924,9 @@ SHORT 全部镜像即可。
 
 定义：
 
-Efficiencybuy=PriceChangeBuyTakerNotional
+$$
+\mathrm{Efficiency}_{\mathrm{buy}} = \frac{\mathrm{PriceChange}}{\mathrm{BuyTakerNotional}}
+$$
 
 实际实现不要直接用这个绝对值，而是对同一个币做滚动标准化。
 
@@ -953,7 +984,9 @@ oi_zscore
 
 例如：
 
-OIz=ΔOI−μΔOIσΔOI
+$$
+\mathrm{OI}_z = \frac{\Delta\mathrm{OI} - \mu_{\Delta\mathrm{OI}}}{\sigma_{\Delta\mathrm{OI}}}
+$$
 
 于是：
 
@@ -971,10 +1004,9 @@ OI +0.8%
 
 推荐：
 
-```text
-volume_ratio =
-1h_volume / MA(volume, N)
-```
+$$
+\mathrm{volume\_ratio} = \frac{\mathrm{volume}_{1\mathrm{h}}}{\mathrm{MA}(\mathrm{volume}, N)}
+$$
 
 或者直接：
 
@@ -1107,7 +1139,9 @@ OKX 的 WS 成交频道可以实时取得 taker 方向；OI 也有公共 WS，�
 
 所以如果让我给这个 1h 引擎定一个真正的核心公式，它不是 RSI、ROC 或 VWAP，而是：
 
-Signal=Structure×Participation×Aggression×Acceptance−Exhaustion−Divergence
+$$
+\mathrm{Signal} = \mathrm{Structure} \times \mathrm{Participation} \times \mathrm{Aggression} \times \mathrm{Acceptance} - \mathrm{Exhaustion} - \mathrm{Divergence}
+$$
 
 其中：
 
