@@ -173,7 +173,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             replyHandler(["ok": true], nil)
             return
         }
-        if !startupError.isEmpty { replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError], nil); return }
+        if let requested = parameters["minimum24hTurnoverUSDT"] {
+            guard let threshold = requested as? Int, radar?.setMinimum24hTurnoverUSDT(threshold) == true else {
+                replyHandler(nil, "Invalid 24h turnover threshold"); return
+            }
+        }
+        if !startupError.isEmpty {
+            replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError,
+                          "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000], nil)
+            return
+        }
         let roc = parameters["rocPeriod"] as? Int ?? 9
         let maroc = parameters["marocPeriod"] as? Int ?? 9
         replyHandler(radar?.snapshot(rocPeriod: roc, marocPeriod: maroc), nil)

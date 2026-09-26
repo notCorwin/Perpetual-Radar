@@ -1,11 +1,14 @@
 import { Fragment, useEffect, useMemo, useState } from "react"
-import { ArrowDownUp, Radio, Search } from "lucide-react"
+import { ArrowDownUp, Radio, Search, Settings2 } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Field, FieldGroup, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import { compareMarketRows, marketTrend, matchesMarketFilter, momentumScores, type SortKey } from "@/market-sort"
 
@@ -39,9 +42,10 @@ type MarketRow = {
   rocChange: number | null
   marocChange: number | null
 }
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string }
+type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; minimum24hTurnoverUSDT: number }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number }): Promise<Snapshot>
+  postMessage(request: { minimum24hTurnoverUSDT: number }): Promise<Snapshot>
   postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
 }
 declare global {
@@ -69,6 +73,7 @@ function App() {
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [query, setQuery] = useState("")
   const [trapOnly, setTrapOnly] = useState(false)
+  const [minimum24hTurnoverUSDT, setMinimum24hTurnoverUSDT] = useState(10_000_000)
   const [sort, setSort] = useState<SortKey>("momentum")
   const [descending, setDescending] = useState(true)
   useEffect(() => {
@@ -79,6 +84,7 @@ function App() {
         const snapshot = await window.webkit.messageHandlers.radar.postMessage({ rocPeriod: ROC_PERIOD, marocPeriod: MAROC_PERIOD })
         if (stopped) return
         setRows(snapshot.rows)
+        setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
         setUpdatedAt(snapshot.updatedAt)
         setStatus("Live")
         setError(snapshot.error)
@@ -116,6 +122,18 @@ function App() {
     else { setSort(key); setDescending(key !== "instId") }
   }
 
+  const changeTurnoverThreshold = (value: string) => {
+    if (!value) return
+    void window.webkit.messageHandlers.radar.postMessage({ minimum24hTurnoverUSDT: Number(value) })
+      .then(snapshot => {
+        setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
+        setRows(snapshot.rows)
+        setUpdatedAt(snapshot.updatedAt)
+        setError(snapshot.error)
+      })
+      .catch(cause => setError(cause instanceof Error ? cause.message : "Cannot save turnover setting"))
+  }
+
   const header = (label: string, key: SortKey, formula: string) => (
     <Button variant="ghost" size="sm" className="h-auto min-h-6 gap-1" onClick={() => changeSort(key)} aria-label={`Sort by ${label}`}>
       {math(formula)}<ArrowDownUp data-icon="inline-end" aria-hidden="true" />
@@ -126,9 +144,28 @@ function App() {
     <main className="flex min-h-svh flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
-        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ 10M USDT</span>
+        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
         <Button variant={trapOnly ? "secondary" : "outline"} size="sm" aria-pressed={trapOnly} onClick={() => setTrapOnly(!trapOnly)}>Only TRAP</Button>
+        <Popover>
+          <PopoverTrigger asChild><Button variant="outline" size="sm"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
+          <PopoverContent align="end">
+            <PopoverHeader>
+              <PopoverTitle>Settings</PopoverTitle>
+              <PopoverDescription>Hide swaps below the selected 24h USDT turnover.</PopoverDescription>
+            </PopoverHeader>
+            <FieldGroup>
+              <Field>
+                <FieldTitle id="turnover-threshold-label">Minimum 24h turnover</FieldTitle>
+                <ToggleGroup type="single" variant="outline" size="sm" spacing={0} value={String(minimum24hTurnoverUSDT)} onValueChange={changeTurnoverThreshold} aria-labelledby="turnover-threshold-label">
+                  <ToggleGroupItem value="10000000" aria-label="10 million USDT">10M</ToggleGroupItem>
+                  <ToggleGroupItem value="30000000" aria-label="30 million USDT">30M</ToggleGroupItem>
+                  <ToggleGroupItem value="100000000" aria-label="100 million USDT">100M</ToggleGroupItem>
+                </ToggleGroup>
+              </Field>
+            </FieldGroup>
+          </PopoverContent>
+        </Popover>
         <div className="relative min-w-48 flex-1 sm:ml-auto sm:max-w-64">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input aria-label="Search contracts" placeholder="Search contracts" value={query} onChange={event => setQuery(event.target.value)} className="pl-8" />

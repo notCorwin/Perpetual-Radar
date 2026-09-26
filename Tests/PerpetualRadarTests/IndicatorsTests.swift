@@ -9,6 +9,14 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertNil(usdtTurnover24h(["volCcy24h": "1000000", "last": "0"]))
     }
 
+    func testSupported24hTurnoverThresholds() {
+        XCTAssertTrue(supportedTurnoverThreshold(10_000_000))
+        XCTAssertTrue(supportedTurnoverThreshold(30_000_000))
+        XCTAssertTrue(supportedTurnoverThreshold(100_000_000))
+        XCTAssertFalse(supportedTurnoverThreshold(0))
+        XCTAssertFalse(supportedTurnoverThreshold(29_999_999))
+    }
+
     func testHourlyIndicatorsAndMissingData() {
         let hour = Int64(200) * hourMS
         var bars: [Int64: Candle] = [:]

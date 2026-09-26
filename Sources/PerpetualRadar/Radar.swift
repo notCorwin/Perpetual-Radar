@@ -3,7 +3,11 @@ import Foundation
 private let api = "https://www.okx.com/api/v5"
 private let publicWS = "wss://ws.okx.com:8443/ws/v5/public"
 private let businessWS = "wss://ws.okx.com:8443/ws/v5/business"
-private let minimum24hTurnoverUSDT = 10_000_000.0
+private let turnoverThresholdKey = "minimum24hTurnoverUSDT"
+
+func supportedTurnoverThreshold(_ value: Int) -> Bool {
+    value == 10_000_000 || value == 30_000_000 || value == 100_000_000
+}
 
 private func numeric(_ value: Any?) -> Double? {
     let result = (value as? String).flatMap(Double.init) ?? (value as? NSNumber)?.doubleValue
@@ -34,6 +38,7 @@ private struct Market {
 @MainActor
 final class Radar {
     private let store: Store
+    private(set) var minimum24hTurnoverUSDT: Int
     private var rows: [String: Market] = [:]
     private var candles: [String: [Int64: Candle]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
@@ -46,6 +51,8 @@ final class Radar {
     private var startupError = ""
 
     init() throws {
+        let savedThreshold = UserDefaults.standard.integer(forKey: turnoverThresholdKey)
+        minimum24hTurnoverUSDT = supportedTurnoverThreshold(savedThreshold) ? savedThreshold : 10_000_000
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("PerpetualRadar", isDirectory: true)
         store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
@@ -58,6 +65,14 @@ final class Radar {
     }
 
     private func touch() { updatedAt = millis() }
+
+    func setMinimum24hTurnoverUSDT(_ value: Int) -> Bool {
+        guard supportedTurnoverThreshold(value) else { return false }
+        minimum24hTurnoverUSDT = value
+        UserDefaults.standard.set(value, forKey: turnoverThresholdKey)
+        touch()
+        return true
+    }
 
     private func get(_ path: String, _ parameters: [String: String]) async throws -> [Any] {
         var parts = URLComponents(string: api + path)!
@@ -306,13 +321,14 @@ final class Radar {
 
     func snapshot(rocPeriod: Int, marocPeriod: Int) -> [String: Any] {
         guard (1...100).contains(rocPeriod), (1...100).contains(marocPeriod) else {
-            return ["rows": [], "updatedAt": NSNull(), "error": "Periods must be from 1 to 100."]
+            return ["rows": [], "updatedAt": NSNull(), "error": "Periods must be from 1 to 100.",
+                    "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT]
         }
         let null = NSNull()
         var output: [[String: Any]] = []
         for id in rows.keys.sorted() {
             guard let row = rows[id], let turnover = row.turnover24hUSDT,
-                  turnover >= minimum24hTurnoverUSDT else { continue }
+                  turnover >= Double(minimum24hTurnoverUSDT) else { continue }
             let bars = candles[id] ?? [:]
             let (high, low) = extremes(bars, hour)
             let (upper, middle, lower) = boll(bars, hour)
@@ -345,6 +361,7 @@ final class Radar {
         }
         let error = !startupError.isEmpty ? startupError : !failedPaths.isEmpty ? "Some OKX data is unavailable; retrying." :
             !disconnectedChannels.isEmpty ? "OKX \(disconnectedChannels.sorted()[0]) disconnected; reconnecting." : ""
-        return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error]
+        return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error,
+                "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT]
     }
 }
