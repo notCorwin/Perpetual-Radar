@@ -50,25 +50,36 @@ $$
 
 ### OI
 
+定义:
+
 $$
-\Delta \mathrm{OI}_t = \frac{\mathrm{OI}_t - \mathrm{OI}_{t-1}}{\mathrm{OI}_{t-1}}
+\mathrm{OI}_{\mathrm{log}} = \ln\left(\frac{\mathrm{OI}_t}{\mathrm{OI}_{t-1}}\right)
 $$
 
-| Price | OI   | 信号               | 意义                     |
-| ----- | ---- | ------------------ | ------------------------ |
-| ↑     | ↑    | 新仓进入上涨       | **高质量多头候选**       |
-| ↑     | ↓    | 空头平仓 / squeeze | 上涨真实，但不宜机械追   |
-| ↓     | ↑    | 新仓进入下跌       | **高质量空头候选**       |
-| ↓     | ↓    | 多头平仓/清算      | 下跌真实，但容易进入衰竭 |
+因此：
+
+$$
+\mathrm{Direction} = \mathrm{sign}(\mathrm{OI}_{\mathrm{log}})
+$$
+
+$$
+\mathrm{Magnitude} = |\mathrm{OI}_{\mathrm{log}}|
+$$
 
 ## Taker
 
-美元名义成交：
+定义：
+
 $$
-\mathrm{BuyVol} = \sum \mathrm{BuyNotional}, \qquad
+\mathrm{BuyVol} = \sum \mathrm{BuyNotional}
+$$
+
+$$
 \mathrm{SellVol} = \sum \mathrm{SellNotional}
 $$
+
 然后：
+
 $$
 \mathrm{TakerDelta} = \frac{\mathrm{BuyVol} - \mathrm{SellVol}}{\mathrm{BuyVol} + \mathrm{SellVol}}
 $$
