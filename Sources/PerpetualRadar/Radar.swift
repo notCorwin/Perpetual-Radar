@@ -3,16 +3,25 @@ import Foundation
 private let api = "https://www.okx.com/api/v5"
 private let publicWS = "wss://ws.okx.com:8443/ws/v5/public"
 private let businessWS = "wss://ws.okx.com:8443/ws/v5/business"
+private let minimum24hTurnoverUSDT = 10_000_000.0
 
 private func numeric(_ value: Any?) -> Double? {
     let result = (value as? String).flatMap(Double.init) ?? (value as? NSNumber)?.doubleValue
     return result?.isFinite == true ? result : nil
 }
 
+func usdtTurnover24h(_ ticker: [String: Any]) -> Double? {
+    guard let baseVolume = numeric(ticker["volCcy24h"]), baseVolume >= 0,
+          let lastPrice = numeric(ticker["last"]), lastPrice > 0 else { return nil }
+    let turnover = baseVolume * lastPrice
+    return turnover.isFinite ? turnover : nil
+}
+
 private func millis() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private struct Market {
     let id: String
+    var turnover24hUSDT: Double?
     var oi: Double?
     var oiTimestamp = 0.0
     var oiBase: Double?
@@ -73,6 +82,7 @@ final class Radar {
             do {
                 let items = try await get("/public/instruments", ["instType": "SWAP"])
                 let oi = try await get("/public/open-interest", ["instType": "SWAP"])
+                let tickers = try await get("/market/tickers", ["instType": "SWAP"])
                 for case let item as [String: Any] in items {
                     guard item["state"] as? String == "live", item["instCategory"] as? String == "1",
                           item["settleCcy"] as? String == "USDT", let id = item["instId"] as? String,
@@ -80,6 +90,7 @@ final class Radar {
                     rows[id] = Market(id: id)
                 }
                 guard !rows.isEmpty else { throw NSError(domain: "OKX", code: 2, userInfo: [NSLocalizedDescriptionKey: "No live USDT perpetual swaps found"]) }
+                try updateTickers(tickers)
                 for case let item as [String: Any] in oi { updateOI(item) }
                 try store.prune(hour: hour, ids: Set(rows.keys))
                 let cached = try store.load(hour: hour, ids: Set(rows.keys))
@@ -91,11 +102,40 @@ final class Radar {
                 tasks.append(Task { [weak self] in await self?.scan("/rubik/stat/taker-volume-contract", delay: 250_000_000, repeatScan: true) })
                 tasks.append(Task { [weak self] in await self?.websocket(publicWS, channel: "open-interest") })
                 tasks.append(Task { [weak self] in await self?.websocket(businessWS, channel: "candle1H") })
+                tasks.append(Task { [weak self] in await self?.pollTickers() })
                 tasks.append(Task { [weak self] in await self?.clock() })
                 return
             } catch {
                 startupError = "OKX unavailable: \(error.localizedDescription). Retrying."
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
+            }
+        }
+    }
+
+    private func updateTickers(_ tickers: [Any]) throws {
+        var turnover: [String: Double] = [:]
+        for case let ticker as [String: Any] in tickers {
+            guard let id = ticker["instId"] as? String, rows[id] != nil,
+                  let value = usdtTurnover24h(ticker) else { continue }
+            turnover[id] = value
+        }
+        guard !turnover.isEmpty else {
+            throw NSError(domain: "OKX", code: 4, userInfo: [NSLocalizedDescriptionKey: "No USDT swap ticker data found"])
+        }
+        for id in rows.keys { rows[id]?.turnover24hUSDT = turnover[id] }
+        touch()
+    }
+
+    private func pollTickers() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            if Task.isCancelled { return }
+            do {
+                try updateTickers(await get("/market/tickers", ["instType": "SWAP"]))
+                failedPaths.remove("/market/tickers")
+            } catch {
+                failedPaths.insert("/market/tickers")
+                NSLog("/market/tickers: %@", error.localizedDescription)
             }
         }
     }
@@ -271,7 +311,8 @@ final class Radar {
         let null = NSNull()
         var output: [[String: Any]] = []
         for id in rows.keys.sorted() {
-            guard let row = rows[id] else { continue }
+            guard let row = rows[id], let turnover = row.turnover24hUSDT,
+                  turnover >= minimum24hTurnoverUSDT else { continue }
             let bars = candles[id] ?? [:]
             let (high, low) = extremes(bars, hour)
             let (upper, middle, lower) = boll(bars, hour)

@@ -2,6 +2,13 @@ import XCTest
 @testable import PerpetualRadar
 
 final class IndicatorsTests: XCTestCase {
+    func testSwap24hTurnoverUsesBaseVolumeAndLastUSDTPrice() {
+        XCTAssertEqual(usdtTurnover24h(["volCcy24h": "1000000", "last": "10"]), 10_000_000)
+        XCTAssertEqual(usdtTurnover24h(["volCcy24h": "999999", "last": "10"]), 9_999_990)
+        XCTAssertNil(usdtTurnover24h(["volCcy24h": "NaN", "last": "10"]))
+        XCTAssertNil(usdtTurnover24h(["volCcy24h": "1000000", "last": "0"]))
+    }
+
     func testHourlyIndicatorsAndMissingData() {
         let hour = Int64(200) * hourMS
         var bars: [Int64: Candle] = [:]

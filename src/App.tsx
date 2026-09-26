@@ -126,7 +126,7 @@ function App() {
     <main className="flex min-h-svh flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
-        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h</span>
+        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ 10M USDT</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
         <Button variant={trapOnly ? "secondary" : "outline"} size="sm" aria-pressed={trapOnly} onClick={() => setTrapOnly(!trapOnly)}>Only TRAP</Button>
         <div className="relative min-w-48 flex-1 sm:ml-auto sm:max-w-64">
