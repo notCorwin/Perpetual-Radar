@@ -32,6 +32,8 @@ jobs:
         run: |
           app='.build/app/Perpetual Radar.app'
           test -x "$app/Contents/MacOS/PerpetualRadar"
+          test -s "$app/Contents/Resources/Assets.car"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$app/Contents/Info.plist")" = AppIcon
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSourceRevision' "$app/Contents/Info.plist")" = "$GITHUB_SHA"
           tar -cf Perpetual.Radar.app.tar -C .build/app 'Perpetual Radar.app'
           tar -tf Perpetual.Radar.app.tar | grep -qx 'Perpetual Radar.app/Contents/MacOS/PerpetualRadar'
