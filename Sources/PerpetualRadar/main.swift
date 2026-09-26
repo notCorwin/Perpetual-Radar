@@ -2,17 +2,30 @@ import AppKit
 import WebKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKURLSchemeHandler {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKURLSchemeHandler {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var radar: Radar?
     private var startupError = ""
     private var webRoot: URL?
+    private let updater = AppUpdater()
+    private var updateTimer: Timer?
+    private var updateState = "idle"
+    private var update: AppUpdate?
+    private var isCheckingUpdate = false
+    private var isInstallingUpdate = false
+    private lazy var checkUpdatesItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdatesNow), keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) { NSApp.applicationIconImage = icon }
         let menu = NSMenu()
         let application = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.delegate = self
+        checkUpdatesItem.target = self
+        appMenu.addItem(checkUpdatesItem)
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Perpetual Radar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         application.submenu = appMenu; menu.addItem(application)
         NSApp.mainMenu = menu
@@ -50,6 +63,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             webView.loadHTMLString("<html><body style='font:14px system-ui;padding:40px'>\(message)</body></html>", baseURL: nil)
         }
         NSApp.activate(ignoringOtherApps: true)
+        if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_READY_FILE"], !path.isEmpty {
+            FileManager.default.createFile(atPath: path, contents: Data())
+        }
+        let timer = Timer(timeInterval: 3 * 60, target: self,
+                          selector: #selector(checkForUpdatesAutomatically), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        updateTimer?.invalidate()
+        updater.cancel()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { renderUpdateItem() }
+
+    @objc private func checkForUpdatesNow() { checkForUpdates(silently: false) }
+    @objc private func checkForUpdatesAutomatically() { checkForUpdates(silently: true) }
+
+    private func renderUpdateItem() {
+        if updateState == "available", let update {
+            let revision = update.revision == "unknown" ? "" : " · \(update.revision.prefix(7))"
+            let age: String
+            if let publishedAt = update.publishedAt {
+                let formatter = RelativeDateTimeFormatter()
+                formatter.locale = Locale(identifier: "en_US")
+                formatter.unitsStyle = .abbreviated
+                age = " · \(formatter.localizedString(for: publishedAt, relativeTo: Date()))"
+            } else { age = "" }
+            checkUpdatesItem.title = "Update Available\(revision)\(age)"
+        } else {
+            checkUpdatesItem.title = updateState == "installing" ? "Installing Update…" : "Check for Updates"
+        }
+        checkUpdatesItem.isEnabled = !isCheckingUpdate && !isInstallingUpdate
+    }
+
+    private func checkForUpdates(silently: Bool) {
+        guard !isCheckingUpdate, !isInstallingUpdate else { return }
+        isCheckingUpdate = true
+        updateState = "checking"
+        renderUpdateItem()
+        updater.check { [weak self] result in
+            guard let self else { return }
+            isCheckingUpdate = false
+            switch result {
+            case .success(let found):
+                update = found
+                updateState = found == nil ? "latest" : "available"
+                if let found {
+                    if !silently { presentUpdate(found) }
+                } else if !silently {
+                    showUpdateAlert("Up to Date", "You have the latest version of Perpetual Radar.")
+                }
+            case .failure(let error):
+                update = nil
+                updateState = "failed"
+                if !silently { showUpdateAlert("Update Check Failed", error.localizedDescription) }
+            }
+            renderUpdateItem()
+        }
+    }
+
+    private func presentUpdate(_ update: AppUpdate) {
+        let alert = NSAlert()
+        alert.messageText = "Update Available"
+        let revision = update.revision == "unknown" ? "" : " (\(update.revision.prefix(7)))"
+        alert.informativeText = "\(update.name)\(revision) is available. Download and install it now?"
+        alert.addButton(withTitle: "Update")
+        alert.addButton(withTitle: "Later")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        isInstallingUpdate = true
+        updateState = "installing"
+        renderUpdateItem()
+        updater.downloadAndInstall(update) { [weak self] result in
+            guard let self else { return }
+            if case .failure(let error) = result {
+                isInstallingUpdate = false
+                updateState = "available"
+                renderUpdateItem()
+                showUpdateAlert("Update Failed", error.localizedDescription)
+            }
+        }
+    }
+
+    private func showUpdateAlert(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
