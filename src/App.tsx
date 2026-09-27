@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, ArrowDownUp, ArrowUp, Radio, Search, Settings2 } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
@@ -12,12 +12,14 @@ import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import { compareMarketRows, marketTrend, matchesMarketFilter, momentumScores, type SortKey } from "@/market-sort"
-import { MarketChart, type ChartResponse } from "@/MarketChart"
+import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 
 type MarketRow = {
   instId: string
   price: number | null
   priceChange: number | null
+  currentLow: number | null
+  currentHigh: number | null
   vwap14: number | null
   ema200: number | null
   ema200Slope: number | null
@@ -45,13 +47,14 @@ type MarketRow = {
   rocChange: number | null
   marocChange: number | null
 }
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number }
+type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number }
+type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
 type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number }
 type NativeBridge = {
-  postMessage(request: { rocPeriod: number; marocPeriod: number }): Promise<Snapshot>
+  postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
-  postMessage(request: { chartInstId: string; loadChart?: boolean }): Promise<ChartResponse>
+  postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number }): Promise<ChartPollResponse>
 }
 declare global {
   interface Window { webkit: { messageHandlers: { radar: NativeBridge } } }
@@ -70,8 +73,13 @@ const rsiClass = (value: number | null) => value === null ? "text-muted-foregrou
 const bollClass = (price: number | null, level: number | null) => price === null || level === null ? "text-muted-foreground" : price > level ? "text-positive" : "text-destructive"
 const RSI_PERIODS = [6, 12, 24] as const
 const BOLL_LINES = [{ label: "Upper", key: "bollUpper" }, { label: "Middle", key: "bollMiddle" }, { label: "Lower", key: "bollLower" }] as const
-const math = (formula: string) => <span className="text-xs font-medium text-foreground" dangerouslySetInnerHTML={{ __html: katex.renderToString(formula) }} />
+const mathCache = new Map<string, string>()
+const math = (formula: string) => {
+  if (!mathCache.has(formula)) mathCache.set(formula, katex.renderToString(formula))
+  return <span className="text-xs font-medium text-foreground" dangerouslySetInnerHTML={{ __html: mathCache.get(formula)! }} />
+}
 function App() {
+  const revision = useRef(-1)
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
@@ -86,18 +94,22 @@ function App() {
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => {
+    if (selected) return
     let stopped = false
     let timer: number
     const refresh = async () => {
       try {
-        const snapshot = await window.webkit.messageHandlers.radar.postMessage({ rocPeriod: ROC_PERIOD, marocPeriod: MAROC_PERIOD })
+        const snapshot = await window.webkit.messageHandlers.radar.postMessage({ rocPeriod: ROC_PERIOD, marocPeriod: MAROC_PERIOD, sinceRevision: revision.current })
         if (stopped) return
-        setRows(snapshot.rows)
-        setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
-        setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
-        setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
-        if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
-        setUpdatedAt(snapshot.updatedAt)
+        if (snapshot.revision >= revision.current && !("unchanged" in snapshot)) {
+          revision.current = snapshot.revision
+          setRows(snapshot.rows)
+          setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
+          setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
+          setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
+          if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
+          setUpdatedAt(snapshot.updatedAt)
+        }
         setStatus("Live")
         setError(snapshot.error)
       } catch (cause) {
@@ -109,17 +121,31 @@ function App() {
     }
     void refresh()
     return () => { stopped = true; window.clearTimeout(timer) }
-  }, [])
+  }, [selected])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const table = document.querySelector("table")
-    if (!table) return
-    const fit = () => { void window.webkit.messageHandlers.radar.postMessage({ fitWidth: Math.ceil(table.scrollWidth) }).catch(() => {}) }
-    const observer = new ResizeObserver(fit)
-    observer.observe(table)
+    const container = table?.parentElement
+    if (!table || !container) return
+    const fit = () => {
+      if (!table.isConnected) return
+      table.style.zoom = "1"
+      table.style.width = "max-content"
+      const width = table.scrollWidth
+      const available = container.clientWidth
+      if (!width || !available) return
+      table.style.width = `${Math.max(width, available)}px`
+      const target = width > available ? available - 1 : available
+      const zoom = Math.min(1, target / width)
+      table.style.zoom = String(zoom)
+      const rendered = table.getBoundingClientRect().width
+      if (rendered > target) table.style.zoom = String(zoom * target / rendered)
+    }
+    window.addEventListener("resize", fit)
+    fit()
     void document.fonts.ready.then(fit)
-    return () => observer.disconnect()
-  }, [])
+    return () => window.removeEventListener("resize", fit)
+  }, [selected, rows, query, sort, descending, trapOnly])
 
   const visible = useMemo(() => {
     const scores = momentumScores(rows)
@@ -137,6 +163,8 @@ function App() {
   const saveSetting = (request: SettingRequest) => {
     void window.webkit.messageHandlers.radar.postMessage(request)
       .then(snapshot => {
+        if (snapshot.revision < revision.current) return
+        revision.current = snapshot.revision
         setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
         setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
         setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
@@ -256,6 +284,10 @@ function App() {
                 <div className="flex justify-center gap-2 text-xs tabular-nums">
                   <span>{formatPrice(row.price)}</span>
                   <span className={directionClass(row.priceChange)}>{formatPercent(row.priceChange)}</span>
+                </div>
+                <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-2 text-right text-xs tabular-nums">
+                  <span className="text-muted-foreground">1h Low</span><span>{formatPrice(row.currentLow)}</span>
+                  <span className="text-muted-foreground">1h High</span><span>{formatPrice(row.currentHigh)}</span>
                 </div>
                 <div className="flex justify-center gap-1 text-xs tabular-nums">
                   <span className="text-muted-foreground">VWAP14</span><span>{formatPrice(row.vwap14)}</span>

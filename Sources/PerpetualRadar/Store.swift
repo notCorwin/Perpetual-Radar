@@ -95,6 +95,18 @@ final class Store {
         try execute("INSERT INTO candles (inst_id,hour,high,low,close,volume,base_volume,open) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET base_volume=COALESCE(excluded.base_volume,candles.base_volume),open=COALESCE(excluded.open,candles.open)", [id, bar.hour, bar.high, bar.low, bar.close, bar.quoteVolume, bar.baseVolume, bar.open])
     }
 
+    func saveCandles(_ id: String, _ bars: [Candle]) throws {
+        guard !bars.isEmpty else { return }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            for bar in bars { try save(id, bar) }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
     func saveChartStat(_ id: String, hour: Int64, oi: Double? = nil, sell: Double? = nil, buy: Double? = nil, oiContracts: Double? = nil) throws {
         try execute("INSERT INTO chart_stats (inst_id,hour,oi,sell,buy,oi_contracts) VALUES (?,?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET oi=COALESCE(excluded.oi,chart_stats.oi),sell=COALESCE(excluded.sell,chart_stats.sell),buy=COALESCE(excluded.buy,chart_stats.buy),oi_contracts=COALESCE(excluded.oi_contracts,chart_stats.oi_contracts)", [id, hour, oi, sell, buy, oiContracts])
     }

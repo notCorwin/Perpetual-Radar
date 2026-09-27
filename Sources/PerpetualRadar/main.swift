@@ -174,10 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             return
         }
         if let id = parameters["chartInstId"] as? String {
-            guard let radar else { replyHandler(["bars": [], "error": startupError], nil); return }
+            guard let radar else { replyHandler(["bars": [], "error": startupError, "revision": -1], nil); return }
             if parameters["loadChart"] as? Bool == true {
                 Task { replyHandler(await radar.loadChart(id), nil) }
-            } else { replyHandler(radar.chartSnapshot(id), nil) }
+            } else { replyHandler(radar.chartSnapshot(id, sinceRevision: parameters["sinceRevision"] as? Int), nil) }
             return
         }
         if let requested = parameters["minimum24hTurnoverUSDT"] {
@@ -197,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             }
         }
         if !startupError.isEmpty {
-            replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError,
+            replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
                           "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
                           "spreadFilterEnabled": radar?.spreadFilterEnabled ?? true,
                           "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15], nil)
@@ -205,7 +205,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9
         let maroc = parameters["marocPeriod"] as? Int ?? 9
-        replyHandler(radar?.snapshot(rocPeriod: roc, marocPeriod: maroc), nil)
+        replyHandler(radar?.snapshot(rocPeriod: roc, marocPeriod: maroc,
+                                     sinceRevision: parameters["sinceRevision"] as? Int), nil)
     }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {

@@ -9,7 +9,8 @@ type Bar = {
   roc: number | null; maroc: number | null; rsi6: number | null; rsi12: number | null; rsi24: number | null
   oi: number | null; buy: number | null; sell: number | null
 }
-export type ChartResponse = { bars: Bar[]; error: string }
+export type ChartResponse = { bars: Bar[]; error: string; revision: number }
+export type ChartPollResponse = ChartResponse | { unchanged: true; error: string; revision: number }
 
 const left = 16
 const compact = (value: number | null) => value === null ? "—" : new Intl.NumberFormat("en-US", { maximumSignificantDigits: 5, notation: "compact" }).format(value)
@@ -161,6 +162,7 @@ export function MarketChart({ instId, onBack }: { instId: string; onBack: () => 
   const [hovered, setHovered] = useState<number | null>(null)
   const [error, setError] = useState("")
   const plotRef = useRef<HTMLDivElement>(null)
+  const revision = useRef(-1)
   const [plotSize, setPlotSize] = useState({ width: 0, height: 0 })
   useEffect(() => {
     const element = plotRef.current
@@ -173,13 +175,17 @@ export function MarketChart({ instId, onBack }: { instId: string; onBack: () => 
     let stopped = false
     let timer: number
     let lastLoad = 0
+    revision.current = -1
     const refresh = async () => {
       try {
         const loadChart = Date.now() - lastLoad >= 60_000
-        const result = await window.webkit.messageHandlers.radar.postMessage({ chartInstId: instId, loadChart })
+        const result = await window.webkit.messageHandlers.radar.postMessage({ chartInstId: instId, loadChart, sinceRevision: revision.current })
         if (stopped) return
         if (loadChart) lastLoad = Date.now()
-        setChart(result)
+        if (!("unchanged" in result)) {
+          revision.current = result.error ? -1 : result.revision
+          setChart(result)
+        }
         setError(result.error)
       } catch (cause) {
         if (!stopped) setError(cause instanceof Error ? cause.message : "Cannot load chart")

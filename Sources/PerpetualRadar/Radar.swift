@@ -57,12 +57,16 @@ final class Radar {
     private(set) var spreadFilterEnabled: Bool
     private(set) var maximumSpreadPercent: Double
     private var rows: [String: Market] = [:]
+    private var cachedRows: [String: [String: Any]] = [:]
+    private var cachedPeriods: (roc: Int, maroc: Int)?
+    private var chartRevisions: [String: Int] = [:]
     private var candles: [String: [Int64: Candle]] = [:]
     private var oiHistory: [String: [Int64: Double]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
     private var chartLiveStats: [String: (oi: Double?, sell: Double?, buy: Double?)] = [:]
     private var hour = millis() / hourMS * hourMS
     private var updatedAt: Int64?
+    private var revision = 0
     private var failedPaths = Set<String>()
     private var disconnectedChannels = Set<String>()
     private var tasks: [Task<Void, Never>] = []
@@ -86,7 +90,10 @@ final class Radar {
         sockets.forEach { $0.cancel(with: .goingAway, reason: nil) }
     }
 
-    private func touch() { updatedAt = millis() }
+    private func touch(_ id: String? = nil) {
+        updatedAt = millis(); revision &+= 1
+        if let id { chartRevisions[id, default: 0] &+= 1 }
+    }
 
     func setMinimum24hTurnoverUSDT(_ value: Int) -> Bool {
         guard supportedTurnoverThreshold(value) else { return false }
@@ -110,18 +117,28 @@ final class Radar {
         return true
     }
 
-    private func get(_ path: String, _ parameters: [String: String]) async throws -> [Any] {
+    private func getData(_ path: String, _ parameters: [String: String]) async throws -> Data {
         var parts = URLComponents(string: api + path)!
         parts.queryItems = parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
         var request = URLRequest(url: parts.url!)
         request.timeoutInterval = 15
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw NSError(domain: "OKX", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid OKX response for \(path)"])
+        }
+        return data
+    }
+
+    private func decodeRows(_ data: Data, path: String) throws -> [Any] {
+        guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               body["code"] as? String == "0", let rows = body["data"] as? [Any] else {
             throw NSError(domain: "OKX", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid OKX response for \(path)"])
         }
         return rows
+    }
+
+    private func get(_ path: String, _ parameters: [String: String]) async throws -> [Any] {
+        try decodeRows(await getData(path, parameters), path: path)
     }
 
     func start() {
@@ -131,9 +148,11 @@ final class Radar {
     private func bootstrap() async {
         while !Task.isCancelled {
             do {
-                let items = try await get("/public/instruments", ["instType": "SWAP"])
-                let oi = try await get("/public/open-interest", ["instType": "SWAP"])
-                let tickers = try await get("/market/tickers", ["instType": "SWAP"])
+                async let instruments = getData("/public/instruments", ["instType": "SWAP"])
+                async let marketTickers = getData("/market/tickers", ["instType": "SWAP"])
+                let (instrumentData, tickerData) = try await (instruments, marketTickers)
+                let items = try decodeRows(instrumentData, path: "/public/instruments")
+                let tickers = try decodeRows(tickerData, path: "/market/tickers")
                 for case let item as [String: Any] in items {
                     guard item["state"] as? String == "live", item["instCategory"] as? String == "1",
                           item["settleCcy"] as? String == "USDT", let id = item["instId"] as? String,
@@ -142,14 +161,18 @@ final class Radar {
                 }
                 guard !rows.isEmpty else { throw NSError(domain: "OKX", code: 2, userInfo: [NSLocalizedDescriptionKey: "No live USDT perpetual swaps found"]) }
                 try updateTickers(tickers)
-                for case let item as [String: Any] in oi { updateOI(item) }
                 try store.prune(hour: hour, ids: Set(rows.keys))
                 let cached = try store.load(hour: hour, ids: Set(rows.keys))
                 candles = cached.candles; oiHistory = cached.oiHistory; emaStates = cached.ema
                 for (id, value) in cached.oi { rows[id]?.oiBase = value }
                 startupError = ""; touch()
-                tasks.append(Task { [weak self] in await self?.scan("/market/candles", delay: 120_000_000) })
-                tasks.append(Task { [weak self] in await self?.scan("/rubik/stat/contracts/open-interest-history", delay: 250_000_000) })
+                tasks.append(Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        for case let item as [String: Any] in try await get("/public/open-interest", ["instType": "SWAP"]) { updateOI(item) }
+                    } catch { NSLog("/public/open-interest: %@", error.localizedDescription) }
+                })
+                startHistoryScans()
                 tasks.append(Task { [weak self] in await self?.scan("/rubik/stat/taker-volume-contract", delay: 250_000_000, repeatScan: true) })
                 tasks.append(Task { [weak self] in await self?.websocket(publicWS, channel: "open-interest") })
                 tasks.append(Task { [weak self] in await self?.websocket(businessWS, channel: "candle1H") })
@@ -160,6 +183,13 @@ final class Radar {
                 startupError = "OKX unavailable: \(error.localizedDescription). Retrying."
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
             }
+        }
+    }
+
+    private func startHistoryScans() {
+        for shard in 0..<2 {
+            tasks.append(Task { [weak self] in await self?.scan("/market/candles", delay: 120_000_000, shard: shard) })
+            tasks.append(Task { [weak self] in await self?.scan("/rubik/stat/contracts/open-interest-history", delay: 250_000_000, shard: shard) })
         }
     }
 
@@ -199,23 +229,47 @@ final class Radar {
               let current = numeric(item["oi"]), current >= 0,
               let stamp = numeric(item["ts"]), stamp >= row.oiTimestamp else { return }
         row.oi = current; row.oiTimestamp = stamp; row.oiUsd = numeric(item["oiUsd"])
-        rows[id] = row; touch()
+        rows[id] = row; cachedRows.removeValue(forKey: id); touch(id)
     }
 
-    private func updateCandle(_ id: String, _ values: [String], history: Bool = false) {
-        guard rows[id] != nil, let bar = Candle(values), bar.hour >= hour - Int64(candleLookback) * hourMS else { return }
+    @discardableResult
+    private func updateCandle(_ id: String, _ values: [String], history: Bool = false, persist: Bool = true) -> Candle? {
+        guard rows[id] != nil, let bar = Candle(values), bar.hour >= hour - Int64(candleLookback) * hourMS else { return nil }
         let old = candles[id]?[bar.hour]
-        guard !history || old == nil || (!old!.confirmed && bar.confirmed) || old!.baseVolume == nil || old!.open == nil else { return }
+        guard !history || old == nil || (!old!.confirmed && bar.confirmed) || old!.baseVolume == nil || old!.open == nil else { return nil }
         let settled: Candle
         if history, let old, old.confirmed, old.baseVolume == nil {
             settled = Candle(hour: old.hour, high: old.high, low: old.low, close: old.close, quoteVolume: old.quoteVolume, baseVolume: bar.baseVolume, open: bar.open)
         } else { settled = bar }
         candles[id, default: [:]][bar.hour] = settled
-        if settled.confirmed {
+        cachedRows.removeValue(forKey: id)
+        if settled.confirmed && persist {
             do { try store.save(id, settled) }
             catch { startupError = "Cache error: \(error.localizedDescription)" }
         }
-        touch()
+        touch(id)
+        return settled
+    }
+
+    private func updateHistoricalCandles(_ id: String, _ result: [Any]) throws {
+        let previousCandles = candles[id]
+        let previousRow = cachedRows[id]
+        let previousUpdatedAt = updatedAt
+        let previousRevision = revision
+        let previousChartRevision = chartRevisions[id]
+        var settled: [Candle] = []
+        for case let values as [String] in result {
+            if let bar = updateCandle(id, values, history: true, persist: false), bar.confirmed { settled.append(bar) }
+        }
+        do { try store.saveCandles(id, settled) }
+        catch {
+            candles[id] = previousCandles
+            cachedRows[id] = previousRow
+            updatedAt = previousUpdatedAt
+            revision = previousRevision
+            chartRevisions[id] = previousChartRevision
+            throw error
+        }
     }
 
     private func historyReady(_ id: String) -> Bool {
@@ -224,8 +278,10 @@ final class Radar {
             (1..<14).allSatisfy { series[hour - Int64($0) * hourMS]?.baseVolume != nil }
     }
 
-    private func scan(_ path: String, delay: UInt64, repeatScan: Bool = false) async {
-        var ids = rows.keys.sorted()
+    private func scan(_ path: String, delay: UInt64, repeatScan: Bool = false, shard: Int = 0) async {
+        let workers = repeatScan ? 1 : 2
+        var ids = rows.keys.sorted().enumerated().compactMap { $0.offset % workers == shard ? $0.element : nil }
+        let failureKey = "\(path)#\(shard)"
         while !Task.isCancelled {
             var failed = Set<String>()
             for id in ids {
@@ -237,7 +293,7 @@ final class Radar {
                     let result = try await get(path, parameters)
                     switch path {
                     case "/market/candles":
-                        for case let bar as [String] in result { updateCandle(id, bar, history: true) }
+                        try updateHistoricalCandles(id, result)
                     case "/rubik/stat/contracts/open-interest-history":
                         var fixed: [Int64: Double] = [:]
                         for case let item as [String] in result {
@@ -251,7 +307,8 @@ final class Radar {
                             oiHistory[id, default: [:]].merge(fixed) { _, latest in latest }
                             rows[id]?.oiBase = base
                             try store.execute("INSERT OR REPLACE INTO oi_base VALUES (?,?,?)", [id, hour, base])
-                            touch()
+                            cachedRows.removeValue(forKey: id)
+                            touch(id)
                         } else { failed.insert(id) }
                     default:
                         if let item = result.compactMap({ $0 as? [String] }).first(where: { Int64($0.first ?? "") == hour }),
@@ -259,7 +316,8 @@ final class Radar {
                            buy.isFinite, sell.isFinite, buy >= 0, sell >= 0 {
                             rows[id]?.buy = buy; rows[id]?.sell = sell
                             rows[id]?.takerRatio = buy + sell > 0 ? (buy - sell) / (buy + sell) * 100 : nil
-                            touch()
+                            cachedRows.removeValue(forKey: id)
+                            touch(id)
                         }
                     }
                 } catch {
@@ -268,7 +326,7 @@ final class Radar {
                 }
                 try? await Task.sleep(nanoseconds: delay)
             }
-            if failed.isEmpty { failedPaths.remove(path) } else { failedPaths.insert(path) }
+            if failed.isEmpty { failedPaths.remove(failureKey) } else { failedPaths.insert(failureKey) }
             if !repeatScan && failed.isEmpty { return }
             ids = repeatScan ? rows.keys.sorted() : failed.sorted()
             try? await Task.sleep(nanoseconds: 10_000_000_000)
@@ -327,6 +385,8 @@ final class Radar {
             let current = millis() / hourMS * hourMS
             guard current != hour else { continue }
             hour = current
+            cachedRows.removeAll()
+            for id in rows.keys { chartRevisions[id, default: 0] &+= 1 }
             chartLiveStats.removeAll()
             do { try store.prune(hour: hour, ids: Set(rows.keys)) } catch { startupError = error.localizedDescription }
             for id in rows.keys {
@@ -340,8 +400,7 @@ final class Radar {
             }
             emaStates = emaStates.filter { $0.value.0 >= hour - Int64(candleLookback + 1) * hourMS && $0.value.0 < hour }
             touch()
-            tasks.append(Task { [weak self] in await self?.scan("/market/candles", delay: 120_000_000) })
-            tasks.append(Task { [weak self] in await self?.scan("/rubik/stat/contracts/open-interest-history", delay: 250_000_000) })
+            startHistoryScans()
             tasks.removeAll { $0.isCancelled }
         }
     }
@@ -372,19 +431,25 @@ final class Radar {
     }
 
     func loadChart(_ id: String) async -> [String: Any] {
-        guard rows[id] != nil else { return ["bars": [], "error": "Unknown contract"] }
+        guard rows[id] != nil else { return ["bars": [], "error": "Unknown contract", "revision": -1] }
+        let candlePath = "/market/candles"
+        let oiPath = "/rubik/stat/contracts/open-interest-history"
+        let takerPath = "/rubik/stat/taker-volume-contract"
+        async let candleData = getData(candlePath, ["instId": id, "bar": "1H", "limit": "251"])
+        async let oiData = getData(oiPath, ["instId": id, "period": "1H"])
+        async let takerData = getData(takerPath, ["instId": id, "period": "1H"])
         var failures: [String] = []
         do {
-            for case let values as [String] in try await get("/market/candles", ["instId": id, "bar": "1H", "limit": "251"]) {
-                updateCandle(id, values, history: true)
-            }
+            try updateHistoricalCandles(id, try decodeRows(await candleData, path: candlePath))
         } catch { failures.append("candles") }
-        for (path, label) in [
-            ("/rubik/stat/contracts/open-interest-history", "OI"),
-            ("/rubik/stat/taker-volume-contract", "taker volume"),
-        ] {
+        var statistics: [(label: String, values: [Any])] = []
+        do { statistics.append(("OI", try decodeRows(await oiData, path: oiPath))) }
+        catch { failures.append("OI") }
+        do { statistics.append(("taker volume", try decodeRows(await takerData, path: takerPath))) }
+        catch { failures.append("taker volume") }
+        for (label, result) in statistics {
             do {
-                for case let values as [String] in try await get(path, ["instId": id, "period": "1H"]) {
+                for case let values as [String] in result {
                     guard let first = values.first, let ts = Int64(first),
                           ts >= hour - Int64(chartHours - 1) * hourMS, ts <= hour else { continue }
                     if label == "OI", values.count >= 4, let value = Double(values[3]), value.isFinite, value >= 0 {
@@ -408,13 +473,17 @@ final class Radar {
         return result
     }
 
-    func chartSnapshot(_ id: String) -> [String: Any] {
-        guard rows[id] != nil else { return ["bars": [], "error": "Unknown contract"] }
+    func chartSnapshot(_ id: String, sinceRevision: Int? = nil) -> [String: Any] {
+        guard rows[id] != nil else { return ["bars": [], "error": "Unknown contract", "revision": -1] }
+        let chartRevision = chartRevisions[id] ?? 0
+        if sinceRevision == chartRevision {
+            return ["unchanged": true, "revision": chartRevision, "error": ""]
+        }
         let null = NSNull()
         let series = candles[id] ?? [:]
         let stats: [Int64: (oi: Double?, sell: Double?, buy: Double?)]
         do { stats = try store.chartStats(id, since: hour - Int64(chartHours - 1) * hourMS) }
-        catch { return ["bars": [], "error": "Cannot read chart cache: \(error.localizedDescription)"] }
+        catch { return ["bars": [], "error": "Cannot read chart cache: \(error.localizedDescription)", "revision": chartRevision] }
         let first = hour - Int64(chartHours - 1) * hourMS
         let seed = (1...200).compactMap { series[first - Int64($0) * hourMS]?.confirmed == true ? series[first - Int64($0) * hourMS]?.close : nil }
         var ema: Double? = seed.count == 200 ? seed.reduce(0, +) / 200 : nil
@@ -453,14 +522,23 @@ final class Radar {
                 "oi": oi as Any? ?? null, "sell": sell as Any? ?? null, "buy": buy as Any? ?? null,
             ])
         }
-        return ["bars": output, "error": ""]
+        return ["bars": output, "error": "", "revision": chartRevision]
     }
 
-    func snapshot(rocPeriod: Int, marocPeriod: Int) -> [String: Any] {
+    func snapshot(rocPeriod: Int, marocPeriod: Int, sinceRevision: Int? = nil) -> [String: Any] {
+        let error = !startupError.isEmpty ? startupError : !failedPaths.isEmpty ? "Some OKX data is unavailable; retrying." :
+            !disconnectedChannels.isEmpty ? "OKX \(disconnectedChannels.sorted()[0]) disconnected; reconnecting." : ""
         guard (1...100).contains(rocPeriod), (1...100).contains(marocPeriod) else {
             return ["rows": [], "updatedAt": NSNull(), "error": "Periods must be from 1 to 100.",
+                    "revision": revision,
                     "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                     "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent]
+        }
+        if cachedPeriods?.roc != rocPeriod || cachedPeriods?.maroc != marocPeriod {
+            cachedRows.removeAll()
+            cachedPeriods = (rocPeriod, marocPeriod)
+        } else if sinceRevision == revision {
+            return ["unchanged": true, "revision": revision, "error": error]
         }
         let null = NSNull()
         var output: [[String: Any]] = []
@@ -468,11 +546,13 @@ final class Radar {
             guard let row = rows[id], let turnover = row.turnover24hUSDT,
                   turnover >= Double(minimum24hTurnoverUSDT),
                   passesSpreadFilter(row.spreadPercent, enabled: spreadFilterEnabled, maximum: maximumSpreadPercent) else { continue }
+            if let cached = cachedRows[id] { output.append(cached); continue }
             let bars = candles[id] ?? [:]
             let (high, low) = extremes(bars, hour)
             let (upper, middle, lower) = boll(bars, hour)
             let (roc, maroc) = rocMaroc(bars, hour, rocPeriod, marocPeriod)
             let current = bars[hour], previous = bars[hour - hourMS]
+            let live = current?.confirmed == false ? current : nil
             let (oldRoc, oldMaroc) = previous?.confirmed == true ? rocMaroc(bars, hour - hourMS, rocPeriod, marocPeriod) : (nil, nil)
             let price = current?.close
             let previousEMA = ema200(id, bars)
@@ -482,9 +562,10 @@ final class Radar {
             var oiPoints = (oiHistory[id] ?? [:]).map { (hour: $0.key, oi: $0.value) }.sorted { $0.hour < $1.hour }
             let hasLiveOI = row.oiTimestamp >= Double(hour) && (row.oi ?? 0) > 0
             if hasLiveOI, let oi = row.oi { oiPoints.append((hour: hour, oi: oi)) }
-            output.append([
+            let result: [String: Any] = [
                 "instId": id, "price": price as Any? ?? null,
                 "priceChange": percentChange(price, previous?.confirmed == true ? previous?.close : nil) as Any? ?? null,
+                "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
                 "vwap14": vwap14(bars, hour) as Any? ?? null,
                 "ema200": ema as Any? ?? null, "ema200Slope": priorEMASlope as Any? ?? null,
                 "oi": row.oi as Any? ?? null, "oiBase": row.oiBase as Any? ?? null,
@@ -502,11 +583,11 @@ final class Radar {
                 "rsi12": rsi(bars, hour, 12) as Any? ?? null,
                 "rsi24": rsi(bars, hour, 24) as Any? ?? null,
                 "bollUpper": upper as Any? ?? null, "bollMiddle": middle as Any? ?? null, "bollLower": lower as Any? ?? null,
-            ])
+            ]
+            cachedRows[id] = result
+            output.append(result)
         }
-        let error = !startupError.isEmpty ? startupError : !failedPaths.isEmpty ? "Some OKX data is unavailable; retrying." :
-            !disconnectedChannels.isEmpty ? "OKX \(disconnectedChannels.sorted()[0]) disconnected; reconnecting." : ""
-        return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error,
+        return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error, "revision": revision,
                 "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent]
     }

@@ -115,4 +115,15 @@ final class IndicatorsTests: XCTestCase {
         try store.save("BTC-USDT-SWAP", Candle(hour: 0, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99))
         XCTAssertEqual(try store.load(hour: hourMS, ids: ["BTC-USDT-SWAP"]).candles["BTC-USDT-SWAP"]?[0]?.open, 99)
     }
+
+    func testCandleBatchRollsBackOnWriteFailure() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try Store(url: url)
+        try store.execute("CREATE TRIGGER reject_second BEFORE INSERT ON candles WHEN NEW.hour = \(hourMS) BEGIN SELECT RAISE(ABORT, 'rejected'); END")
+        let first = Candle(hour: 0, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99)
+        let second = Candle(hour: hourMS, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99)
+        XCTAssertThrowsError(try store.saveCandles("BTC-USDT-SWAP", [first, second]))
+        XCTAssertTrue(try store.load(hour: hourMS, ids: ["BTC-USDT-SWAP"]).candles.isEmpty)
+    }
 }
