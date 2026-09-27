@@ -17,6 +17,18 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertFalse(supportedTurnoverThreshold(29_999_999))
     }
 
+    func testSpreadFilter() {
+        let tight = spreadPercent(["bidPx": "99.925", "askPx": "100.075"])
+        let wide = spreadPercent(["bidPx": "99.9", "askPx": "100.1"])
+        XCTAssertEqual(tight!, 0.15, accuracy: 0.000001)
+        XCTAssertTrue(passesSpreadFilter(tight, enabled: true, maximum: 0.15))
+        XCTAssertFalse(passesSpreadFilter(wide, enabled: true, maximum: 0.15))
+        XCTAssertFalse(passesSpreadFilter(nil, enabled: true, maximum: 0.15))
+        XCTAssertTrue(passesSpreadFilter(nil, enabled: false, maximum: 0.15))
+        XCTAssertNil(spreadPercent(["bidPx": "0", "askPx": "100"]))
+        XCTAssertNil(spreadPercent(["bidPx": "101", "askPx": "100"]))
+    }
+
     func testHourlyIndicatorsAndMissingData() {
         let hour = Int64(200) * hourMS
         var bars: [Int64: Candle] = [:]

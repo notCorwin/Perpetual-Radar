@@ -8,6 +8,7 @@ import { Field, FieldGroup, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import { compareMarketRows, marketTrend, matchesMarketFilter, momentumScores, type SortKey } from "@/market-sort"
@@ -42,10 +43,11 @@ type MarketRow = {
   rocChange: number | null
   marocChange: number | null
 }
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; minimum24hTurnoverUSDT: number }
+type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number }
+type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number }): Promise<Snapshot>
-  postMessage(request: { minimum24hTurnoverUSDT: number }): Promise<Snapshot>
+  postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
 }
 declare global {
@@ -74,6 +76,9 @@ function App() {
   const [query, setQuery] = useState("")
   const [trapOnly, setTrapOnly] = useState(false)
   const [minimum24hTurnoverUSDT, setMinimum24hTurnoverUSDT] = useState(10_000_000)
+  const [spreadFilterEnabled, setSpreadFilterEnabled] = useState(true)
+  const [maximumSpreadPercent, setMaximumSpreadPercent] = useState(0.15)
+  const [spreadDraft, setSpreadDraft] = useState("0.15")
   const [sort, setSort] = useState<SortKey>("momentum")
   const [descending, setDescending] = useState(true)
   useEffect(() => {
@@ -85,6 +90,9 @@ function App() {
         if (stopped) return
         setRows(snapshot.rows)
         setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
+        setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
+        setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
+        if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
         setUpdatedAt(snapshot.updatedAt)
         setStatus("Live")
         setError(snapshot.error)
@@ -122,16 +130,33 @@ function App() {
     else { setSort(key); setDescending(key !== "instId") }
   }
 
-  const changeTurnoverThreshold = (value: string) => {
-    if (!value) return
-    void window.webkit.messageHandlers.radar.postMessage({ minimum24hTurnoverUSDT: Number(value) })
+  const saveSetting = (request: SettingRequest) => {
+    void window.webkit.messageHandlers.radar.postMessage(request)
       .then(snapshot => {
         setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
+        setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
+        setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
+        if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
         setRows(snapshot.rows)
         setUpdatedAt(snapshot.updatedAt)
         setError(snapshot.error)
       })
-      .catch(cause => setError(cause instanceof Error ? cause.message : "Cannot save turnover setting"))
+      .catch(cause => setError(cause instanceof Error ? cause.message : "Cannot save setting"))
+  }
+
+  const changeTurnoverThreshold = (value: string) => {
+    if (value) saveSetting({ minimum24hTurnoverUSDT: Number(value) })
+  }
+
+  const saveSpread = () => {
+    const value = Number(spreadDraft)
+    if (!spreadDraft.trim() || !Number.isFinite(value) || value < 0 || value > 100) {
+      setSpreadDraft(String(maximumSpreadPercent))
+      setError("Maximum spread must be between 0 and 100%")
+      return
+    }
+    if (value !== maximumSpreadPercent) saveSetting({ maximumSpreadPercent: value })
+    else setSpreadDraft(String(value))
   }
 
   const header = (label: string, key: SortKey, formula: string) => {
@@ -145,7 +170,7 @@ function App() {
     <main className="flex min-h-svh flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
-        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT</span>
+        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT{spreadFilterEnabled ? ` · spread ≤ ${maximumSpreadPercent}%` : ""}</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
         <Button variant={trapOnly ? "secondary" : "outline"} size="sm" aria-pressed={trapOnly} onClick={() => setTrapOnly(!trapOnly)}>Only TRAP</Button>
         <Popover>
@@ -153,7 +178,7 @@ function App() {
           <PopoverContent align="end">
             <PopoverHeader>
               <PopoverTitle>Settings</PopoverTitle>
-              <PopoverDescription>Hide swaps below the selected 24h USDT turnover.</PopoverDescription>
+              <PopoverDescription>Filter swaps by 24h USDT turnover and bid-ask spread.</PopoverDescription>
             </PopoverHeader>
             <FieldGroup>
               <Field>
@@ -163,6 +188,13 @@ function App() {
                   <ToggleGroupItem value="30000000" aria-label="30 million USDT">30M</ToggleGroupItem>
                   <ToggleGroupItem value="100000000" aria-label="100 million USDT">100M</ToggleGroupItem>
                 </ToggleGroup>
+              </Field>
+              <Field>
+                <FieldTitle id="spread-limit-label">Maximum spread (%)</FieldTitle>
+                <div className="flex items-center gap-2">
+                  <Toggle variant="outline" size="sm" pressed={spreadFilterEnabled} onPressedChange={enabled => saveSetting({ spreadFilterEnabled: enabled })} aria-label="Enable maximum spread filter">{spreadFilterEnabled ? "On" : "Off"}</Toggle>
+                  <Input id="maximum-spread" type="number" min="0" max="100" step="any" inputMode="decimal" aria-labelledby="spread-limit-label" value={spreadDraft} onChange={event => setSpreadDraft(event.target.value)} onBlur={saveSpread} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur() }} />
+                </div>
               </Field>
             </FieldGroup>
           </PopoverContent>

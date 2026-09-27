@@ -178,9 +178,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 replyHandler(nil, "Invalid 24h turnover threshold"); return
             }
         }
+        if let requested = parameters["spreadFilterEnabled"] {
+            guard let enabled = requested as? Bool, let radar else {
+                replyHandler(nil, "Invalid spread filter setting"); return
+            }
+            radar.setSpreadFilterEnabled(enabled)
+        }
+        if let requested = parameters["maximumSpreadPercent"] {
+            guard let maximum = requested as? Double, radar?.setMaximumSpreadPercent(maximum) == true else {
+                replyHandler(nil, "Maximum spread must be between 0 and 100%"); return
+            }
+        }
         if !startupError.isEmpty {
             replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError,
-                          "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000], nil)
+                          "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
+                          "spreadFilterEnabled": radar?.spreadFilterEnabled ?? true,
+                          "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15], nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9

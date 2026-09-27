@@ -4,6 +4,8 @@ private let api = "https://www.okx.com/api/v5"
 private let publicWS = "wss://ws.okx.com:8443/ws/v5/public"
 private let businessWS = "wss://ws.okx.com:8443/ws/v5/business"
 private let turnoverThresholdKey = "minimum24hTurnoverUSDT"
+private let spreadFilterEnabledKey = "spreadFilterEnabled"
+private let maximumSpreadPercentKey = "maximumSpreadPercent"
 
 func supportedTurnoverThreshold(_ value: Int) -> Bool {
     value == 10_000_000 || value == 30_000_000 || value == 100_000_000
@@ -21,11 +23,24 @@ func usdtTurnover24h(_ ticker: [String: Any]) -> Double? {
     return turnover.isFinite ? turnover : nil
 }
 
+func spreadPercent(_ ticker: [String: Any]) -> Double? {
+    guard let bid = numeric(ticker["bidPx"]), let ask = numeric(ticker["askPx"]),
+          bid > 0, ask >= bid else { return nil }
+    let spread = (ask - bid) / (bid + (ask - bid) / 2) * 100
+    return spread.isFinite ? spread : nil
+}
+
+func passesSpreadFilter(_ spread: Double?, enabled: Bool, maximum: Double) -> Bool {
+    // Keep values at the configured boundary despite binary rounding in the bid/ask calculation.
+    !enabled || (spread.map { $0 <= maximum + 1e-10 } ?? false)
+}
+
 private func millis() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private struct Market {
     let id: String
     var turnover24hUSDT: Double?
+    var spreadPercent: Double?
     var oi: Double?
     var oiTimestamp = 0.0
     var oiBase: Double?
@@ -39,6 +54,8 @@ private struct Market {
 final class Radar {
     private let store: Store
     private(set) var minimum24hTurnoverUSDT: Int
+    private(set) var spreadFilterEnabled: Bool
+    private(set) var maximumSpreadPercent: Double
     private var rows: [String: Market] = [:]
     private var candles: [String: [Int64: Candle]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
@@ -53,6 +70,9 @@ final class Radar {
     init() throws {
         let savedThreshold = UserDefaults.standard.integer(forKey: turnoverThresholdKey)
         minimum24hTurnoverUSDT = supportedTurnoverThreshold(savedThreshold) ? savedThreshold : 10_000_000
+        spreadFilterEnabled = UserDefaults.standard.object(forKey: spreadFilterEnabledKey) as? Bool ?? true
+        let savedSpread = UserDefaults.standard.object(forKey: maximumSpreadPercentKey) as? Double ?? 0.15
+        maximumSpreadPercent = savedSpread.isFinite && (0...100).contains(savedSpread) ? savedSpread : 0.15
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("PerpetualRadar", isDirectory: true)
         store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
@@ -70,6 +90,20 @@ final class Radar {
         guard supportedTurnoverThreshold(value) else { return false }
         minimum24hTurnoverUSDT = value
         UserDefaults.standard.set(value, forKey: turnoverThresholdKey)
+        touch()
+        return true
+    }
+
+    func setSpreadFilterEnabled(_ value: Bool) {
+        spreadFilterEnabled = value
+        UserDefaults.standard.set(value, forKey: spreadFilterEnabledKey)
+        touch()
+    }
+
+    func setMaximumSpreadPercent(_ value: Double) -> Bool {
+        guard value.isFinite, (0...100).contains(value) else { return false }
+        maximumSpreadPercent = value
+        UserDefaults.standard.set(value, forKey: maximumSpreadPercentKey)
         touch()
         return true
     }
@@ -128,16 +162,19 @@ final class Radar {
     }
 
     private func updateTickers(_ tickers: [Any]) throws {
-        var turnover: [String: Double] = [:]
+        var quotes: [String: (turnover: Double, spread: Double?)] = [:]
         for case let ticker as [String: Any] in tickers {
             guard let id = ticker["instId"] as? String, rows[id] != nil,
                   let value = usdtTurnover24h(ticker) else { continue }
-            turnover[id] = value
+            quotes[id] = (value, spreadPercent(ticker))
         }
-        guard !turnover.isEmpty else {
+        guard !quotes.isEmpty else {
             throw NSError(domain: "OKX", code: 4, userInfo: [NSLocalizedDescriptionKey: "No USDT swap ticker data found"])
         }
-        for id in rows.keys { rows[id]?.turnover24hUSDT = turnover[id] }
+        for id in rows.keys {
+            rows[id]?.turnover24hUSDT = quotes[id]?.turnover
+            rows[id]?.spreadPercent = quotes[id]?.spread
+        }
         touch()
     }
 
@@ -322,13 +359,15 @@ final class Radar {
     func snapshot(rocPeriod: Int, marocPeriod: Int) -> [String: Any] {
         guard (1...100).contains(rocPeriod), (1...100).contains(marocPeriod) else {
             return ["rows": [], "updatedAt": NSNull(), "error": "Periods must be from 1 to 100.",
-                    "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT]
+                    "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
+                    "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent]
         }
         let null = NSNull()
         var output: [[String: Any]] = []
         for id in rows.keys.sorted() {
             guard let row = rows[id], let turnover = row.turnover24hUSDT,
-                  turnover >= Double(minimum24hTurnoverUSDT) else { continue }
+                  turnover >= Double(minimum24hTurnoverUSDT),
+                  passesSpreadFilter(row.spreadPercent, enabled: spreadFilterEnabled, maximum: maximumSpreadPercent) else { continue }
             let bars = candles[id] ?? [:]
             let (high, low) = extremes(bars, hour)
             let (upper, middle, lower) = boll(bars, hour)
@@ -362,6 +401,7 @@ final class Radar {
         let error = !startupError.isEmpty ? startupError : !failedPaths.isEmpty ? "Some OKX data is unavailable; retrying." :
             !disconnectedChannels.isEmpty ? "OKX \(disconnectedChannels.sorted()[0]) disconnected; reconnecting." : ""
         return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error,
-                "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT]
+                "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
+                "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent]
     }
 }
