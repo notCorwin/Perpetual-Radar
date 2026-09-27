@@ -14,6 +14,7 @@ final class Store {
         // Existing Python caches may predate base_volume.
         if !columns("candles").contains("base_volume") { try execute("ALTER TABLE candles ADD COLUMN base_volume REAL") }
         if !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
+        if !columns("chart_stats").contains("oi_contracts") { try execute("ALTER TABLE chart_stats ADD COLUMN oi_contracts REAL") }
     }
 
     deinit { sqlite3_close(db) }
@@ -55,8 +56,8 @@ final class Store {
         return names
     }
 
-    func load(hour: Int64, ids: Set<String>) throws -> (candles: [String: [Int64: Candle]], oi: [String: Double], ema: [String: (Int64, Double)]) {
-        var candles: [String: [Int64: Candle]] = [:], oi: [String: Double] = [:], ema: [String: (Int64, Double)] = [:]
+    func load(hour: Int64, ids: Set<String>) throws -> (candles: [String: [Int64: Candle]], oi: [String: Double], oiHistory: [String: [Int64: Double]], ema: [String: (Int64, Double)]) {
+        var candles: [String: [Int64: Candle]] = [:], oi: [String: Double] = [:], oiHistory: [String: [Int64: Double]] = [:], ema: [String: (Int64, Double)] = [:]
         let candleStmt = try statement("SELECT inst_id,hour,high,low,close,volume,base_volume,open FROM candles WHERE hour >= ? AND hour < ?")
         defer { sqlite3_finalize(candleStmt) }
         bind([hour - Int64(candleLookback) * hourMS, hour], to: candleStmt)
@@ -73,13 +74,20 @@ final class Store {
             let id = String(cString: sqlite3_column_text(oiStmt, 0))
             if ids.contains(id) { oi[id] = sqlite3_column_double(oiStmt, 1) }
         }
+        let historyStmt = try statement("SELECT inst_id,hour,oi_contracts FROM chart_stats WHERE hour>=? AND hour<? AND oi_contracts IS NOT NULL")
+        defer { sqlite3_finalize(historyStmt) }
+        bind([hour - Int64(chartHours - 1) * hourMS, hour], to: historyStmt)
+        while sqlite3_step(historyStmt) == SQLITE_ROW {
+            let id = String(cString: sqlite3_column_text(historyStmt, 0))
+            if ids.contains(id) { oiHistory[id, default: [:]][sqlite3_column_int64(historyStmt, 1)] = sqlite3_column_double(historyStmt, 2) }
+        }
         let emaStmt = try statement("SELECT inst_id,hour,value FROM ema200")
         defer { sqlite3_finalize(emaStmt) }
         while sqlite3_step(emaStmt) == SQLITE_ROW {
             let id = String(cString: sqlite3_column_text(emaStmt, 0))
             if ids.contains(id) { ema[id] = (sqlite3_column_int64(emaStmt, 1), sqlite3_column_double(emaStmt, 2)) }
         }
-        return (candles, oi, ema)
+        return (candles, oi, oiHistory, ema)
     }
 
     func save(_ id: String, _ bar: Candle) throws {
@@ -87,8 +95,20 @@ final class Store {
         try execute("INSERT INTO candles (inst_id,hour,high,low,close,volume,base_volume,open) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET base_volume=COALESCE(excluded.base_volume,candles.base_volume),open=COALESCE(excluded.open,candles.open)", [id, bar.hour, bar.high, bar.low, bar.close, bar.quoteVolume, bar.baseVolume, bar.open])
     }
 
-    func saveChartStat(_ id: String, hour: Int64, oi: Double? = nil, sell: Double? = nil, buy: Double? = nil) throws {
-        try execute("INSERT INTO chart_stats VALUES (?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET oi=COALESCE(excluded.oi,chart_stats.oi),sell=COALESCE(excluded.sell,chart_stats.sell),buy=COALESCE(excluded.buy,chart_stats.buy)", [id, hour, oi, sell, buy])
+    func saveChartStat(_ id: String, hour: Int64, oi: Double? = nil, sell: Double? = nil, buy: Double? = nil, oiContracts: Double? = nil) throws {
+        try execute("INSERT INTO chart_stats (inst_id,hour,oi,sell,buy,oi_contracts) VALUES (?,?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET oi=COALESCE(excluded.oi,chart_stats.oi),sell=COALESCE(excluded.sell,chart_stats.sell),buy=COALESCE(excluded.buy,chart_stats.buy),oi_contracts=COALESCE(excluded.oi_contracts,chart_stats.oi_contracts)", [id, hour, oi, sell, buy, oiContracts])
+    }
+
+    func saveOIHistory(_ id: String, _ points: [Int64: Double]) throws {
+        guard !points.isEmpty else { return }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            for (hour, value) in points { try saveChartStat(id, hour: hour, oiContracts: value) }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
     }
 
     func chartStats(_ id: String, since: Int64) throws -> [Int64: (oi: Double?, sell: Double?, buy: Double?)] {

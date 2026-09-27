@@ -58,6 +58,7 @@ final class Radar {
     private(set) var maximumSpreadPercent: Double
     private var rows: [String: Market] = [:]
     private var candles: [String: [Int64: Candle]] = [:]
+    private var oiHistory: [String: [Int64: Double]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
     private var chartLiveStats: [String: (oi: Double?, sell: Double?, buy: Double?)] = [:]
     private var hour = millis() / hourMS * hourMS
@@ -144,7 +145,7 @@ final class Radar {
                 for case let item as [String: Any] in oi { updateOI(item) }
                 try store.prune(hour: hour, ids: Set(rows.keys))
                 let cached = try store.load(hour: hour, ids: Set(rows.keys))
-                candles = cached.candles; emaStates = cached.ema
+                candles = cached.candles; oiHistory = cached.oiHistory; emaStates = cached.ema
                 for (id, value) in cached.oi { rows[id]?.oiBase = value }
                 startupError = ""; touch()
                 tasks.append(Task { [weak self] in await self?.scan("/market/candles", delay: 120_000_000) })
@@ -225,7 +226,6 @@ final class Radar {
 
     private func scan(_ path: String, delay: UInt64, repeatScan: Bool = false) async {
         var ids = rows.keys.sorted()
-        if path.contains("open-interest-history") { ids = ids.filter { rows[$0]?.oiBase == nil } }
         while !Task.isCancelled {
             var failed = Set<String>()
             for id in ids {
@@ -239,10 +239,18 @@ final class Radar {
                     case "/market/candles":
                         for case let bar as [String] in result { updateCandle(id, bar, history: true) }
                     case "/rubik/stat/contracts/open-interest-history":
-                        if let item = result.compactMap({ $0 as? [String] }).first(where: { Int64($0.first ?? "") == hour - hourMS }),
-                           item.count >= 2, let base = Double(item[1]), base.isFinite, base > 0 {
+                        var fixed: [Int64: Double] = [:]
+                        for case let item as [String] in result {
+                            guard item.count >= 2, let ts = Int64(item[0]), ts % hourMS == 0,
+                                  ts >= hour - Int64(chartHours - 1) * hourMS, ts < hour,
+                                  let value = Double(item[1]), value.isFinite, value > 0 else { continue }
+                            fixed[ts] = value
+                        }
+                        if let base = fixed[hour - hourMS] {
+                            try store.saveOIHistory(id, fixed.filter { $0.key == hour - hourMS || oiHistory[id]?[$0.key] != $0.value })
+                            oiHistory[id, default: [:]].merge(fixed) { _, latest in latest }
                             rows[id]?.oiBase = base
-                            try store.execute("INSERT OR IGNORE INTO oi_base VALUES (?,?,?)", [id, hour, base])
+                            try store.execute("INSERT OR REPLACE INTO oi_base VALUES (?,?,?)", [id, hour, base])
                             touch()
                         } else { failed.insert(id) }
                     default:
@@ -322,7 +330,12 @@ final class Radar {
             chartLiveStats.removeAll()
             do { try store.prune(hour: hour, ids: Set(rows.keys)) } catch { startupError = error.localizedDescription }
             for id in rows.keys {
+                if let row = rows[id], row.oiTimestamp >= Double(hour - hourMS),
+                   row.oiTimestamp < Double(hour), let oi = row.oi, oi > 0 {
+                    oiHistory[id, default: [:]][hour - hourMS] = oi
+                }
                 rows[id]?.oiBase = nil; rows[id]?.buy = nil; rows[id]?.sell = nil; rows[id]?.takerRatio = nil
+                oiHistory[id] = oiHistory[id]?.filter { $0.key >= hour - Int64(chartHours - 1) * hourMS }
                 candles[id] = candles[id]?.filter { $0.key >= hour - Int64(candleLookback) * hourMS }
             }
             emaStates = emaStates.filter { $0.value.0 >= hour - Int64(candleLookback + 1) * hourMS && $0.value.0 < hour }
@@ -464,13 +477,19 @@ final class Radar {
             let price = current?.close
             let previousEMA = ema200(id, bars)
             let ema = previousEMA.flatMap { old in price.map { old + ($0 - old) * 2 / 201 } }
+            // Recover the last closed hour's EMA slope from its close and EMA value.
+            let priorEMASlope = previous.flatMap { bar in bar.confirmed ? previousEMA.map { (bar.close - $0) * 2 / 199 } : nil }
+            var oiPoints = (oiHistory[id] ?? [:]).map { (hour: $0.key, oi: $0.value) }.sorted { $0.hour < $1.hour }
+            let hasLiveOI = row.oiTimestamp >= Double(hour) && (row.oi ?? 0) > 0
+            if hasLiveOI, let oi = row.oi { oiPoints.append((hour: hour, oi: oi)) }
             output.append([
                 "instId": id, "price": price as Any? ?? null,
                 "priceChange": percentChange(price, previous?.confirmed == true ? previous?.close : nil) as Any? ?? null,
                 "vwap14": vwap14(bars, hour) as Any? ?? null,
-                "ema200": ema as Any? ?? null, "ema200Slope": (ema.flatMap { value in previousEMA.map { value - $0 } }) as Any? ?? null,
+                "ema200": ema as Any? ?? null, "ema200Slope": priorEMASlope as Any? ?? null,
                 "oi": row.oi as Any? ?? null, "oiBase": row.oiBase as Any? ?? null,
                 "oiLog": logChange(row.oi, row.oiBase) as Any? ?? null, "oiUsd": row.oiUsd as Any? ?? null,
+                "oiSignal": (hasLiveOI ? oiSignal(oiPoints)?.rawValue : nil) as Any? ?? null,
                 "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
                 "takerRatio": row.takerRatio as Any? ?? null,
                 "volumeLog": logChange(current?.quoteVolume, previous?.confirmed == true ? previous?.quoteVolume : nil) as Any? ?? null,

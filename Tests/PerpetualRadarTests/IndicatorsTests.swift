@@ -29,6 +29,28 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertNil(spreadPercent(["bidPx": "101", "askPx": "100"]))
     }
 
+    func testOISignalUsesPriorStableWindowAndFindsNewCycles() {
+        func signal(_ values: [Double]) -> OISignal? {
+            oiSignal(values.enumerated().map { (hour: Int64($0.offset) * hourMS, oi: $0.element) })
+        }
+        let stable = Array(repeating: 100.0, count: 8)
+        XCTAssertNil(signal(stable))
+        XCTAssertEqual(signal(stable + [100]), .stable)
+        XCTAssertEqual(signal(stable + [104]), .building)
+        XCTAssertEqual(signal(stable + [104, 110, 109.5]), .peaking)
+        XCTAssertEqual(signal(stable + [104, 110, 109.5, 103]), .unwinding)
+        XCTAssertEqual(signal(stable + [104, 110, 109.5, 103, 102, 101, 108]), .building)
+        let ended = stable + [104, 110, 109.5, 103, 102, 101, 100, 100, 100, 100]
+        XCTAssertEqual(signal(ended), .stable)
+        XCTAssertEqual(signal(ended + [104]), .building)
+        XCTAssertEqual(signal(stable + [80, 80, 80, 84]), .building)
+        XCTAssertNil(oiSignal([]))
+        XCTAssertNil(signal(stable + [0]))
+        var gap = stable.enumerated().map { (hour: Int64($0.offset) * hourMS, oi: $0.element) }
+        gap.append((hour: 10 * hourMS, oi: 104))
+        XCTAssertNil(oiSignal(gap))
+    }
+
     func testHourlyIndicatorsAndMissingData() {
         let hour = Int64(200) * hourMS
         var bars: [Int64: Candle] = [:]
@@ -60,6 +82,7 @@ final class IndicatorsTests: XCTestCase {
         try store.save("BTC-USDT-SWAP", bar)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, oi: 1_000)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, sell: 20, buy: 30)
+        try store.saveOIHistory("BTC-USDT-SWAP", [hour: 1_234])
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 94 * hourMS, oi: 500)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 95 * hourMS, oi: 400)
         try store.execute("INSERT INTO oi_base VALUES (?,?,?)", ["BTC-USDT-SWAP", hour + hourMS, 10.0])
@@ -68,6 +91,7 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertEqual(loaded.candles["BTC-USDT-SWAP"]?[hour]?.baseVolume, 2)
         XCTAssertEqual(loaded.candles["BTC-USDT-SWAP"]?[hour]?.open, 100)
         XCTAssertEqual(loaded.oi["BTC-USDT-SWAP"], 10)
+        XCTAssertEqual(loaded.oiHistory["BTC-USDT-SWAP"]?[hour], 1_234)
         let stat = try store.chartStats("BTC-USDT-SWAP", since: hour)
         XCTAssertEqual(stat[hour]?.oi, 1_000)
         XCTAssertEqual(stat[hour]?.sell, 20)

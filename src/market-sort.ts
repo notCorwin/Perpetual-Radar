@@ -7,6 +7,7 @@ export type SortableRow = {
   high48: number | null
   low48: number | null
   oiLog: number | null
+  oiSignal: "Stable" | "Building" | "Peaking" | "Unwinding" | null
   takerRatio: number | null
   volumeLog: number | null
   roc: number | null
@@ -19,11 +20,10 @@ export type SortableRow = {
   bollLower: number | null
 }
 
-export function marketTrend(row: { price: number | null; vwap14: number | null; ema200: number | null; bollMiddle: number | null; takerRatio: number | null }): "LONG" | "SHORT" | "TRAP" | null {
-  const { price, vwap14, ema200, bollMiddle, takerRatio } = row
-  if (price === null || vwap14 === null || ema200 === null || bollMiddle === null || takerRatio === null ||
-    ![price, vwap14, ema200, bollMiddle, takerRatio].every(Number.isFinite)) return null
-  const signals = [price - vwap14, price - ema200, price - bollMiddle, takerRatio]
+export function marketTrend(row: { price: number | null; vwap14: number | null; ema200: number | null; ema200Slope: number | null; bollMiddle: number | null; takerRatio: number | null; roc: number | null; maroc: number | null }): "LONG" | "SHORT" | "TRAP" | null {
+  const { price, vwap14, ema200, ema200Slope, bollMiddle, takerRatio, roc, maroc } = row
+  if ([price, vwap14, ema200, ema200Slope, bollMiddle, takerRatio, roc, maroc].some(value => value === null || !Number.isFinite(value))) return null
+  const signals = [price! - vwap14!, price! - ema200!, price! - bollMiddle!, ema200Slope!, takerRatio!, roc!, maroc!]
   return signals.every(value => value > 0) ? "LONG" : signals.every(value => value < 0) ? "SHORT" : "TRAP"
 }
 
@@ -32,9 +32,9 @@ export function matchesMarketFilter(row: { roc: number | null; maroc: number | n
   return row.trend !== "TRAP" && (row.roc === null || row.maroc === null || Math.sign(row.roc) === Math.sign(row.maroc))
 }
 
-export function momentumScores(rows: Pick<SortableRow, "roc" | "maroc" | "oiLog" | "volumeLog">[]): (number | null)[] {
-  const ready = rows.filter((row): row is { roc: number; maroc: number; oiLog: number; volumeLog: number } =>
-    row.roc !== null && row.maroc !== null && row.oiLog !== null && row.volumeLog !== null &&
+export function momentumScores(rows: Pick<SortableRow, "roc" | "maroc" | "oiLog" | "oiSignal" | "volumeLog">[]): (number | null)[] {
+  const ready = rows.filter((row): row is { roc: number; maroc: number; oiLog: number; oiSignal: NonNullable<SortableRow["oiSignal"]>; volumeLog: number } =>
+    row.roc !== null && row.maroc !== null && row.oiLog !== null && row.oiSignal !== null && row.volumeLog !== null &&
     Number.isFinite(row.roc) && Number.isFinite(row.maroc) && Number.isFinite(row.oiLog) && Number.isFinite(row.volumeLog))
   const ranks = (values: number[]) => {
     const positive = values.filter(value => value > 0).sort((a, b) => a - b)
@@ -42,13 +42,13 @@ export function momentumScores(rows: Pick<SortableRow, "roc" | "maroc" | "oiLog"
   }
   const rocRanks = ranks(ready.map(row => Math.abs(row.roc)))
   const marocRanks = ranks(ready.map(row => Math.abs(row.maroc)))
-  const oiRanks = ranks(ready.map(row => row.oiLog))
+  const oiRanks = ranks(ready.filter(row => row.oiSignal === "Building").map(row => row.oiLog))
   const volumeRanks = ranks(ready.map(row => row.volumeLog))
   return rows.map(row => {
-    if (row.roc === null || row.maroc === null || row.oiLog === null || row.volumeLog === null ||
+    if (row.roc === null || row.maroc === null || row.oiLog === null || row.oiSignal === null || row.volumeLog === null ||
       !Number.isFinite(row.roc) || !Number.isFinite(row.maroc) || !Number.isFinite(row.oiLog) || !Number.isFinite(row.volumeLog)) return null
     const priceMomentum = ((rocRanks.get(Math.abs(row.roc)) ?? 0) + (marocRanks.get(Math.abs(row.maroc)) ?? 0)) / 2
-    return (priceMomentum + (oiRanks.get(row.oiLog) ?? 0) + (volumeRanks.get(row.volumeLog) ?? 0)) / 3
+    return (priceMomentum + (row.oiSignal === "Building" ? oiRanks.get(row.oiLog) ?? 0 : 0) + (volumeRanks.get(row.volumeLog) ?? 0)) / 3
   })
 }
 

@@ -5,10 +5,10 @@ Perpetual Radar is a native macOS app for OKX's live, non-TradFi USDT perpetual 
 ## Features
 
 - Covers live USDT-settled perpetual swaps, excluding TradFi instruments and `USDC-USDT-SWAP`. **Settings** lets you choose a minimum 24-hour turnover of 10 million (default), 30 million, or 100 million USDT, plus an optional maximum bid-ask spread (enabled by default at 0.15%). Settings persist across restarts; ticker data refreshes every 30 seconds.
-- Ranks markets by a 0–100 momentum score derived from absolute ROC and MAROC ranks, positive open-interest change, and positive hourly quote-volume change. Search markets and sort by column headings.
-- Shows `LONG` or `SHORT` when price versus VWAP14, EMA200, and the Bollinger middle band agrees with taker direction. `TRAP` contracts are hidden by default; **Only TRAP** shows them, including contracts with opposite ROC and MAROC signs.
-- Displays price and previous-hour change, 48-hour high and low, open-interest and taker metrics, ROC/MAROC, RSI (6/12/24), and Bollinger bands.
-- Click a symbol for an in-app chart of the latest 48 one-hour candles, VWAP14, EMA200, Bollinger bands, volume, RSI, ROC/MAROC, open interest, and taker buy/sell volume. Chart history loads on demand and refreshes while open.
+- Ranks markets by a 0–100 momentum score derived from absolute ROC and MAROC ranks, positive open-interest change during OI `Building`, and positive hourly quote-volume change. Search markets and sort by column headings.
+- Shows `LONG` or `SHORT` when price versus VWAP14, EMA200, and the Bollinger middle band agrees with EMA200 slope, ROC, MAROC, and taker direction. OI Signal describes the position cycle and does not determine long or short direction. `TRAP` contracts are hidden by default; **Only TRAP** shows them.
+- Displays price and previous-hour change, 48-hour high and low, OI Signal (`Stable`, `Building`, `Peaking`, `Unwinding`), taker metrics, ROC/MAROC, RSI (6/12/24), and Bollinger bands.
+- Click a symbol for an in-app chart of the latest 96 one-hour candles, VWAP14, EMA200, Bollinger bands, volume, RSI, ROC/MAROC, open interest, and taker buy/sell volume. Chart history loads on demand and refreshes while open.
 - Uses nine one-hour periods for ROC and MAROC.
 - Stores completed one-hour candles, EMA200 state, hourly open-interest baselines, and chart statistics in Application Support. It reuses settled data after a restart and removes expired entries automatically.
 - Checks the GitHub autobuild release every three minutes. Use **Perpetual Radar → Check for Updates** to check immediately, then confirm to download, install, and relaunch a verified update.
