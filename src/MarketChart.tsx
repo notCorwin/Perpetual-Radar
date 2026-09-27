@@ -95,11 +95,14 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
   })
   finishBand()
   const lineStroke = (d: string, color: string, width = 1.5) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinejoin="round" />
-  const axisLabel = (x: number, y: number, label: string, color = "var(--muted-foreground)", bold = false) =>
-    <text x={x - 8} y={y} textAnchor="end" dominantBaseline="middle" fill={color} fontSize="11" fontWeight={bold ? "600" : undefined} stroke="var(--card)" strokeWidth="5" strokeLinejoin="round" paintOrder="stroke">{label}</text>
+  const lineLabel = (x: number, y: number, label: string, color = "var(--muted-foreground)", bold = false) => <g>
+    <rect x={x + 2} y={y - 8} width={label.length * 7 + 8} height="16" fill="var(--card)" />
+    <text x={x + 6} y={y} dominantBaseline="middle" fill={color} fontSize="11" fontWeight={bold ? "600" : undefined}>{label}</text>
+  </g>
+  const axisStart = (key: Panel) => key === "roc" || key === "taker" ? width / 2 + 16 : 16
   const panelKeys: Panel[] = ["price", "rsi", "roc", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>
-    <line key={`${key}-${index}`} x1={columns[key][0]} x2={columns[key][1]} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" />))
+    <line key={`${key}-${index}`} x1={axisStart(key)} x2={columns[key][1]} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" />))
   const legendStart: Record<Panel, number> = { price: 165, rsi: columns.rsi[0] + 90, roc: columns.roc[0] + 80, oi: columns.oi[0] + 160, taker: columns.taker[0] + 120 }
   const legendStep: Record<Panel, number> = { price: 205, rsi: 90, roc: 145, oi: 120, taker: 120 }
   const legend = (key: Panel, title: string, items: [string, string, string][]) => <g key={title}>
@@ -118,9 +121,9 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
     {(["oi", "taker"] as const).flatMap(key => [0, Math.floor(n / 2), n - 1].map(index => <text key={`${key}-${index}`} x={index === 0 ? columns[key][0] : index === n - 1 ? columns[key][1] : x(index, key)} y={height - 8} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)" fontSize="11">{hourLabel(bars[index].hour)}</text>))}
     {[0.25, 0.5, 0.75].map(fraction => {
       const tickY = panels.price[0] + fraction * (panels.price[1] - panels.price[0])
-      return <g key={fraction}><line x1={left} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.55" />{Math.abs(tickY - latestY) > 14 && axisLabel(left, tickY, axisPrice.format(priceScaleMax - fraction * (priceScaleMax - priceScaleMin)))}</g>
+      return <g key={fraction}><line x1={axisStart("price")} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.55" />{Math.abs(tickY - latestY) > 14 && lineLabel(axisStart("price"), tickY, axisPrice.format(priceScaleMax - fraction * (priceScaleMax - priceScaleMin)))}</g>
     })}
-    <line x1={left} x2={right} y1={latestY} y2={latestY} stroke={latestColor} strokeDasharray="2 3" opacity="0.65" />
+    <line x1={axisStart("price")} x2={right} y1={latestY} y2={latestY} stroke={latestColor} strokeDasharray="2 3" opacity="0.65" />
     {bars.map((bar, index) => {
       const up = bar.close >= bar.open
       const color = up ? "var(--positive)" : "var(--destructive)"
@@ -148,16 +151,23 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
     {lineStroke(line("maroc", "roc", -rocExtent, rocExtent), "var(--chart-3)")}
     {oiValues.length > 0 && lineStroke(line("oi", "oi", oiMin * 0.99, oiMax * 1.01), "var(--chart-2)", 2)}
     {hovered !== null && panelKeys.map(key => <line key={key} x1={x(hovered, key)} x2={x(hovered, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeDasharray="3 3" opacity="0.7" />)}
-    {([[highIndex, candleHigh, "H", -10], [lowIndex, candleLow, "L", 14]] as const).map(([index, value, label, offset]) => <text key={label} x={x(index, "price") + (index < n / 2 ? 8 : -8)} y={priceY(value) + offset} textAnchor={index < n / 2 ? "start" : "end"} fill="var(--foreground)" fontSize="11" fontWeight="600" stroke="var(--card)" strokeWidth="5" strokeLinejoin="round" paintOrder="stroke">{label} {price(value)}</text>)}
-    {axisLabel(left, latestY, price(latest.close), latestColor, true)}
+    {([[highIndex, candleHigh, "H"], [lowIndex, candleLow, "L"]] as const).map(([index, value, kind]) => {
+      const markerX = x(index, "price"), label = `${kind} ${price(value)}`
+      const start = index < n / 2 ? markerX : markerX - label.length * 7 - 16
+      return <g key={kind}>
+        <line x1={start} x2={start + label.length * 7 + 16} y1={priceY(value)} y2={priceY(value)} stroke="var(--foreground)" strokeWidth="1" />
+        {lineLabel(start, priceY(value), label, "var(--foreground)", true)}
+      </g>
+    })}
+    {lineLabel(axisStart("price"), latestY, price(latest.close), latestColor, true)}
     {legend("price", "PRICE · USDT", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", price(active.bollMiddle), "var(--chart-1)"]])}
     {legend("rsi", "RSI · 30–70", [["6", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["12", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["24", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("roc", "ROC · %", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-3)"]])}
     {legend("oi", "OPEN INTEREST · USD", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
-    {panels.rsi[1] - panels.rsi[0] >= 35 && <>{axisLabel(columns.rsi[0], panels.rsi[0], "100")}{axisLabel(columns.rsi[0], panels.rsi[1], "0")}</>}
-    {panels.roc[1] - panels.roc[0] >= 35 && <>{axisLabel(columns.roc[0], panels.roc[0], `+${rocExtent.toFixed(1)}`)}{axisLabel(columns.roc[0], panels.roc[1], `-${rocExtent.toFixed(1)}`)}</>}
-    {oiValues.length > 0 && panels.oi[1] - panels.oi[0] >= 35 && <>{axisLabel(columns.oi[0], panels.oi[0], compact(oiMax))}{axisLabel(columns.oi[0], panels.oi[1], compact(oiMin))}</>}
+    {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStart("rsi"), panels.rsi[0], "100")}{lineLabel(axisStart("rsi"), panels.rsi[1], "0")}</>}
+    {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStart("roc"), panels.roc[0], `+${rocExtent.toFixed(1)}`)}{lineLabel(axisStart("roc"), panels.roc[1], `-${rocExtent.toFixed(1)}`)}</>}
+    {oiValues.length > 0 && panels.oi[1] - panels.oi[0] >= 35 && <>{lineLabel(axisStart("oi"), panels.oi[0], compact(oiMax))}{lineLabel(axisStart("oi"), panels.oi[1], compact(oiMin))}</>}
   </>
 }
 
