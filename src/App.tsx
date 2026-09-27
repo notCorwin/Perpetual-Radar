@@ -291,15 +291,8 @@ function App() {
                   <span className={directionClass(row.priceChange)}>{formatPercent(row.priceChange)}</span>
                 </div>
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-2 text-right text-xs tabular-nums">
-                  <span className="text-muted-foreground">1h Low</span><span>{formatPrice(row.currentLow)}</span>
-                  <span className="text-muted-foreground">1h High</span><span>{formatPrice(row.currentHigh)}</span>
-                </div>
-                <div className="flex justify-center gap-1 text-xs tabular-nums">
-                  <span className="text-muted-foreground">VWAP14</span><span>{formatPrice(row.vwap14)}</span>
-                </div>
-                <div className="flex justify-center gap-1 text-xs tabular-nums">
-                  <span className="text-muted-foreground">EMA200</span>
-                  <span className={directionClass(row.ema200Slope)}>{formatPrice(row.ema200)}{row.ema200Slope !== null && <span className="sr-only"> {row.ema200Slope > 0 ? "rising" : row.ema200Slope < 0 ? "falling" : "flat"}</span>}</span>
+                  <span className="text-muted-foreground">Low</span><span>{formatPrice(row.currentLow)}</span>
+                  <span className="text-muted-foreground">High</span><span>{formatPrice(row.currentHigh)}</span>
                 </div>
               </TableCell>
               <TableCell className="text-center tabular-nums" title="Score from 0 to 100 across markets with complete data">{formatIndicator(row.momentum)}</TableCell>
