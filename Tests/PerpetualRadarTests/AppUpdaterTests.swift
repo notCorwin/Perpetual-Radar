@@ -2,17 +2,14 @@ import XCTest
 @testable import PerpetualRadar
 
 final class AppUpdaterTests: XCTestCase {
-    func testReleaseUsesOnlyTheExpectedAppAndDigest() throws {
+    func testManifestUsesOnlyTheExpectedAppAndDigest() throws {
         let revision = String(repeating: "a", count: 40)
         let digest = String(repeating: "b", count: 64)
         let data = try JSONSerialization.data(withJSONObject: [
-            "name": "autobuild",
-            "target_commitish": revision,
-            "assets": [[
-                "name": "Perpetual.Radar.app.tar",
-                "browser_download_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
-                "digest": "sha256:\(digest)",
-            ]],
+            "revision": revision,
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "digest": "sha256:\(digest)",
+            "published_at": "2026-09-27T00:00:00Z",
         ])
 
         guard case .success(let available) = AppUpdater.parse(data: data, currentRevision: String(repeating: "c", count: 40)) else {
@@ -20,21 +17,40 @@ final class AppUpdaterTests: XCTestCase {
         }
         XCTAssertEqual(available?.revision, revision)
         XCTAssertEqual(available?.expectedSHA256, digest)
+        XCTAssertEqual(available?.publishedAt, Date(timeIntervalSince1970: 1_790_467_200))
         guard case .success(let latest) = AppUpdater.parse(data: data, currentRevision: revision) else {
             return XCTFail("Expected the installed revision to be current")
         }
         XCTAssertNil(latest)
 
         let missingDigest = try JSONSerialization.data(withJSONObject: [
-            "target_commitish": revision,
-            "assets": [[
-                "name": "Perpetual.Radar.app.tar",
-                "browser_download_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
-            ]],
+            "revision": revision,
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
         ])
         guard case .failure(.invalidResponse) = AppUpdater.parse(data: missingDigest, currentRevision: nil) else {
             return XCTFail("Expected an unsigned release to be rejected")
         }
+        let wrongURL = try JSONSerialization.data(withJSONObject: [
+            "revision": revision,
+            "asset_url": "https://example.com/Perpetual.Radar.app.tar",
+            "digest": "sha256:\(digest)",
+        ])
+        guard case .failure(.invalidResponse) = AppUpdater.parse(data: wrongURL, currentRevision: nil) else {
+            return XCTFail("Expected an unexpected download location to be rejected")
+        }
+    }
+
+    func testRateLimitHonorsResponseHeaders() throws {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let url = URL(string: "https://github.com")!
+        let primary = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil,
+                                                    headerFields: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "2000"]))
+        XCTAssertEqual(AppUpdater.retryDate(for: primary, now: now), Date(timeIntervalSince1970: 2_001))
+        let secondary = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil,
+                                                      headerFields: ["Retry-After": "120"]))
+        XCTAssertEqual(AppUpdater.retryDate(for: secondary, now: now), Date(timeIntervalSince1970: 1_120))
+        let generic = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:]))
+        XCTAssertEqual(AppUpdater.retryDate(for: generic, now: now), Date(timeIntervalSince1970: 1_060))
     }
 
     func testArchiveMustContainOnlyTheExpectedApp() {

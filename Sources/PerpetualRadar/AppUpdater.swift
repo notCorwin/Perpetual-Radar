@@ -28,8 +28,8 @@ enum AppUpdateError: LocalizedError, Sendable {
     case noRelease
     case network(String)
     case invalidResponse
-    case assetMissing
     case downloadFailed(String)
+    case rateLimited(Date)
     case invalidPackage
     case installFailed(String)
     case busy
@@ -39,15 +39,15 @@ enum AppUpdateError: LocalizedError, Sendable {
         case .notPackaged:
             return "Updates require a packaged app."
         case .noRelease:
-            return "No autobuild release is available yet."
+            return "No autobuild update manifest is available yet."
         case .network(let message):
             return "Could not check for updates: \(message)"
         case .invalidResponse:
-            return "GitHub returned an invalid release response."
-        case .assetMissing:
-            return "The release has no Perpetual Radar app package."
+            return "GitHub returned an invalid update manifest."
         case .downloadFailed(let message):
             return "Could not download the update: \(message)"
+        case .rateLimited(let until):
+            return "GitHub temporarily rejected update requests. Try again after \(until.formatted(date: .abbreviated, time: .shortened))."
         case .invalidPackage:
             return "The downloaded app package is invalid."
         case .installFailed(let message):
@@ -96,14 +96,17 @@ final class AppUpdater: @unchecked Sendable {
     typealias Relauncher = @Sendable (URL, URL) throws -> Void
 
     private static let appName = "Perpetual Radar"
-    private static let assetName = "Perpetual.Radar.app.tar"
     private static let bundleIdentifier = "com.perpetualradar.macos"
     private static let executableName = "PerpetualRadar"
     private static let canonicalAssetURL = URL(
         string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar"
     )!
+    private static let manifestURL = URL(
+        string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/update.json"
+    )!
+    private static let retryAfterKey = "UpdateCheckRetryAfter"
     private static let maxAttempts = 3
-    // ponytail: cap release metadata before parsing; raise only if the API contract grows.
+    // ponytail: cap release metadata before parsing; raise only if the manifest grows.
     private static let maxReleaseMetadataBytes: Int64 = 4 * 1024 * 1024
     // ponytail: cap tar listings to bound parser memory; raise with measured package growth.
     private static let maxTarListingBytes = 4 * 1024 * 1024
@@ -112,23 +115,12 @@ final class AppUpdater: @unchecked Sendable {
     // ponytail: reject oversized tar files before invoking tar; raise with measured release size.
     private static let maxDownloadedPackageBytes: Int64 = 256 * 1024 * 1024
 
-    private struct Release: Decodable {
-        let name: String?
-        let body: String?
-        let targetCommitish: String?
+    private struct Manifest: Decodable {
+        let revision: String
+        let assetUrl: URL
+        let digest: String
         let publishedAt: Date?
-        let assets: [Asset]
     }
-
-    private struct Asset: Decodable {
-        let name: String
-        let browserDownloadUrl: URL
-        let digest: String?
-    }
-
-    static let releaseAPIURL = URL(
-        string: "https://api.github.com/repos/notCorwin/Perpetual-Radar/releases/tags/autobuild"
-    )!
     private let metadataSession: URLSession
     private let metadataDelegate: DownloadProgressDelegate
     private let downloadSession: URLSession
@@ -205,6 +197,13 @@ final class AppUpdater: @unchecked Sendable {
             }
             return
         }
+        if let until = UserDefaults.standard.object(forKey: Self.retryAfterKey) as? Date,
+           until > Date() {
+            DispatchQueue.main.async {
+                completion(.failure(AppUpdateError.rateLimited(until)))
+            }
+            return
+        }
 
         check(attempt: 1, completion: completion)
     }
@@ -214,10 +213,10 @@ final class AppUpdater: @unchecked Sendable {
         completion: @escaping CheckCompletion
     ) {
         let generation = currentOperationGeneration()
-        var request = URLRequest(url: Self.releaseAPIURL)
+        var request = URLRequest(url: Self.manifestURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 30
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.setValue("PerpetualRadar", forHTTPHeaderField: "User-Agent")
         let task = metadataSession.downloadTask(with: request) { [weak self] location, response, error in
@@ -254,6 +253,15 @@ final class AppUpdater: @unchecked Sendable {
                 )
                 return
             }
+            if let until = Self.retryDate(for: response) {
+                UserDefaults.standard.set(until, forKey: Self.retryAfterKey)
+                self.finish(
+                    completion,
+                    with: .failure(AppUpdateError.rateLimited(until)),
+                    generation: generation
+                )
+                return
+            }
             if response.statusCode == 404 {
                 self.finish(
                     completion,
@@ -285,6 +293,7 @@ final class AppUpdater: @unchecked Sendable {
             if let error = Self.httpError(from: response) {
                 result = .failure(error)
             } else {
+                UserDefaults.standard.removeObject(forKey: Self.retryAfterKey)
                 guard let location,
                       let data = try? Data(contentsOf: location),
                       Int64(data.count) <= Self.maxReleaseMetadataBytes else {
@@ -382,6 +391,10 @@ final class AppUpdater: @unchecked Sendable {
                 return
             }
             guard (200..<300).contains(response.statusCode) else {
+                if let until = Self.retryDate(for: response) {
+                    self.finish(completion, with: .failure(.rateLimited(until)), generation: generation)
+                    return
+                }
                 if self.retryIfNeeded(
                     attempt: attempt,
                     generation: generation,
@@ -460,34 +473,51 @@ final class AppUpdater: @unchecked Sendable {
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             decoder.dateDecodingStrategy = .iso8601
-            let release = try decoder.decode(Release.self, from: data)
-            guard let asset = release.assets.first(where: { $0.name == Self.assetName }) else {
-                return .failure(AppUpdateError.assetMissing)
-            }
-            guard Self.isCanonicalAssetURL(asset.browserDownloadUrl) else {
+            let manifest = try decoder.decode(Manifest.self, from: data)
+            guard manifest.revision.count == 40,
+                  let releaseRevision = revision(in: manifest.revision),
+                  releaseRevision == manifest.revision.lowercased(),
+                  Self.isCanonicalAssetURL(manifest.assetUrl) else {
                 return .failure(AppUpdateError.invalidResponse)
             }
 
-            let expectedSHA256 = try normalizedSHA256(from: asset.digest)
-            let releaseRevision = revision(in: release.targetCommitish)
-                ?? revision(in: release.body)
-                ?? "unknown"
-            if releaseRevision != "unknown", releaseRevision == revision(in: currentRevision) {
+            let expectedSHA256 = try normalizedSHA256(from: manifest.digest)
+            if releaseRevision == revision(in: currentRevision) {
                 return .success(nil)
             }
             guard let expectedSHA256 else {
                 return .failure(AppUpdateError.invalidResponse)
             }
             return .success(AppUpdate(
-                name: release.name ?? "autobuild",
+                name: "autobuild",
                 revision: releaseRevision,
-                assetURL: asset.browserDownloadUrl,
+                assetURL: manifest.assetUrl,
                 expectedSHA256: expectedSHA256,
-                publishedAt: release.publishedAt
+                publishedAt: manifest.publishedAt
             ))
         } catch {
             return .failure(AppUpdateError.invalidResponse)
         }
+    }
+
+    static func retryDate(for response: HTTPURLResponse, now: Date = Date()) -> Date? {
+        guard response.statusCode == 403 || response.statusCode == 429 else { return nil }
+        if let value = response.value(forHTTPHeaderField: "Retry-After") {
+            if let seconds = TimeInterval(value), seconds.isFinite, seconds >= 0 {
+                return now.addingTimeInterval(max(1, seconds))
+            }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+            if let date = formatter.date(from: value), date > now { return date }
+        }
+        if response.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0",
+           let value = response.value(forHTTPHeaderField: "X-RateLimit-Reset"),
+           let reset = TimeInterval(value), reset.isFinite, reset > now.timeIntervalSince1970 {
+            return Date(timeIntervalSince1970: reset + 1)
+        }
+        return now.addingTimeInterval(60)
     }
 
     private static func httpError(from response: URLResponse?) -> AppUpdateError? {

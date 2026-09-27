@@ -79,7 +79,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
 
     func menuWillOpen(_ menu: NSMenu) { renderUpdateItem() }
 
-    @objc private func checkForUpdatesNow() { checkForUpdates(silently: false) }
+    @objc private func checkForUpdatesNow() {
+        if updateState == "available", let update { presentUpdate(update) }
+        else { checkForUpdates(silently: false) }
+    }
     @objc private func checkForUpdatesAutomatically() { checkForUpdates(silently: true) }
 
     private func renderUpdateItem() {
@@ -117,8 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                     showUpdateAlert("Up to Date", "You have the latest version of Perpetual Radar.")
                 }
             case .failure(let error):
-                update = nil
-                updateState = "failed"
+                updateState = update == nil ? "failed" : "available"
                 if !silently { showUpdateAlert("Update Check Failed", error.localizedDescription) }
             }
             renderUpdateItem()
