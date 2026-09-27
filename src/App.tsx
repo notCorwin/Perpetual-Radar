@@ -12,6 +12,7 @@ import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import { compareMarketRows, marketTrend, matchesMarketFilter, momentumScores, type SortKey } from "@/market-sort"
+import { MarketChart, type ChartResponse } from "@/MarketChart"
 
 type MarketRow = {
   instId: string
@@ -49,6 +50,7 @@ type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number }): Promise<Snapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
+  postMessage(request: { chartInstId: string; loadChart?: boolean }): Promise<ChartResponse>
 }
 declare global {
   interface Window { webkit: { messageHandlers: { radar: NativeBridge } } }
@@ -81,6 +83,7 @@ function App() {
   const [spreadDraft, setSpreadDraft] = useState("0.15")
   const [sort, setSort] = useState<SortKey>("momentum")
   const [descending, setDescending] = useState(true)
+  const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => {
     let stopped = false
     let timer: number
@@ -166,6 +169,8 @@ function App() {
     </Button>
   }
 
+  if (selected) return <MarketChart instId={selected} onBack={() => setSelected(null)} />
+
   return (
     <main className="flex min-h-svh flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
@@ -246,7 +251,7 @@ function App() {
           <TableBody>
             {visible.length ? visible.map(row => <TableRow key={row.instId} className="hover:bg-accent/50">
               <TableCell className="text-center" title={row.instId}>
-                <a className="font-medium underline-offset-4 hover:underline focus-visible:underline" href={`https://www.okx.com/trade-swap/${encodeURIComponent(row.instId.toLowerCase())}`} target="_blank" rel="noopener noreferrer" aria-label={`View ${row.instId} chart on OKX (opens in a new tab)`}>{row.instId.replace(/-USDT-SWAP$/, "")}</a>
+                <Button variant="link" size="sm" className="h-auto p-0 font-medium" onClick={() => setSelected(row.instId)} aria-label={`View ${row.instId} chart`}>{row.instId.replace(/-USDT-SWAP$/, "")}</Button>
                 <div className="flex justify-center gap-2 text-xs tabular-nums">
                   <span>{formatPrice(row.price)}</span>
                   <span className={directionClass(row.priceChange)}>{formatPercent(row.priceChange)}</span>

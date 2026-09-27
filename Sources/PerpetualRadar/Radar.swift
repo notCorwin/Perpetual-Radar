@@ -59,6 +59,7 @@ final class Radar {
     private var rows: [String: Market] = [:]
     private var candles: [String: [Int64: Candle]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
+    private var chartLiveStats: [String: (oi: Double?, sell: Double?, buy: Double?)] = [:]
     private var hour = millis() / hourMS * hourMS
     private var updatedAt: Int64?
     private var failedPaths = Set<String>()
@@ -203,10 +204,10 @@ final class Radar {
     private func updateCandle(_ id: String, _ values: [String], history: Bool = false) {
         guard rows[id] != nil, let bar = Candle(values), bar.hour >= hour - Int64(candleLookback) * hourMS else { return }
         let old = candles[id]?[bar.hour]
-        guard !history || old == nil || (!old!.confirmed && bar.confirmed) || old!.baseVolume == nil else { return }
+        guard !history || old == nil || (!old!.confirmed && bar.confirmed) || old!.baseVolume == nil || old!.open == nil else { return }
         let settled: Candle
         if history, let old, old.confirmed, old.baseVolume == nil {
-            settled = Candle(hour: old.hour, high: old.high, low: old.low, close: old.close, quoteVolume: old.quoteVolume, baseVolume: bar.baseVolume)
+            settled = Candle(hour: old.hour, high: old.high, low: old.low, close: old.close, quoteVolume: old.quoteVolume, baseVolume: bar.baseVolume, open: bar.open)
         } else { settled = bar }
         candles[id, default: [:]][bar.hour] = settled
         if settled.confirmed {
@@ -218,7 +219,7 @@ final class Radar {
 
     private func historyReady(_ id: String) -> Bool {
         let series = candles[id] ?? [:]
-        return (1...candleLookback).allSatisfy { series[hour - Int64($0) * hourMS]?.confirmed == true } &&
+        return (1...candleLookback).allSatisfy { series[hour - Int64($0) * hourMS]?.confirmed == true && series[hour - Int64($0) * hourMS]?.open != nil } &&
             (1..<14).allSatisfy { series[hour - Int64($0) * hourMS]?.baseVolume != nil }
     }
 
@@ -231,7 +232,7 @@ final class Radar {
                 if Task.isCancelled { return }
                 do {
                     let parameters = path == "/market/candles"
-                        ? ["instId": id, "bar": "1H", "limit": historyReady(id) ? "1" : "201"]
+                        ? ["instId": id, "bar": "1H", "limit": historyReady(id) ? "1" : "251"]
                         : ["instId": id, "period": "1H"]
                     let result = try await get(path, parameters)
                     switch path {
@@ -318,6 +319,7 @@ final class Radar {
             let current = millis() / hourMS * hourMS
             guard current != hour else { continue }
             hour = current
+            chartLiveStats.removeAll()
             do { try store.prune(hour: hour, ids: Set(rows.keys)) } catch { startupError = error.localizedDescription }
             for id in rows.keys {
                 rows[id]?.oiBase = nil; rows[id]?.buy = nil; rows[id]?.sell = nil; rows[id]?.takerRatio = nil
@@ -354,6 +356,91 @@ final class Radar {
             catch { startupError = "Cache error: \(error.localizedDescription)" }
         }
         return state?.1
+    }
+
+    func loadChart(_ id: String) async -> [String: Any] {
+        guard rows[id] != nil else { return ["bars": [], "error": "Unknown contract"] }
+        var failures: [String] = []
+        do {
+            for case let values as [String] in try await get("/market/candles", ["instId": id, "bar": "1H", "limit": "251"]) {
+                updateCandle(id, values, history: true)
+            }
+        } catch { failures.append("candles") }
+        for (path, label) in [
+            ("/rubik/stat/contracts/open-interest-history", "OI"),
+            ("/rubik/stat/taker-volume-contract", "taker volume"),
+        ] {
+            do {
+                for case let values as [String] in try await get(path, ["instId": id, "period": "1H"]) {
+                    guard let first = values.first, let ts = Int64(first),
+                          ts >= hour - 48 * hourMS, ts <= hour else { continue }
+                    if label == "OI", values.count >= 4, let value = Double(values[3]), value.isFinite, value >= 0 {
+                        if ts == hour {
+                            var live = chartLiveStats[id] ?? (oi: nil, sell: nil, buy: nil)
+                            live.oi = value; chartLiveStats[id] = live
+                        } else { try store.saveChartStat(id, hour: ts, oi: value) }
+                    } else if label == "taker volume", values.count >= 3,
+                              let sell = Double(values[1]), let buy = Double(values[2]),
+                              sell.isFinite, buy.isFinite, sell >= 0, buy >= 0 {
+                        if ts == hour {
+                            var live = chartLiveStats[id] ?? (oi: nil, sell: nil, buy: nil)
+                            live.sell = sell; live.buy = buy; chartLiveStats[id] = live
+                        } else { try store.saveChartStat(id, hour: ts, sell: sell, buy: buy) }
+                    }
+                }
+            } catch { failures.append(label) }
+        }
+        var result = chartSnapshot(id)
+        if !failures.isEmpty { result["error"] = "Some chart data is unavailable: \(failures.joined(separator: ", "))." }
+        return result
+    }
+
+    func chartSnapshot(_ id: String) -> [String: Any] {
+        guard rows[id] != nil else { return ["bars": [], "error": "Unknown contract"] }
+        let null = NSNull()
+        let series = candles[id] ?? [:]
+        let stats: [Int64: (oi: Double?, sell: Double?, buy: Double?)]
+        do { stats = try store.chartStats(id, since: hour - 47 * hourMS) }
+        catch { return ["bars": [], "error": "Cannot read chart cache: \(error.localizedDescription)"] }
+        let first = hour - 47 * hourMS
+        let seed = (1...200).compactMap { series[first - Int64($0) * hourMS]?.confirmed == true ? series[first - Int64($0) * hourMS]?.close : nil }
+        var ema: Double? = seed.count == 200 ? seed.reduce(0, +) / 200 : nil
+        var chartEMA: [Int64: Double] = [:]
+        if let previous = ema200(id, series) {
+            let alpha = 2.0 / 201.0
+            let last = series[hour] == nil ? hour - hourMS : hour
+            var value = series[hour].map { previous + ($0.close - previous) * alpha } ?? previous
+            for ts in stride(from: last, through: first, by: -Int(hourMS)) {
+                guard let bar = series[ts] else { break }
+                chartEMA[ts] = value
+                value = (value - bar.close * alpha) / (1 - alpha)
+            }
+        }
+        var output: [[String: Any]] = []
+        for ts in stride(from: first, through: hour, by: Int(hourMS)) {
+            guard let bar = series[ts] else { ema = nil; continue }
+            ema = chartEMA[ts] ?? ema.map { $0 + (bar.close - $0) * 2 / 201 }
+            guard let open = bar.open else { continue }
+            let (roc, maroc) = rocMaroc(series, ts, 9, 9)
+            let (upper, middle, lower) = boll(series, ts)
+            let stat = stats[ts]
+            let live = chartLiveStats[id]
+            let oi = ts == hour ? rows[id]?.oiUsd ?? live?.oi : stat?.oi
+            let sell = ts == hour ? rows[id]?.sell ?? live?.sell : stat?.sell
+            let buy = ts == hour ? rows[id]?.buy ?? live?.buy : stat?.buy
+            output.append([
+                "hour": ts, "open": open, "high": bar.high, "low": bar.low, "close": bar.close,
+                "volume": bar.quoteVolume, "confirmed": bar.confirmed,
+                "vwap": vwap14(series, ts) as Any? ?? null, "ema": ema as Any? ?? null,
+                "bollUpper": upper as Any? ?? null, "bollMiddle": middle as Any? ?? null, "bollLower": lower as Any? ?? null,
+                "roc": roc as Any? ?? null, "maroc": maroc as Any? ?? null,
+                "rsi6": rsi(series, ts, 6) as Any? ?? null,
+                "rsi12": rsi(series, ts, 12) as Any? ?? null,
+                "rsi24": rsi(series, ts, 24) as Any? ?? null,
+                "oi": oi as Any? ?? null, "sell": sell as Any? ?? null, "buy": buy as Any? ?? null,
+            ])
+        }
+        return ["bars": output, "error": ""]
     }
 
     func snapshot(rocPeriod: Int, marocPeriod: Int) -> [String: Any] {

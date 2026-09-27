@@ -52,15 +52,38 @@ final class IndicatorsTests: XCTestCase {
         let hour: Int64 = 200 * hourMS
         let values = [String(hour), "100", "110", "90", "100", "10", "2", "200", "1"]
         let bar = try XCTUnwrap(Candle(values))
+        XCTAssertEqual(bar.open, 100)
         XCTAssertNil(Candle([String(hour), "100", "110", "90", "120", "10", "2", "200", "1"]))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }
         let store = try Store(url: url)
         try store.save("BTC-USDT-SWAP", bar)
+        try store.saveChartStat("BTC-USDT-SWAP", hour: hour, oi: 1_000)
+        try store.saveChartStat("BTC-USDT-SWAP", hour: hour, sell: 20, buy: 30)
         try store.execute("INSERT INTO oi_base VALUES (?,?,?)", ["BTC-USDT-SWAP", hour + hourMS, 10.0])
         try store.prune(hour: hour + hourMS, ids: ["BTC-USDT-SWAP"])
         let loaded = try store.load(hour: hour + hourMS, ids: ["BTC-USDT-SWAP"])
         XCTAssertEqual(loaded.candles["BTC-USDT-SWAP"]?[hour]?.baseVolume, 2)
+        XCTAssertEqual(loaded.candles["BTC-USDT-SWAP"]?[hour]?.open, 100)
         XCTAssertEqual(loaded.oi["BTC-USDT-SWAP"], 10)
+        let stat = try store.chartStats("BTC-USDT-SWAP", since: hour)
+        XCTAssertEqual(stat[hour]?.oi, 1_000)
+        XCTAssertEqual(stat[hour]?.sell, 20)
+        XCTAssertEqual(stat[hour]?.buy, 30)
+    }
+
+    func testCachedCandleBackfillsOpenWithoutLosingHistory() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let old = try Store(url: url)
+            try old.execute("INSERT INTO candles (inst_id,hour,high,low,close,volume,base_volume) VALUES (?,?,?,?,?,?,?)", ["BTC-USDT-SWAP", Int64(0), 110.0, 90.0, 100.0, 200.0, 2.0])
+        }
+        let store = try Store(url: url)
+        let cached = try store.load(hour: hourMS, ids: ["BTC-USDT-SWAP"])
+        XCTAssertEqual(cached.candles["BTC-USDT-SWAP"]?[0]?.close, 100)
+        XCTAssertNil(cached.candles["BTC-USDT-SWAP"]?[0]?.open)
+        try store.save("BTC-USDT-SWAP", Candle(hour: 0, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99))
+        XCTAssertEqual(try store.load(hour: hourMS, ids: ["BTC-USDT-SWAP"]).candles["BTC-USDT-SWAP"]?[0]?.open, 99)
     }
 }

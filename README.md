@@ -8,8 +8,9 @@ Perpetual Radar is a native macOS app for OKX's live, non-TradFi USDT perpetual 
 - Ranks markets by a 0–100 momentum score derived from absolute ROC and MAROC ranks, positive open-interest change, and positive hourly quote-volume change. Search markets and sort by column headings.
 - Shows `LONG` or `SHORT` when price versus VWAP14, EMA200, and the Bollinger middle band agrees with taker direction. `TRAP` contracts are hidden by default; **Only TRAP** shows them, including contracts with opposite ROC and MAROC signs.
 - Displays price and previous-hour change, 48-hour high and low, open-interest and taker metrics, ROC/MAROC, RSI (6/12/24), and Bollinger bands.
+- Click a symbol for an in-app chart of the latest 48 one-hour candles, VWAP14, EMA200, Bollinger bands, volume, RSI, ROC/MAROC, open interest, and taker buy/sell volume. Chart history loads on demand and refreshes while open.
 - Uses nine one-hour periods for ROC and MAROC.
-- Stores completed one-hour candles, EMA200 state, and hourly open-interest baselines in Application Support. It reuses settled data after a restart and removes expired entries automatically.
+- Stores completed one-hour candles, EMA200 state, hourly open-interest baselines, and chart statistics in Application Support. It reuses settled data after a restart and removes expired entries automatically.
 - Checks the GitHub autobuild release every three minutes. Use **Perpetual Radar → Check for Updates** to check immediately, then confirm to download, install, and relaunch a verified update.
 
 The list hides contracts whose available ROC and MAROC have opposite signs and contracts classified as `TRAP`, unless **Only TRAP** is selected. New markets and indicators appear as OKX history loads. Missing values display as `—`. The collector reconnects WebSocket subscriptions and retries failed history requests.
@@ -27,7 +28,7 @@ npm run app
 open ".build/app/Perpetual Radar.app"
 ```
 
-`npm run app` compiles the dashboard and Swift executable, then creates an ad hoc signed `.app` bundle. The first launch loads one-hour history across eligible contracts, so some indicators take time to appear. Click a symbol to open its OKX chart in the default browser. The app stores its SQLite cache at `~/Library/Application Support/PerpetualRadar/radar.sqlite3`.
+`npm run app` compiles the dashboard and Swift executable, then creates an ad hoc signed `.app` bundle. The first launch loads one-hour history across eligible contracts, so some indicators take time to appear. Click a symbol to open its chart in the app. The app stores its SQLite cache at `~/Library/Application Support/PerpetualRadar/radar.sqlite3`.
 
 Pushes to `main` build and publish `Perpetual.Radar.app.tar` as the GitHub `autobuild` release. The updater uses the release's SHA-256 digest and the bundle's commit revision to verify the package.
 

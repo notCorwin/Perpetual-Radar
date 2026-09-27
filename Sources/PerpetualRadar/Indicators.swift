@@ -1,10 +1,11 @@
 import Foundation
 
 let hourMS: Int64 = 3_600_000
-let candleLookback = 200
+let candleLookback = 250
 
 struct Candle {
     let hour: Int64
+    let open: Double?
     let high: Double
     let low: Double
     let close: Double
@@ -14,17 +15,18 @@ struct Candle {
 
     init?(_ values: [String]) {
         guard values.count >= 9, let hour = Int64(values[0]), hour % hourMS == 0,
+              let open = Double(values[1]),
               let high = Double(values[2]), let low = Double(values[3]),
               let close = Double(values[4]), let base = Double(values[6]),
               let quote = Double(values[7]), ["0", "1"].contains(values[8]),
               high.isFinite, low.isFinite, close.isFinite, base.isFinite, quote.isFinite,
-              low > 0, high >= low, (low...high).contains(close), base >= 0, quote >= 0 else { return nil }
-        self.hour = hour; self.high = high; self.low = low; self.close = close
+              low > 0, high >= low, (low...high).contains(open), (low...high).contains(close), base >= 0, quote >= 0 else { return nil }
+        self.hour = hour; self.open = open; self.high = high; self.low = low; self.close = close
         confirmed = values[8] == "1"; quoteVolume = quote; baseVolume = base
     }
 
-    init(hour: Int64, high: Double, low: Double, close: Double, quoteVolume: Double, baseVolume: Double?) {
-        self.hour = hour; self.high = high; self.low = low; self.close = close
+    init(hour: Int64, high: Double, low: Double, close: Double, quoteVolume: Double, baseVolume: Double?, open: Double? = nil) {
+        self.hour = hour; self.open = open; self.high = high; self.low = low; self.close = close
         confirmed = true; self.quoteVolume = quoteVolume; self.baseVolume = baseVolume
     }
 }

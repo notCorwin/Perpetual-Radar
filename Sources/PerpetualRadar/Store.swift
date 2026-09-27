@@ -7,11 +7,13 @@ final class Store {
     init(url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
-        try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, PRIMARY KEY(inst_id,hour))")
+        try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, open REAL, PRIMARY KEY(inst_id,hour))")
         try execute("CREATE TABLE IF NOT EXISTS oi_base (inst_id TEXT, hour INTEGER, value REAL, PRIMARY KEY(inst_id,hour))")
         try execute("CREATE TABLE IF NOT EXISTS ema200 (inst_id TEXT PRIMARY KEY, hour INTEGER, value REAL)")
+        try execute("CREATE TABLE IF NOT EXISTS chart_stats (inst_id TEXT, hour INTEGER, oi REAL, sell REAL, buy REAL, PRIMARY KEY(inst_id,hour))")
         // Existing Python caches may predate base_volume.
         if !columns("candles").contains("base_volume") { try execute("ALTER TABLE candles ADD COLUMN base_volume REAL") }
+        if !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
     }
 
     deinit { sqlite3_close(db) }
@@ -55,14 +57,14 @@ final class Store {
 
     func load(hour: Int64, ids: Set<String>) throws -> (candles: [String: [Int64: Candle]], oi: [String: Double], ema: [String: (Int64, Double)]) {
         var candles: [String: [Int64: Candle]] = [:], oi: [String: Double] = [:], ema: [String: (Int64, Double)] = [:]
-        let candleStmt = try statement("SELECT inst_id,hour,high,low,close,volume,base_volume FROM candles WHERE hour >= ? AND hour < ?")
+        let candleStmt = try statement("SELECT inst_id,hour,high,low,close,volume,base_volume,open FROM candles WHERE hour >= ? AND hour < ?")
         defer { sqlite3_finalize(candleStmt) }
         bind([hour - Int64(candleLookback) * hourMS, hour], to: candleStmt)
         while sqlite3_step(candleStmt) == SQLITE_ROW {
             let id = String(cString: sqlite3_column_text(candleStmt, 0))
             guard ids.contains(id) else { continue }
             let ts = sqlite3_column_int64(candleStmt, 1)
-            candles[id, default: [:]][ts] = Candle(hour: ts, high: sqlite3_column_double(candleStmt, 2), low: sqlite3_column_double(candleStmt, 3), close: sqlite3_column_double(candleStmt, 4), quoteVolume: sqlite3_column_double(candleStmt, 5), baseVolume: sqlite3_column_type(candleStmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(candleStmt, 6))
+            candles[id, default: [:]][ts] = Candle(hour: ts, high: sqlite3_column_double(candleStmt, 2), low: sqlite3_column_double(candleStmt, 3), close: sqlite3_column_double(candleStmt, 4), quoteVolume: sqlite3_column_double(candleStmt, 5), baseVolume: sqlite3_column_type(candleStmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(candleStmt, 6), open: sqlite3_column_type(candleStmt, 7) == SQLITE_NULL ? nil : sqlite3_column_double(candleStmt, 7))
         }
         let oiStmt = try statement("SELECT inst_id,value FROM oi_base WHERE hour = ?")
         defer { sqlite3_finalize(oiStmt) }
@@ -82,12 +84,31 @@ final class Store {
 
     func save(_ id: String, _ bar: Candle) throws {
         guard bar.confirmed else { return }
-        try execute("INSERT INTO candles VALUES (?,?,?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET base_volume=COALESCE(candles.base_volume,excluded.base_volume)", [id, bar.hour, bar.high, bar.low, bar.close, bar.quoteVolume, bar.baseVolume])
+        try execute("INSERT INTO candles (inst_id,hour,high,low,close,volume,base_volume,open) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET base_volume=COALESCE(excluded.base_volume,candles.base_volume),open=COALESCE(excluded.open,candles.open)", [id, bar.hour, bar.high, bar.low, bar.close, bar.quoteVolume, bar.baseVolume, bar.open])
+    }
+
+    func saveChartStat(_ id: String, hour: Int64, oi: Double? = nil, sell: Double? = nil, buy: Double? = nil) throws {
+        try execute("INSERT INTO chart_stats VALUES (?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET oi=COALESCE(excluded.oi,chart_stats.oi),sell=COALESCE(excluded.sell,chart_stats.sell),buy=COALESCE(excluded.buy,chart_stats.buy)", [id, hour, oi, sell, buy])
+    }
+
+    func chartStats(_ id: String, since: Int64) throws -> [Int64: (oi: Double?, sell: Double?, buy: Double?)] {
+        let stmt = try statement("SELECT hour,oi,sell,buy FROM chart_stats WHERE inst_id=? AND hour>=?")
+        defer { sqlite3_finalize(stmt) }
+        bind([id, since], to: stmt)
+        var result: [Int64: (oi: Double?, sell: Double?, buy: Double?)] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result[sqlite3_column_int64(stmt, 0)] = (
+                sqlite3_column_type(stmt, 1) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 1),
+                sqlite3_column_type(stmt, 2) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 2),
+                sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 3))
+        }
+        return result
     }
 
     func prune(hour: Int64, ids: Set<String>) throws {
         let cutoff = hour - Int64(candleLookback) * hourMS
         try execute("DELETE FROM candles WHERE hour < ?", [cutoff])
+        try execute("DELETE FROM chart_stats WHERE hour < ?", [hour - 48 * hourMS])
         try execute("DELETE FROM oi_base WHERE hour != ?", [hour])
         try execute("DELETE FROM ema200 WHERE hour < ? OR hour >= ?", [cutoff - hourMS, hour])
         let stmt = try statement("SELECT inst_id FROM ema200")

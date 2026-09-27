@@ -173,6 +173,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             replyHandler(["ok": true], nil)
             return
         }
+        if let id = parameters["chartInstId"] as? String {
+            guard let radar else { replyHandler(["bars": [], "error": startupError], nil); return }
+            if parameters["loadChart"] as? Bool == true {
+                Task { replyHandler(await radar.loadChart(id), nil) }
+            } else { replyHandler(radar.chartSnapshot(id), nil) }
+            return
+        }
         if let requested = parameters["minimum24hTurnoverUSDT"] {
             guard let threshold = requested as? Int, radar?.setMinimum24hTurnoverUSDT(threshold) == true else {
                 replyHandler(nil, "Invalid 24h turnover threshold"); return
