@@ -12,13 +12,14 @@ type Bar = {
 export type ChartResponse = { bars: Bar[]; error: string; revision: number }
 export type ChartPollResponse = ChartResponse | { unchanged: true; error: string; revision: number }
 
-const left = 16
 const compact = (value: number | null) => value === null ? "—" : new Intl.NumberFormat("en-US", { maximumSignificantDigits: 5, notation: "compact" }).format(value)
 const price = (value: number | null) => value === null ? "—" : new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 }).format(value)
 const time = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
 const hourLabel = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", hour12: false })
 type Panel = "price" | "rsi" | "roc" | "oi" | "taker"
-const chartLayout = (width: number, height: number) => {
+const chartLayout = (width: number, height: number, bars: Bar[]) => {
+  const candleHigh = Math.max(...bars.map(bar => bar.high)), candleLow = Math.min(...bars.map(bar => bar.low))
+  const left = Math.max(80, price(candleHigh).length * 7 + 16, price(candleLow).length * 7 + 16)
   const right = width - 16, middle = width / 2
   const plotHeight = Math.max(1, height - 32 - 22 - 72)
   const priceBottom = 32 + plotHeight * 0.55
@@ -29,21 +30,22 @@ const chartLayout = (width: number, height: number) => {
     oi: [secondRow, secondRow + lowerHeight], taker: [secondRow, secondRow + lowerHeight],
   }
   const columns: Record<Panel, readonly [number, number]> = {
-    price: [left, right], rsi: [left, middle - 16], roc: [middle + 16, right],
-    oi: [left, middle - 16], taker: [middle + 16, right],
+    price: [left, right], rsi: [left, middle - 16], roc: [middle + 72, right],
+    oi: [left, middle - 16], taker: [middle + 72, right],
   }
-  return { panels, columns, right }
+  return { panels, columns, left, right, candleHigh, candleLow }
 }
 
 function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number | null; width: number; height: number }) {
   const n = bars.length
   const active = bars[hovered ?? n - 1]
-  const { panels, columns, right } = chartLayout(width, height)
+  const { panels, columns, left, right, candleHigh, candleLow } = chartLayout(width, height, bars)
   const x = (index: number, panel: Panel) => columns[panel][0] + (index + 0.5) * (columns[panel][1] - columns[panel][0]) / n
   const barWidth = Math.max(5, Math.min(14, (right - left) / n * 0.75))
   const takerBarWidth = Math.max(2, Math.min(9, (columns.taker[1] - columns.taker[0]) / n * 0.7))
   const priceValues = bars.flatMap(bar => [bar.low, bar.high, bar.vwap, bar.ema, bar.bollUpper, bar.bollLower].filter((value): value is number => value !== null))
   const priceMin = Math.min(...priceValues), priceMax = Math.max(...priceValues)
+  const highIndex = bars.findIndex(bar => bar.high === candleHigh), lowIndex = bars.findIndex(bar => bar.low === candleLow)
   const axisPrice = new Intl.NumberFormat("en-US", { maximumFractionDigits: Math.min(12, Math.max(2, Math.ceil(-Math.log10((priceMax - priceMin) / 4 || 1)))) })
   const rocValues = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
   const rocExtent = Math.max(0.1, ...rocValues.map(Math.abs)) * 1.15
@@ -52,7 +54,8 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
   const maxTaker = Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0)))
   const scale = (value: number, min: number, max: number, panel: readonly [number, number]) =>
     panel[1] - (value - min) / (max - min || 1) * (panel[1] - panel[0])
-  const priceY = (value: number) => scale(value, priceMin - (priceMax - priceMin) * 0.05, priceMax + (priceMax - priceMin) * 0.05, panels.price)
+  const priceScaleMin = priceMin - (priceMax - priceMin) * 0.05, priceScaleMax = priceMax + (priceMax - priceMin) * 0.05
+  const priceY = (value: number) => scale(value, priceScaleMin, priceScaleMax, panels.price)
   const latest = bars[n - 1]
   const latestY = priceY(latest.close)
   const latestColor = latest.close >= latest.open ? "var(--positive)" : "var(--destructive)"
@@ -93,7 +96,7 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
   finishBand()
   const lineStroke = (d: string, color: string, width = 1.5) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinejoin="round" />
   const axisLabel = (x: number, y: number, label: string, color = "var(--muted-foreground)", bold = false) =>
-    <text x={x - 4} y={y} textAnchor="end" dominantBaseline="middle" fill={color} fontSize="11" fontWeight={bold ? "600" : undefined} stroke="var(--card)" strokeWidth="5" strokeLinejoin="round" paintOrder="stroke">{label}</text>
+    <text x={x - 8} y={y} textAnchor="end" dominantBaseline="middle" fill={color} fontSize="11" fontWeight={bold ? "600" : undefined} stroke="var(--card)" strokeWidth="5" strokeLinejoin="round" paintOrder="stroke">{label}</text>
   const panelKeys: Panel[] = ["price", "rsi", "roc", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>
     <line key={`${key}-${index}`} x1={columns[key][0]} x2={columns[key][1]} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" />))
@@ -115,7 +118,7 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
     {(["oi", "taker"] as const).flatMap(key => [0, Math.floor(n / 2), n - 1].map(index => <text key={`${key}-${index}`} x={index === 0 ? columns[key][0] : index === n - 1 ? columns[key][1] : x(index, key)} y={height - 8} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)" fontSize="11">{hourLabel(bars[index].hour)}</text>))}
     {[0.25, 0.5, 0.75].map(fraction => {
       const tickY = panels.price[0] + fraction * (panels.price[1] - panels.price[0])
-      return <g key={fraction}><line x1={left} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.55" />{Math.abs(tickY - latestY) > 14 && axisLabel(right, tickY, axisPrice.format(priceMax - fraction * (priceMax - priceMin)))}</g>
+      return <g key={fraction}><line x1={left} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.55" />{Math.abs(tickY - latestY) > 14 && axisLabel(left, tickY, axisPrice.format(priceScaleMax - fraction * (priceScaleMax - priceScaleMin)))}</g>
     })}
     <line x1={left} x2={right} y1={latestY} y2={latestY} stroke={latestColor} strokeDasharray="2 3" opacity="0.65" />
     {bars.map((bar, index) => {
@@ -145,15 +148,16 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
     {lineStroke(line("maroc", "roc", -rocExtent, rocExtent), "var(--chart-3)")}
     {oiValues.length > 0 && lineStroke(line("oi", "oi", oiMin * 0.99, oiMax * 1.01), "var(--chart-2)", 2)}
     {hovered !== null && panelKeys.map(key => <line key={key} x1={x(hovered, key)} x2={x(hovered, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeDasharray="3 3" opacity="0.7" />)}
-    {axisLabel(right, latestY, price(latest.close), latestColor, true)}
+    {([[highIndex, candleHigh, "H", -10], [lowIndex, candleLow, "L", 14]] as const).map(([index, value, label, offset]) => <text key={label} x={x(index, "price") + (index < n / 2 ? 8 : -8)} y={priceY(value) + offset} textAnchor={index < n / 2 ? "start" : "end"} fill="var(--foreground)" fontSize="11" fontWeight="600" stroke="var(--card)" strokeWidth="5" strokeLinejoin="round" paintOrder="stroke">{label} {price(value)}</text>)}
+    {axisLabel(left, latestY, price(latest.close), latestColor, true)}
     {legend("price", "PRICE · USDT", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", price(active.bollMiddle), "var(--chart-1)"]])}
     {legend("rsi", "RSI · 30–70", [["6", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["12", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["24", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("roc", "ROC · %", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-3)"]])}
     {legend("oi", "OPEN INTEREST · USD", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
-    {panels.rsi[1] - panels.rsi[0] >= 35 && <>{axisLabel(columns.rsi[1], panels.rsi[0], "100")}{axisLabel(columns.rsi[1], panels.rsi[1], "0")}</>}
-    {panels.roc[1] - panels.roc[0] >= 35 && <>{axisLabel(columns.roc[1], panels.roc[0], `+${rocExtent.toFixed(1)}`)}{axisLabel(columns.roc[1], panels.roc[1], `-${rocExtent.toFixed(1)}`)}</>}
-    {oiValues.length > 0 && panels.oi[1] - panels.oi[0] >= 35 && <>{axisLabel(columns.oi[1], panels.oi[0], compact(oiMax))}{axisLabel(columns.oi[1], panels.oi[1], compact(oiMin))}</>}
+    {panels.rsi[1] - panels.rsi[0] >= 35 && <>{axisLabel(columns.rsi[0], panels.rsi[0], "100")}{axisLabel(columns.rsi[0], panels.rsi[1], "0")}</>}
+    {panels.roc[1] - panels.roc[0] >= 35 && <>{axisLabel(columns.roc[0], panels.roc[0], `+${rocExtent.toFixed(1)}`)}{axisLabel(columns.roc[0], panels.roc[1], `-${rocExtent.toFixed(1)}`)}</>}
+    {oiValues.length > 0 && panels.oi[1] - panels.oi[0] >= 35 && <>{axisLabel(columns.oi[0], panels.oi[0], compact(oiMax))}{axisLabel(columns.oi[0], panels.oi[1], compact(oiMin))}</>}
   </>
 }
 
@@ -230,7 +234,7 @@ export function MarketChart({ instId, onBack }: { instId: string; onBack: () => 
         }} onPointerMove={event => {
           const rect = event.currentTarget.getBoundingClientRect()
           const svgX = event.clientX - rect.left, svgY = event.clientY - rect.top
-          const { panels, columns } = chartLayout(plotSize.width, plotSize.height)
+          const { panels, columns } = chartLayout(plotSize.width, plotSize.height, bars)
           const panel: Panel = svgY < panels.price[1] ? "price" : svgY < panels.oi[0]
             ? svgX < plotSize.width / 2 ? "rsi" : "roc"
             : svgX < plotSize.width / 2 ? "oi" : "taker"

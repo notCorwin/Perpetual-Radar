@@ -80,6 +80,7 @@ const math = (formula: string) => {
 }
 function App() {
   const revision = useRef(-1)
+  const requestedFitWidth = useRef(0)
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
@@ -134,12 +135,16 @@ function App() {
       const width = table.scrollWidth
       const available = container.clientWidth
       if (!width || !available) return
+      if (width > available + 1 && width !== requestedFitWidth.current) {
+        requestedFitWidth.current = width
+        void window.webkit.messageHandlers.radar.postMessage({ fitWidth: Math.ceil(width) }).catch(() => {})
+      }
       table.style.width = `${Math.max(width, available)}px`
       const target = width > available ? available - 1 : available
       const zoom = Math.min(1, target / width)
       table.style.zoom = String(zoom)
       const rendered = table.getBoundingClientRect().width
-      if (rendered > target) table.style.zoom = String(zoom * target / rendered)
+      if (Math.abs(rendered - target) > 1) table.style.zoom = String(zoom * target / rendered)
     }
     window.addEventListener("resize", fit)
     fit()
