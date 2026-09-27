@@ -373,7 +373,7 @@ final class Radar {
             do {
                 for case let values as [String] in try await get(path, ["instId": id, "period": "1H"]) {
                     guard let first = values.first, let ts = Int64(first),
-                          ts >= hour - 48 * hourMS, ts <= hour else { continue }
+                          ts >= hour - Int64(chartHours - 1) * hourMS, ts <= hour else { continue }
                     if label == "OI", values.count >= 4, let value = Double(values[3]), value.isFinite, value >= 0 {
                         if ts == hour {
                             var live = chartLiveStats[id] ?? (oi: nil, sell: nil, buy: nil)
@@ -400,9 +400,9 @@ final class Radar {
         let null = NSNull()
         let series = candles[id] ?? [:]
         let stats: [Int64: (oi: Double?, sell: Double?, buy: Double?)]
-        do { stats = try store.chartStats(id, since: hour - 47 * hourMS) }
+        do { stats = try store.chartStats(id, since: hour - Int64(chartHours - 1) * hourMS) }
         catch { return ["bars": [], "error": "Cannot read chart cache: \(error.localizedDescription)"] }
-        let first = hour - 47 * hourMS
+        let first = hour - Int64(chartHours - 1) * hourMS
         let seed = (1...200).compactMap { series[first - Int64($0) * hourMS]?.confirmed == true ? series[first - Int64($0) * hourMS]?.close : nil }
         var ema: Double? = seed.count == 200 ? seed.reduce(0, +) / 200 : nil
         var chartEMA: [Int64: Double] = [:]

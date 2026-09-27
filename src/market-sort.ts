@@ -1,4 +1,4 @@
-export type SortKey = "instId" | "momentum" | "high48" | "low48" | "oiLog" | "takerRatio" | "volumeLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "bollUpper" | "bollMiddle" | "bollLower"
+export type SortKey = "instId" | "momentum" | "high48" | "low48" | "takerRatio" | "volumeLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "bollUpper" | "bollMiddle" | "bollLower"
 
 export type SortableRow = {
   instId: string

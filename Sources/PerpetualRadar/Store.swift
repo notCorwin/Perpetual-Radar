@@ -108,7 +108,7 @@ final class Store {
     func prune(hour: Int64, ids: Set<String>) throws {
         let cutoff = hour - Int64(candleLookback) * hourMS
         try execute("DELETE FROM candles WHERE hour < ?", [cutoff])
-        try execute("DELETE FROM chart_stats WHERE hour < ?", [hour - 48 * hourMS])
+        try execute("DELETE FROM chart_stats WHERE hour < ?", [hour - Int64(chartHours - 1) * hourMS])
         try execute("DELETE FROM oi_base WHERE hour != ?", [hour])
         try execute("DELETE FROM ema200 WHERE hour < ? OR hour >= ?", [cutoff - hourMS, hour])
         let stmt = try statement("SELECT inst_id FROM ema200")

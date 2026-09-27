@@ -227,7 +227,6 @@ function App() {
                   {header("48h low", "low48", String.raw`\operatorname{Low}_{48}=\min(L_{t-48},\ldots,L_{t-1})`)}
                 </div>
               </TableHead>
-              <TableHead className="text-center" aria-sort={sort === "oiLog" ? descending ? "descending" : "ascending" : "none"}>{header("OI log change", "oiLog", String.raw`\ln\left(\frac{OI_t}{OI_{t-1}}\right)`)}</TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
               <TableHead className="text-center" aria-sort={sort === "volumeLog" ? descending ? "descending" : "ascending" : "none"}>{header("Volume Log Change", "volumeLog", String.raw`\ln\left(\frac{V_t}{V_{t-1}}\right)`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
@@ -274,7 +273,6 @@ function App() {
                   <span className={directionClass(row.low48Diff)}><span className="sr-only">current price versus low </span>{formatPercent(row.low48Diff)}</span>
                 </div>
               </TableCell>
-              <TableCell className={cn("text-center tabular-nums", directionClass(row.oiLog))} title={row.oi !== null && row.oiBase !== null ? `Current OI ${row.oi.toLocaleString("en-US")} / previous hour close ${row.oiBase.toLocaleString("en-US")}` : "Loading hourly OI history"}>{formatLog(row.oiLog)}</TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.volumeLog))}>{formatLog(row.volumeLog)}</TableCell>
               <TableCell className="text-center tabular-nums">
@@ -295,7 +293,7 @@ function App() {
                   {BOLL_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={bollClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={10} className="py-16 text-center text-muted-foreground">{rows.length ? query.trim() ? "No matching contracts" : trapOnly ? "No TRAP contracts" : "No contracts pass the ROC/MAROC and Trend filters" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={9} className="py-16 text-center text-muted-foreground">{rows.length ? query.trim() ? "No matching contracts" : trapOnly ? "No TRAP contracts" : "No contracts pass the ROC/MAROC and Trend filters" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>

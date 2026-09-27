@@ -60,6 +60,8 @@ final class IndicatorsTests: XCTestCase {
         try store.save("BTC-USDT-SWAP", bar)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, oi: 1_000)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, sell: 20, buy: 30)
+        try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 94 * hourMS, oi: 500)
+        try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 95 * hourMS, oi: 400)
         try store.execute("INSERT INTO oi_base VALUES (?,?,?)", ["BTC-USDT-SWAP", hour + hourMS, 10.0])
         try store.prune(hour: hour + hourMS, ids: ["BTC-USDT-SWAP"])
         let loaded = try store.load(hour: hour + hourMS, ids: ["BTC-USDT-SWAP"])
@@ -70,6 +72,9 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertEqual(stat[hour]?.oi, 1_000)
         XCTAssertEqual(stat[hour]?.sell, 20)
         XCTAssertEqual(stat[hour]?.buy, 30)
+        let history = try store.chartStats("BTC-USDT-SWAP", since: 0)
+        XCTAssertEqual(history[hour - 94 * hourMS]?.oi, 500)
+        XCTAssertNil(history[hour - 95 * hourMS])
     }
 
     func testCachedCandleBackfillsOpenWithoutLosingHistory() throws {

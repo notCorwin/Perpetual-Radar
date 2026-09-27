@@ -2,6 +2,7 @@ import Foundation
 
 let hourMS: Int64 = 3_600_000
 let candleLookback = 250
+let chartHours = 96
 
 struct Candle {
     let hour: Int64
