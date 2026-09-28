@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_READY_FILE"], !path.isEmpty {
             FileManager.default.createFile(atPath: path, contents: Data())
         }
-        let timer = Timer(timeInterval: 3 * 60, target: self,
+        let timer = Timer(timeInterval: 15, target: self,
                           selector: #selector(checkForUpdatesAutomatically), userInfo: nil, repeats: true)
         RunLoop.main.add(timer, forMode: .common)
         updateTimer = timer
