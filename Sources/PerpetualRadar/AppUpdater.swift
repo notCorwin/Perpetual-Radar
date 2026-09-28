@@ -971,27 +971,31 @@ final class AppUpdater: @unchecked Sendable {
     private static let defaultRelauncherScript = #"""
     ready_dir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/PerpetualRadar-ready.XXXXXX") || exit 1
     ready_file="$ready_dir/ready"
+    pid_file="$ready_dir/pid"
     trap 'rm -rf "$ready_dir"' EXIT
-    PERPETUAL_RADAR_READY_FILE="$ready_file" "$1/Contents/MacOS/PerpetualRadar" >/dev/null 2>&1 &
-    new_pid=$!
+    /usr/bin/open -n -a "$1" --env "PERPETUAL_RADAR_PID_FILE=$pid_file" --env "PERPETUAL_RADAR_READY_FILE=$ready_file" || exit 1
+    new_pid=
     attempt=0
     while [ "$attempt" -lt 50 ]; do
+        if [ -z "$new_pid" ] && [ -s "$pid_file" ]; then
+            new_pid=$(cat "$pid_file")
+        fi
         if [ -f "$ready_file" ]; then
             sleep 0.2
-            if kill -0 "$new_pid" 2>/dev/null; then
+            if [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then
                 kill "$2" 2>/dev/null || true
                 rm -rf "$3"
                 exit 0
             fi
             break
         fi
-        if ! kill -0 "$new_pid" 2>/dev/null; then
+        if [ -n "$new_pid" ] && ! kill -0 "$new_pid" 2>/dev/null; then
             break
         fi
         attempt=$((attempt + 1))
         sleep 0.1
     done
-    kill "$new_pid" 2>/dev/null || true
+    if [ -n "$new_pid" ]; then kill "$new_pid" 2>/dev/null || true; fi
     exit 1
     """#
 
