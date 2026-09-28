@@ -150,7 +150,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     lower.push(`${pointX} ${priceY(bar.bollLower).toFixed(1)}`)
   })
   finishBand()
-  const lineStroke = (d: string, color: string, width = 1.5, opacity = 1, dash?: string) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinejoin="round" strokeDasharray={dash} opacity={opacity} />
+  const lineStroke = (d: string, color: string, width = 1.8, opacity = 1) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinejoin="round" opacity={opacity} />
   const lineLabel = (x: number, y: number, label: string, color = "var(--muted-foreground)") =>
     <text x={x} y={y} dominantBaseline="middle" fill={color}>{label}</text>
   const panelKeys: Panel[] = ["price", "roc", "rsi", "oi", "taker"]
@@ -186,7 +186,6 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       </pattern>
     </defs>
     {bollBands.map((d, index) => <path key={index} d={d} fill="var(--chart-1)" fillOpacity="0.1" />)}
-    <rect x={columns.rsi[0]} y={scale(70, 0, 100, panels.rsi)} width={columns.rsi[1] - columns.rsi[0]} height={scale(30, 0, 100, panels.rsi) - scale(70, 0, 100, panels.rsi)} fill="var(--chart-2)" fillOpacity="0.08" />
     {grid}
     {bars.flatMap((bar, index) => index % 12 === 0 ? panelKeys.map(key => <line key={`${bar.hour}-${key}`} x1={x(index, key)} x2={x(index, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--border)" strokeOpacity="0.22" />) : [])}
     {[0, 24, 48, 72, n - 1].filter((index, position, values) => index < n && values.indexOf(index) === position).map(index => <text key={index} x={index === 0 ? columns.taker[0] : index === n - 1 ? columns.taker[1] : x(index, "taker")} y={height - 7} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)">{hourLabel(bars[index].hour)}</text>)}
@@ -194,7 +193,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       const tickY = priceY(tick)
       return <g key={tick}><line x1={columns.price[0]} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.35" />{Math.abs(tickY - latestY) > 14 && lineLabel(axisStarts.price, tickY, axisPrice.format(tick))}</g>
     })}
-    <line x1={columns.price[0]} x2={right} y1={latestY} y2={latestY} stroke={latestColor} strokeDasharray="2 4" opacity="0.5" />
+    <line x1={columns.price[0]} x2={right} y1={latestY} y2={latestY} stroke={latestColor} opacity="0.5" />
     {bars.map((bar, index) => {
       const up = bar.close >= bar.open
       const color = up ? "var(--positive)" : "var(--destructive)"
@@ -204,23 +203,22 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       return <g key={bar.hour}>
         <line x1={x(index, "price")} x2={x(index, "price")} y1={priceY(bar.high)} y2={priceY(bar.low)} stroke={color} strokeWidth="1.2" />
         <rect x={x(index, "price") - barWidth / 2} y={y1} width={barWidth} height={Math.max(1.5, y2 - y1)} fill={color} />
-        <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight} width={takerBarWidth} height={buyHeight} fill="var(--positive)" opacity="0.62" />
-        <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight - sellHeight} width={takerBarWidth} height={sellHeight} fill="var(--destructive)" opacity="0.62" />
+        <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight} width={takerBarWidth} height={buyHeight} fill="var(--positive)" opacity="0.9" />
+        <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight - sellHeight} width={takerBarWidth} height={sellHeight} fill="var(--destructive)" opacity="0.9" />
         <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight - sellHeight} width={takerBarWidth} height={sellHeight} fill="url(#sell-hatch)" opacity="0.7" />
       </g>
     })}
     {lineStroke(priceLine("bollUpper"), "var(--chart-1)", 0.8, 0.62)}
     {lineStroke(priceLine("bollLower"), "var(--chart-1)", 0.8, 0.62)}
-    {lineStroke(priceLine("bollMiddle"), "var(--chart-1)", 1.1, 0.85, "5 4")}
+    {lineStroke(priceLine("bollMiddle"), "var(--chart-1)", 1.1, 0.85)}
     {lineStroke(priceLine("vwap"), "var(--chart-2)", 1.8)}
-    {lineStroke(priceLine("ema"), "var(--chart-3)", 1.5, 0.9, "7 4")}
-    {[30, 70].map(value => <line key={value} x1={columns.rsi[0]} x2={columns.rsi[1]} y1={scale(value, 0, 100, panels.rsi)} y2={scale(value, 0, 100, panels.rsi)} stroke="var(--chart-2)" strokeDasharray="5 5" opacity="0.42" />)}
+    {lineStroke(priceLine("ema"), "var(--chart-3)", 1.8, 0.9)}
     {lineStroke(line("rsi6", "rsi", 0, 100), "var(--chart-1)")}
-    {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)", 1.5, 1, "6 4")}
-    {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)", 1.5, 1, "2 4")}
-    <line x1={columns.roc[0]} x2={columns.roc[1]} y1={scale(0, rocAxis.min, rocAxis.max, panels.roc)} y2={scale(0, rocAxis.min, rocAxis.max, panels.roc)} stroke="var(--muted-foreground)" strokeDasharray="4 4" opacity="0.4" />
+    {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)")}
+    {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)")}
+    <line x1={columns.roc[0]} x2={columns.roc[1]} y1={scale(0, rocAxis.min, rocAxis.max, panels.roc)} y2={scale(0, rocAxis.min, rocAxis.max, panels.roc)} stroke="var(--muted-foreground)" strokeWidth="1.2" opacity="0.6" />
     {lineStroke(line("roc", "roc", rocAxis.min, rocAxis.max), "var(--chart-1)")}
-    {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-3)", 1.5, 1, "7 4")}
+    {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-2)")}
     {oiAxis && lineStroke(line("oi", "oi", oiAxis.min, oiAxis.max), "var(--chart-2)", 2)}
     {hovered !== null && panelKeys.map(key => <line key={key} x1={x(hovered, key)} x2={x(hovered, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeWidth="0.65" strokeDasharray="3 5" opacity="0.3" />)}
     {([[highIndex, candleHigh, "high"], [lowIndex, candleLow, "low"]] as const).map(([index, value, kind]) => {
@@ -238,8 +236,8 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       <text x={right + tagWidth / 2} y={priceTagY + 28} textAnchor="middle" dominantBaseline="middle" fill="var(--background)">{countdown}</text>
     </g>
     {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
-    {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-3)"]])}
-    {legend("rsi", "RSI · 30–70", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
+    {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
+    {legend("rsi", "RSI", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("oi", "OPEN INTEREST", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
     {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
@@ -378,7 +376,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         </div>)}
       </div>}
       <div ref={plotRef} className="relative min-h-0 flex-1">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI with shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
