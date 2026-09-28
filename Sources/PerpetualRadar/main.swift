@@ -91,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         updater.cancel()
     }
 
-    @objc private func resumeAfterWake() {
+    @objc private func resumeAfterWake(_ notification: Notification) {
         radar?.resumeAfterWake()
         webView.reload()
     }
