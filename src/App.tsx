@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
-import { compareMarketRows, marketTrend, matchesMarketFilter, momentumScores, type SortKey } from "@/market-sort"
+import { compareMarketRows, marketTrend, momentumScores, type SortKey } from "@/market-sort"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 
 type MarketRow = {
@@ -86,7 +86,6 @@ function App() {
   const [error, setError] = useState("")
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [query, setQuery] = useState("")
-  const [trapOnly, setTrapOnly] = useState(false)
   const [minimum24hTurnoverUSDT, setMinimum24hTurnoverUSDT] = useState(10_000_000)
   const [spreadFilterEnabled, setSpreadFilterEnabled] = useState(true)
   const [maximumSpreadPercent, setMaximumSpreadPercent] = useState(0.15)
@@ -150,15 +149,14 @@ function App() {
     fit()
     void document.fonts.ready.then(fit)
     return () => window.removeEventListener("resize", fit)
-  }, [selected, rows, query, sort, descending, trapOnly])
+  }, [selected, rows, query, sort, descending])
 
   const visible = useMemo(() => {
     const scores = momentumScores(rows)
     return rows.map((row, index) => ({ ...row, momentum: scores[index], trend: marketTrend(row) }))
-      .filter(row => matchesMarketFilter(row, trapOnly))
       .filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase()))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
-  }, [rows, query, sort, descending, trapOnly])
+  }, [rows, query, sort, descending])
 
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
@@ -211,7 +209,6 @@ function App() {
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT{spreadFilterEnabled ? ` · spread ≤ ${maximumSpreadPercent}%` : ""}</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
-        <Button variant={trapOnly ? "secondary" : "outline"} size="sm" aria-pressed={trapOnly} onClick={() => setTrapOnly(!trapOnly)}>Only TRAP</Button>
         <Popover>
           <PopoverTrigger asChild><Button variant="outline" size="sm"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
           <PopoverContent align="end">
@@ -326,7 +323,7 @@ function App() {
                   {BOLL_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={bollClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={10} className="py-16 text-center text-muted-foreground">{rows.length ? query.trim() ? "No matching contracts" : trapOnly ? "No TRAP contracts" : "No contracts pass the ROC/MAROC and Trend filters" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={10} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>

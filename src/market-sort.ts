@@ -27,11 +27,6 @@ export function marketTrend(row: { price: number | null; vwap14: number | null; 
   return signals.every(value => value > 0) ? "LONG" : signals.every(value => value < 0) ? "SHORT" : "TRAP"
 }
 
-export function matchesMarketFilter(row: { roc: number | null; maroc: number | null; trend: ReturnType<typeof marketTrend> }, trapOnly: boolean): boolean {
-  if (trapOnly) return row.trend === "TRAP"
-  return row.trend !== "TRAP" && (row.roc === null || row.maroc === null || Math.sign(row.roc) === Math.sign(row.maroc))
-}
-
 export function momentumScores(rows: Pick<SortableRow, "roc" | "maroc" | "oiLog" | "oiSignal" | "volumeLog">[]): (number | null)[] {
   const ready = rows.filter((row): row is { roc: number; maroc: number; oiLog: number; oiSignal: NonNullable<SortableRow["oiSignal"]>; volumeLog: number } =>
     row.roc !== null && row.maroc !== null && row.oiLog !== null && row.oiSignal !== null && row.volumeLog !== null &&

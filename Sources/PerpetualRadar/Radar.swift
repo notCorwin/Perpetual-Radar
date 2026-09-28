@@ -64,6 +64,7 @@ final class Radar {
     private var oiHistory: [String: [Int64: Double]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
     private var chartLiveStats: [String: (oi: Double?, sell: Double?, buy: Double?)] = [:]
+    private var takerHistorySavedAt: [String: Int64] = [:]
     private var hour = millis() / hourMS * hourMS
     private var updatedAt: Int64?
     private var revision = 0
@@ -82,7 +83,6 @@ final class Radar {
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("PerpetualRadar", isDirectory: true)
         store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
-        try store.prune(hour: hour, ids: [])
     }
 
     deinit {
@@ -161,7 +161,6 @@ final class Radar {
                 }
                 guard !rows.isEmpty else { throw NSError(domain: "OKX", code: 2, userInfo: [NSLocalizedDescriptionKey: "No live USDT perpetual swaps found"]) }
                 try updateTickers(tickers)
-                try store.prune(hour: hour, ids: Set(rows.keys))
                 let cached = try store.load(hour: hour, ids: Set(rows.keys))
                 candles = cached.candles; oiHistory = cached.oiHistory; emaStates = cached.ema
                 for (id, value) in cached.oi { rows[id]?.oiBase = value }
@@ -298,19 +297,31 @@ final class Radar {
                         var fixed: [Int64: Double] = [:]
                         for case let item as [String] in result {
                             guard item.count >= 2, let ts = Int64(item[0]), ts % hourMS == 0,
-                                  ts >= hour - Int64(chartHours - 1) * hourMS, ts < hour,
+                                  ts < hour,
                                   let value = Double(item[1]), value.isFinite, value > 0 else { continue }
                             fixed[ts] = value
+                            if item.count >= 4, let oiUSD = Double(item[3]), oiUSD.isFinite, oiUSD >= 0 {
+                                try store.saveChartStat(id, hour: ts, oi: oiUSD)
+                            }
                         }
+                        try store.saveOIHistory(id, fixed)
                         if let base = fixed[hour - hourMS] {
-                            try store.saveOIHistory(id, fixed.filter { $0.key == hour - hourMS || oiHistory[id]?[$0.key] != $0.value })
-                            oiHistory[id, default: [:]].merge(fixed) { _, latest in latest }
+                            oiHistory[id, default: [:]].merge(fixed.filter { $0.key >= hour - Int64(chartHours - 1) * hourMS }) { _, latest in latest }
                             rows[id]?.oiBase = base
                             try store.execute("INSERT OR REPLACE INTO oi_base VALUES (?,?,?)", [id, hour, base])
                             cachedRows.removeValue(forKey: id)
                             touch(id)
                         } else { failed.insert(id) }
                     default:
+                        if takerHistorySavedAt[id] != hour {
+                            for case let item as [String] in result {
+                                guard item.count >= 3, let ts = Int64(item[0]), ts % hourMS == 0, ts < hour,
+                                      let sell = Double(item[1]), let buy = Double(item[2]),
+                                      sell.isFinite, buy.isFinite, sell >= 0, buy >= 0 else { continue }
+                                try store.saveChartStat(id, hour: ts, sell: sell, buy: buy)
+                            }
+                            takerHistorySavedAt[id] = hour
+                        }
                         if let item = result.compactMap({ $0 as? [String] }).first(where: { Int64($0.first ?? "") == hour }),
                            item.count >= 3, let sell = Double(item[1]), let buy = Double(item[2]),
                            buy.isFinite, sell.isFinite, buy >= 0, sell >= 0 {
@@ -388,7 +399,6 @@ final class Radar {
             cachedRows.removeAll()
             for id in rows.keys { chartRevisions[id, default: 0] &+= 1 }
             chartLiveStats.removeAll()
-            do { try store.prune(hour: hour, ids: Set(rows.keys)) } catch { startupError = error.localizedDescription }
             for id in rows.keys {
                 if let row = rows[id], row.oiTimestamp >= Double(hour - hourMS),
                    row.oiTimestamp < Double(hour), let oi = row.oi, oi > 0 {

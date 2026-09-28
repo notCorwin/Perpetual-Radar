@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { compareMarketRows, marketTrend, matchesMarketFilter, momentumScores, type SortableRow, type SortKey } from "./market-sort.ts"
+import { compareMarketRows, marketTrend, momentumScores, type SortableRow, type SortKey } from "./market-sort.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
   instId, momentum: value, oiUsd: 1, high48: value, low48: value, oiLog: value, oiSignal: "Building", takerRatio: value, volumeLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, bollUpper: value, bollMiddle: value, bollLower: value,
@@ -51,12 +51,4 @@ test("trend requires price, EMA slope, ROC, MAROC, and Taker direction to agree"
   assert.equal(marketTrend({ ...base, roc: -1 }), "TRAP")
   assert.equal(marketTrend({ ...base, maroc: -1 }), "TRAP")
   assert.equal(marketTrend({ ...base, ema200: null }), null)
-})
-
-test("TRAP view includes every TRAP while default view keeps its existing filters", () => {
-  assert.equal(matchesMarketFilter({ roc: 1, maroc: -1, trend: "TRAP" }, true), true)
-  assert.equal(matchesMarketFilter({ roc: 1, maroc: 1, trend: "LONG" }, true), false)
-  assert.equal(matchesMarketFilter({ roc: 1, maroc: -1, trend: "LONG" }, false), false)
-  assert.equal(matchesMarketFilter({ roc: 1, maroc: 1, trend: "LONG" }, false), true)
-  assert.equal(matchesMarketFilter({ roc: null, maroc: null, trend: null }, false), true)
 })

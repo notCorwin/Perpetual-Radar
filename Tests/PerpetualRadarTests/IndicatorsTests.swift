@@ -70,7 +70,7 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertNil(rocMaroc(bars, hour, 9, 9).1)
     }
 
-    func testCandleValidationAndCache() throws {
+    func testCandleValidationAndPermanentHistory() throws {
         let hour: Int64 = 200 * hourMS
         let values = [String(hour), "100", "110", "90", "100", "10", "2", "200", "1"]
         let bar = try XCTUnwrap(Candle(values))
@@ -80,13 +80,15 @@ final class IndicatorsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let store = try Store(url: url)
         try store.save("BTC-USDT-SWAP", bar)
+        let olderHour = hour - 300 * hourMS
+        try store.save("BTC-USDT-SWAP", Candle(hour: olderHour, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99))
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, oi: 1_000)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, sell: 20, buy: 30)
         try store.saveOIHistory("BTC-USDT-SWAP", [hour: 1_234])
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 94 * hourMS, oi: 500)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 95 * hourMS, oi: 400)
         try store.execute("INSERT INTO oi_base VALUES (?,?,?)", ["BTC-USDT-SWAP", hour + hourMS, 10.0])
-        try store.prune(hour: hour + hourMS, ids: ["BTC-USDT-SWAP"])
+        try store.execute("INSERT INTO oi_base VALUES (?,?,?)", ["BTC-USDT-SWAP", olderHour + hourMS, 11.0])
         let loaded = try store.load(hour: hour + hourMS, ids: ["BTC-USDT-SWAP"])
         XCTAssertEqual(loaded.candles["BTC-USDT-SWAP"]?[hour]?.baseVolume, 2)
         XCTAssertEqual(loaded.candles["BTC-USDT-SWAP"]?[hour]?.open, 100)
@@ -96,9 +98,12 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertEqual(stat[hour]?.oi, 1_000)
         XCTAssertEqual(stat[hour]?.sell, 20)
         XCTAssertEqual(stat[hour]?.buy, 30)
-        let history = try store.chartStats("BTC-USDT-SWAP", since: 0)
+        let reopened = try Store(url: url)
+        let history = try reopened.chartStats("BTC-USDT-SWAP", since: 0)
         XCTAssertEqual(history[hour - 94 * hourMS]?.oi, 500)
-        XCTAssertNil(history[hour - 95 * hourMS])
+        XCTAssertEqual(history[hour - 95 * hourMS]?.oi, 400)
+        XCTAssertEqual(try reopened.load(hour: olderHour + hourMS, ids: ["BTC-USDT-SWAP"]).candles["BTC-USDT-SWAP"]?[olderHour]?.open, 99)
+        XCTAssertEqual(try reopened.load(hour: olderHour + hourMS, ids: ["BTC-USDT-SWAP"]).oi["BTC-USDT-SWAP"], 11)
     }
 
     func testCachedCandleBackfillsOpenWithoutLosingHistory() throws {

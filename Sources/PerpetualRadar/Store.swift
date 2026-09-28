@@ -11,6 +11,9 @@ final class Store {
         try execute("CREATE TABLE IF NOT EXISTS oi_base (inst_id TEXT, hour INTEGER, value REAL, PRIMARY KEY(inst_id,hour))")
         try execute("CREATE TABLE IF NOT EXISTS ema200 (inst_id TEXT PRIMARY KEY, hour INTEGER, value REAL)")
         try execute("CREATE TABLE IF NOT EXISTS chart_stats (inst_id TEXT, hour INTEGER, oi REAL, sell REAL, buy REAL, PRIMARY KEY(inst_id,hour))")
+        try execute("CREATE INDEX IF NOT EXISTS candles_hour ON candles(hour)")
+        try execute("CREATE INDEX IF NOT EXISTS oi_base_hour ON oi_base(hour)")
+        try execute("CREATE INDEX IF NOT EXISTS chart_stats_hour ON chart_stats(hour)")
         // Existing Python caches may predate base_volume.
         if !columns("candles").contains("base_volume") { try execute("ALTER TABLE candles ADD COLUMN base_volume REAL") }
         if !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
@@ -135,21 +138,5 @@ final class Store {
                 sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 3))
         }
         return result
-    }
-
-    func prune(hour: Int64, ids: Set<String>) throws {
-        let cutoff = hour - Int64(candleLookback) * hourMS
-        try execute("DELETE FROM candles WHERE hour < ?", [cutoff])
-        try execute("DELETE FROM chart_stats WHERE hour < ?", [hour - Int64(chartHours - 1) * hourMS])
-        try execute("DELETE FROM oi_base WHERE hour != ?", [hour])
-        try execute("DELETE FROM ema200 WHERE hour < ? OR hour >= ?", [cutoff - hourMS, hour])
-        let stmt = try statement("SELECT inst_id FROM ema200")
-        defer { sqlite3_finalize(stmt) }
-        var stale: [String] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let id = String(cString: sqlite3_column_text(stmt, 0))
-            if !ids.isEmpty && !ids.contains(id) { stale.append(id) }
-        }
-        for id in stale { try execute("DELETE FROM ema200 WHERE inst_id=?", [id]) }
     }
 }
