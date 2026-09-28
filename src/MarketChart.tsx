@@ -3,6 +3,7 @@ import { ArrowLeft, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { wrappedMarket } from "@/market-sort"
 
 type Bar = {
   hour: number; open: number; high: number; low: number; close: number; confirmed: boolean
@@ -215,8 +216,8 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
   const navigationFrame = useRef<number | null>(null)
   const [plotSize, setPlotSize] = useState({ width: 0, height: 0 })
   const position = order.indexOf(instId)
-  const previous = order[position - 1], next = order[position + 1]
-  const beforePrevious = order[position - 2], afterNext = order[position + 2]
+  const previous = wrappedMarket(order, position - 1), next = wrappedMarket(order, position + 1)
+  const beforePrevious = wrappedMarket(order, position - 2), afterNext = wrappedMarket(order, position + 2)
   const chart = displayed?.id === instId ? displayed.data : chartCache.get(instId)?.data ?? warmCharts.get(instId) ?? null
   const hovered = hover?.id === instId ? hover.index : null
   const error = chartError?.id === instId ? chartError.message : chart?.error ?? ""
@@ -275,15 +276,15 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
 
   useEffect(() => {
     let stopped = false
-    for (const id of [beforePrevious, previous, next, afterNext]) {
-      if (!id) continue
+    for (const id of new Set([beforePrevious, previous, next, afterNext])) {
+      if (!id || id === instId) continue
       void previewChart(id).then(data => { if (!stopped) warmChart(id, data) }).catch(() => {})
       if ((id === previous || id === next) && !chartCache.get(id)?.loadedAt) {
         void loadChart(id).then(data => { if (!stopped) warmChart(id, data) }).catch(() => {})
       }
     }
     return () => { stopped = true }
-  }, [beforePrevious, previous, next, afterNext, warmChart])
+  }, [instId, beforePrevious, previous, next, afterNext, warmChart])
 
   useEffect(() => {
     const navigate = (event: KeyboardEvent) => {
@@ -291,8 +292,8 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       if (!(event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight")) return
       event.preventDefault()
       const index = order.indexOf(navigationId.current)
-      const id = order[index + (event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1)]
-      if (id) {
+      const id = index < 0 ? undefined : wrappedMarket(order, index + (event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1))
+      if (id && id !== navigationId.current) {
         navigationId.current = id
         if (navigationFrame.current === null) navigationFrame.current = window.requestAnimationFrame(() => {
           navigationFrame.current = null

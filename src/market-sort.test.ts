@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { compareMarketRows, compareMarketTurnover, marketTrend, momentumScores, type SortableRow, type SortKey } from "./market-sort.ts"
+import { compareMarketRows, compareMarketTurnover, marketTrend, momentumScores, wrappedMarket, type SortableRow, type SortKey } from "./market-sort.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
   instId, momentum: value, oiUsd: 1, high48: value, low48: value, oiLog: value, oiSignal: "Building", takerRatio: value, volumeLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, bollUpper: value, bollMiddle: value, bollLower: value,
@@ -24,6 +24,15 @@ test("chart navigation follows descending 24h turnover with stable ties", () => 
     { instId: "A", turnover24hUSDT: 20 },
   ]
   assert.deepEqual(markets.sort(compareMarketTurnover).map(market => market.instId), ["A", "B", "C"])
+})
+
+test("chart navigation wraps at both ends", () => {
+  const order = ["A", "B", "C"]
+  assert.equal(wrappedMarket(order, -1), "C")
+  assert.equal(wrappedMarket(order, 3), "A")
+  assert.equal(wrappedMarket(order, -2), "B")
+  assert.equal(wrappedMarket(["A"], -2), "A")
+  assert.equal(wrappedMarket([], 0), undefined)
 })
 
 test("momentum counts positive OI only during Building", () => {

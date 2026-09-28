@@ -24,6 +24,10 @@ export function compareMarketTurnover(a: { instId: string; turnover24hUSDT: numb
   return b.turnover24hUSDT - a.turnover24hUSDT || a.instId.localeCompare(b.instId)
 }
 
+export function wrappedMarket(order: string[], index: number): string | undefined {
+  return order.length ? order[((index % order.length) + order.length) % order.length] : undefined
+}
+
 export function marketTrend(row: { price: number | null; vwap14: number | null; ema200: number | null; ema200Slope: number | null; bollMiddle: number | null; takerRatio: number | null; roc: number | null; maroc: number | null }): "LONG" | "SHORT" | "TRAP" | null {
   const { price, vwap14, ema200, ema200Slope, bollMiddle, takerRatio, roc, maroc } = row
   if ([price, vwap14, ema200, ema200Slope, bollMiddle, takerRatio, roc, maroc].some(value => value === null || !Number.isFinite(value))) return null
