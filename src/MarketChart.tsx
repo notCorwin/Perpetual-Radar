@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react"
 import { ArrowLeft, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 
 type Bar = {
   hour: number; open: number; high: number; low: number; close: number; confirmed: boolean
@@ -14,17 +15,34 @@ export type ChartPollResponse = ChartResponse | { unchanged: true; error: string
 
 const chartCache = new Map<string, { data: ChartResponse; loadedAt: number }>()
 const chartLoads = new Map<string, Promise<ChartResponse>>()
+const chartPreviews = new Map<string, Promise<ChartResponse>>()
+function rememberChart(id: string, data: ChartResponse, loadedAt: number) {
+  chartCache.delete(id)
+  chartCache.set(id, { data, loadedAt })
+  if (chartCache.size > 8) chartCache.delete(chartCache.keys().next().value!)
+}
 function loadChart(id: string): Promise<ChartResponse> {
   const pending = chartLoads.get(id)
   if (pending) return pending
   const request = window.webkit.messageHandlers.radar.postMessage({ chartInstId: id, loadChart: true }).then(result => {
     if ("unchanged" in result) throw new Error("No chart data returned")
-    chartCache.delete(id)
-    chartCache.set(id, { data: result, loadedAt: Date.now() })
-    if (chartCache.size > 8) chartCache.delete(chartCache.keys().next().value!)
+    rememberChart(id, result, Date.now())
     return result
   }).finally(() => chartLoads.delete(id))
   chartLoads.set(id, request)
+  return request
+}
+function previewChart(id: string): Promise<ChartResponse> {
+  const cached = chartCache.get(id)
+  if (cached) return Promise.resolve(cached.data)
+  const pending = chartPreviews.get(id)
+  if (pending) return pending
+  const request = window.webkit.messageHandlers.radar.postMessage({ chartInstId: id, sinceRevision: -1 }).then(result => {
+    if ("unchanged" in result) throw new Error("No chart data returned")
+    if (!chartCache.has(id)) rememberChart(id, result, 0)
+    return chartCache.get(id)!.data
+  }).finally(() => chartPreviews.delete(id))
+  chartPreviews.set(id, request)
   return request
 }
 
@@ -52,7 +70,7 @@ const chartLayout = (width: number, height: number, bars: Bar[]) => {
   return { panels, columns, left, right, candleHigh, candleLow }
 }
 
-function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number | null; width: number; height: number }) {
+const Plot = memo(function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number | null; width: number; height: number }) {
   const n = bars.length
   const active = bars[hovered ?? n - 1]
   const { panels, columns, left, right, candleHigh, candleLow } = chartLayout(width, height, bars)
@@ -185,20 +203,36 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
     {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStart("roc"), panels.roc[0], `+${rocExtent.toFixed(1)}`)}{lineLabel(axisStart("roc"), panels.roc[1], `-${rocExtent.toFixed(1)}`)}</>}
     {oiValues.length > 0 && panels.oi[1] - panels.oi[0] >= 35 && <>{lineLabel(axisStart("oi"), panels.oi[0], compact(oiMax))}{lineLabel(axisStart("oi"), panels.oi[1], compact(oiMin))}</>}
   </>
-}
+})
 
 export function MarketChart({ instId, order, onSelect, onBack }: { instId: string; order: string[]; onSelect: (id: string) => void; onBack: () => void }) {
   const [displayed, setDisplayed] = useState<{ id: string; data: ChartResponse } | null>(null)
   const [hover, setHover] = useState<{ id: string; index: number } | null>(null)
   const [chartError, setChartError] = useState<{ id: string; message: string } | null>(null)
+  const [warmCharts, setWarmCharts] = useState(() => new Map<string, ChartResponse>())
   const plotRef = useRef<HTMLDivElement>(null)
   const navigationId = useRef(instId)
+  const navigationFrame = useRef<number | null>(null)
   const [plotSize, setPlotSize] = useState({ width: 0, height: 0 })
   const position = order.indexOf(instId)
   const previous = order[position - 1], next = order[position + 1]
-  const chart = displayed?.id === instId ? displayed.data : chartCache.get(instId)?.data ?? null
+  const beforePrevious = order[position - 2], afterNext = order[position + 2]
+  const chart = displayed?.id === instId ? displayed.data : chartCache.get(instId)?.data ?? warmCharts.get(instId) ?? null
   const hovered = hover?.id === instId ? hover.index : null
   const error = chartError?.id === instId ? chartError.message : chart?.error ?? ""
+  const warmChart = useCallback((id: string, data: ChartResponse, deferred = true) => {
+    if (!data.bars.length) return
+    const update = () => setWarmCharts(current => {
+      if (current.get(id) === data) return current
+      const updated = new Map(current)
+      updated.delete(id)
+      updated.set(id, data)
+      if (updated.size > 7) updated.delete(updated.keys().next().value!)
+      return updated
+    })
+    if (deferred) startTransition(update)
+    else update()
+  }, [])
   useEffect(() => {
     const element = plotRef.current
     if (!element) return
@@ -219,8 +253,9 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         if (shouldLoad) lastLoad = chartCache.get(instId)?.loadedAt ?? Date.now()
         if (!("unchanged" in result)) {
           revision = result.error ? -1 : result.revision
-          if (!shouldLoad) chartCache.set(instId, { data: result, loadedAt: lastLoad })
+          if (!shouldLoad) rememberChart(instId, result, lastLoad)
           setDisplayed({ id: instId, data: result })
+          warmChart(instId, result, false)
         }
         setChartError(current => current?.id === instId && current.message === result.error ? current : { id: instId, message: result.error })
       } catch (cause) {
@@ -231,15 +266,24 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       }
       if (!stopped) timer = window.setTimeout(refresh, 2000)
     }
+    if (!chartCache.has(instId)) void previewChart(instId).then(data => {
+      if (!stopped) { setDisplayed({ id: instId, data }); warmChart(instId, data, false) }
+    }).catch(() => {})
     void refresh()
     return () => { stopped = true; window.clearTimeout(timer) }
-  }, [instId])
+  }, [instId, warmChart])
 
   useEffect(() => {
-    for (const id of [previous, next]) {
-      if (id && !chartCache.has(id)) void loadChart(id).catch(() => {})
+    let stopped = false
+    for (const id of [beforePrevious, previous, next, afterNext]) {
+      if (!id) continue
+      void previewChart(id).then(data => { if (!stopped) warmChart(id, data) }).catch(() => {})
+      if ((id === previous || id === next) && !chartCache.get(id)?.loadedAt) {
+        void loadChart(id).then(data => { if (!stopped) warmChart(id, data) }).catch(() => {})
+      }
     }
-  }, [previous, next])
+    return () => { stopped = true }
+  }, [beforePrevious, previous, next, afterNext, warmChart])
 
   useEffect(() => {
     const navigate = (event: KeyboardEvent) => {
@@ -248,14 +292,25 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       event.preventDefault()
       const index = order.indexOf(navigationId.current)
       const id = order[index + (event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1)]
-      if (id) { navigationId.current = id; onSelect(id) }
+      if (id) {
+        navigationId.current = id
+        if (navigationFrame.current === null) navigationFrame.current = window.requestAnimationFrame(() => {
+          navigationFrame.current = null
+          onSelect(navigationId.current)
+        })
+      }
     }
     window.addEventListener("keydown", navigate)
-    return () => window.removeEventListener("keydown", navigate)
+    return () => {
+      window.removeEventListener("keydown", navigate)
+      if (navigationFrame.current !== null) window.cancelAnimationFrame(navigationFrame.current)
+    }
   }, [order, onSelect])
 
   const bars = chart?.bars ?? []
   const active = bars[hovered ?? bars.length - 1]
+  const surfaces = new Map(warmCharts)
+  if (chart?.bars.length) surfaces.set(instId, chart)
   return <main className="flex h-svh min-h-0 flex-col overflow-hidden overscroll-none">
     <header className="flex shrink-0 items-center gap-4 border-b px-5 py-3">
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
@@ -276,8 +331,9 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           <p className="text-xs text-muted-foreground">{label}</p><p className="truncate text-sm font-semibold" title={price(value)}>{price(value)}</p>
         </div>)}
       </div>}
-      <div ref={plotRef} className="min-h-0 flex-1">
-        {bars.length && plotSize.width > 0 ? <svg viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className="h-full w-full focus-visible:outline-2 focus-visible:outline-ring" role="img" tabIndex={0} aria-label={`${instId} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI with shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => setHover(null)} onKeyDown={event => {
+      <div ref={plotRef} className="relative min-h-0 flex-1">
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI with shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+          if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
             setHover(current => ({ id: instId, index: Math.max(0, Math.min(bars.length - 1, (current?.id === instId ? current.index : bars.length - 1) + (event.key === "ArrowLeft" ? -1 : 1))) }))
@@ -286,6 +342,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
             setHover({ id: instId, index: event.key === "Home" ? 0 : bars.length - 1 })
           }
         }} onPointerMove={event => {
+          if (id !== instId) return
           const rect = event.currentTarget.getBoundingClientRect()
           const svgX = event.clientX - rect.left, svgY = event.clientY - rect.top
           const { panels, columns } = chartLayout(plotSize.width, plotSize.height, bars)
@@ -293,10 +350,11 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
             ? svgX < plotSize.width / 2 ? "rsi" : "roc"
             : svgX < plotSize.width / 2 ? "oi" : "taker"
           const [start, end] = columns[panel]
-          setHover({ id: instId, index: Math.max(0, Math.min(bars.length - 1, Math.floor((svgX - start) / (end - start) * bars.length))) })
+          const index = Math.max(0, Math.min(bars.length - 1, Math.floor((svgX - start) / (end - start) * bars.length)))
+          setHover(current => current?.id === instId && current.index === index ? current : { id: instId, index })
         }}>
-          <Plot bars={bars} hovered={hovered} width={plotSize.width} height={plotSize.height} />
-        </svg> : <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
+          <Plot bars={data.bars} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} />
+        </svg>) : <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
       </div>
     </section>
   </main>
