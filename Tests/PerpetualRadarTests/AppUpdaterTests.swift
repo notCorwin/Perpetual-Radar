@@ -38,6 +38,29 @@ final class AppUpdaterTests: XCTestCase {
         guard case .failure(.invalidResponse) = AppUpdater.parse(data: wrongURL, currentRevision: nil) else {
             return XCTFail("Expected an unexpected download location to be rejected")
         }
+
+        let immutableURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/build-\(revision)-123-1/Perpetual.Radar.app.tar"
+        let immutableManifest = try JSONSerialization.data(withJSONObject: [
+            "revision": revision,
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "immutable_asset_url": immutableURL,
+            "digest": "sha256:\(digest)",
+        ])
+        guard case .success(let immutableUpdate) = AppUpdater.parse(data: immutableManifest, currentRevision: nil) else {
+            return XCTFail("Expected a revision-specific update")
+        }
+        XCTAssertEqual(immutableUpdate?.assetURL.absoluteString, immutableURL)
+
+        let wrongRevisionURL = immutableURL.replacingOccurrences(of: revision, with: String(repeating: "c", count: 40))
+        let mismatchedManifest = try JSONSerialization.data(withJSONObject: [
+            "revision": revision,
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "immutable_asset_url": wrongRevisionURL,
+            "digest": "sha256:\(digest)",
+        ])
+        guard case .failure(.invalidResponse) = AppUpdater.parse(data: mismatchedManifest, currentRevision: nil) else {
+            return XCTFail("Expected a mismatched release URL to be rejected")
+        }
     }
 
     func testRateLimitHonorsResponseHeaders() throws {

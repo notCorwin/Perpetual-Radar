@@ -40,12 +40,15 @@ jobs:
           tar -cf Perpetual.Radar.app.tar -C .build/app 'Perpetual Radar.app'
           tar -tf Perpetual.Radar.app.tar | grep -qx 'Perpetual Radar.app/Contents/MacOS/PerpetualRadar'
           sha256="$(shasum -a 256 Perpetual.Radar.app.tar | cut -d' ' -f1)"
-          printf '{"revision":"%s","asset_url":"https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar","digest":"sha256:%s","published_at":"%s"}\n' \
-            "$GITHUB_SHA" "$sha256" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > update.json
+          printf '{"revision":"%s","asset_url":"https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar","immutable_asset_url":"https://github.com/notCorwin/Perpetual-Radar/releases/download/build-%s-%s-%s/Perpetual.Radar.app.tar","digest":"sha256:%s","published_at":"%s"}\n' \
+            "$GITHUB_SHA" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$sha256" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > update.json
       - name: Replace autobuild release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh release create "build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" 'Perpetual.Radar.app.tar#Perpetual Radar.app' \
+            --target "$GITHUB_SHA" --title "Build ${GITHUB_SHA:0:7}" --latest=false \
+            --notes "Built from commit $GITHUB_SHA."
           gh release delete autobuild --yes --cleanup-tag 2>/dev/null || true
           gh release create autobuild 'Perpetual.Radar.app.tar#Perpetual Radar.app' update.json \
             --target "$GITHUB_SHA" --title autobuild --latest \

@@ -118,6 +118,7 @@ final class AppUpdater: @unchecked Sendable {
     private struct Manifest: Decodable {
         let revision: String
         let assetUrl: URL
+        let immutableAssetUrl: URL?
         let digest: String
         let publishedAt: Date?
     }
@@ -330,7 +331,7 @@ final class AppUpdater: @unchecked Sendable {
             }
             return
         }
-        guard Self.isCanonicalAssetURL(update.assetURL) else {
+        guard Self.isExpectedAssetURL(update.assetURL, revision: update.revision) else {
             DispatchQueue.main.async {
                 completion(.failure(AppUpdateError.invalidResponse))
             }
@@ -477,7 +478,8 @@ final class AppUpdater: @unchecked Sendable {
             guard manifest.revision.count == 40,
                   let releaseRevision = revision(in: manifest.revision),
                   releaseRevision == manifest.revision.lowercased(),
-                  Self.isCanonicalAssetURL(manifest.assetUrl) else {
+                  Self.isCanonicalAssetURL(manifest.assetUrl),
+                  Self.isExpectedAssetURL(manifest.immutableAssetUrl ?? manifest.assetUrl, revision: releaseRevision) else {
                 return .failure(AppUpdateError.invalidResponse)
             }
 
@@ -491,7 +493,7 @@ final class AppUpdater: @unchecked Sendable {
             return .success(AppUpdate(
                 name: "autobuild",
                 revision: releaseRevision,
-                assetURL: manifest.assetUrl,
+                assetURL: manifest.immutableAssetUrl ?? manifest.assetUrl,
                 expectedSHA256: expectedSHA256,
                 publishedAt: manifest.publishedAt
             ))
@@ -606,6 +608,16 @@ final class AppUpdater: @unchecked Sendable {
 
     static func isCanonicalAssetURL(_ url: URL) -> Bool {
         url.absoluteString == Self.canonicalAssetURL.absoluteString
+    }
+
+    static func isExpectedAssetURL(_ url: URL, revision: String) -> Bool {
+        if isCanonicalAssetURL(url) { return true }
+        let prefix = "https://github.com/notCorwin/Perpetual-Radar/releases/download/build-\(revision)-"
+        let suffix = "/Perpetual.Radar.app.tar"
+        let value = url.absoluteString
+        guard value.hasPrefix(prefix), value.hasSuffix(suffix) else { return false }
+        let run = value.dropFirst(prefix.count).dropLast(suffix.count)
+        return run.range(of: #"^[0-9]+-[0-9]+$"#, options: .regularExpression) != nil
     }
 
     static func isExpectedExecutable(_ executableURL: URL, in appURL: URL) -> Bool {
