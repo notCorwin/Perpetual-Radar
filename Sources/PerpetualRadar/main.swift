@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "Perpetual Radar"
+        window.appearance = NSAppearance(named: .darkAqua)
         window.minSize = NSSize(width: 900, height: 700)
         window.contentView = webView
         window.center(); window.makeKeyAndOrderFront(nil)
