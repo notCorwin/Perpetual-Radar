@@ -60,8 +60,11 @@ final class IndicatorsTests: XCTestCase {
         }
         XCTAssertEqual(extremes(bars, hour).0, 210)
         XCTAssertEqual(rocMaroc(bars, hour, 9, 9).0!, (200.0 / 191.0 - 1) * 100, accuracy: 0.000001)
-        let expectedMAROC = (0..<9).reduce(0.0) { sum, age in
-            sum + (Double(200 - age) / Double(191 - age) - 1) * 100 / 9
+        var expectedMAROC = 0.0
+        for age in 0..<9 {
+            let current = Double(200 - age)
+            let previous = Double(191 - age)
+            expectedMAROC += (current / previous - 1) * 100 / 9
         }
         XCTAssertEqual(rocMaroc(bars, hour, 9, 9).1!, expectedMAROC, accuracy: 0.000001)
         XCTAssertEqual(vwap14(bars, hour), 100)
