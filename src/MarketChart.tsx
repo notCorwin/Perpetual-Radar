@@ -114,7 +114,11 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
   const secondsLeft = now && !latest.confirmed ? Math.max(0, Math.floor((latest.hour + 3_600_000 - now) / 1000)) : 0
   const countdown = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`
   const latestPrice = price(latest.close), tagWidth = priceTagWidth(latestPrice, countdown)
-  const priceTagY = Math.max(panels.price[0], Math.min(latestY - 19, panels.price[1] - 38))
+  const tagStyle = getComputedStyle(document.documentElement)
+  const tagLineHeight = Number.parseFloat(tagStyle.getPropertyValue("--chart-text-size")) * Number.parseFloat(tagStyle.getPropertyValue("--chart-price-tag-line-height"))
+  const tagPaddingY = Number.parseFloat(tagStyle.getPropertyValue("--chart-price-tag-padding-y"))
+  const tagHeight = tagLineHeight * 2 + tagPaddingY * 2
+  const priceTagY = Math.max(panels.price[0], Math.min(latestY - tagHeight / 2, panels.price[1] - tagHeight))
   const line = (key: keyof Bar, panelKey: Panel, min: number, max: number) => {
     const segments: string[] = []
     let segment = ""
@@ -231,9 +235,9 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       </g>
     })}
     <g>
-      <rect x={right} y={priceTagY} width={tagWidth} height="38" rx="4" fill={latestColor} />
-      <text x={right + tagWidth / 2} y={priceTagY + 13} textAnchor="middle" dominantBaseline="middle" fill="var(--background)">{latestPrice}</text>
-      <text x={right + tagWidth / 2} y={priceTagY + 28} textAnchor="middle" dominantBaseline="middle" fill="var(--background)">{countdown}</text>
+      <rect x={right} y={priceTagY} width={tagWidth} height={tagHeight} rx="4" fill={latestColor} />
+      <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--background)">{latestPrice}</text>
+      <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--background)">{countdown}</text>
     </g>
     {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
     {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
