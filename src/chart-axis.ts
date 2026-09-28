@@ -1,10 +1,10 @@
 export function chartAxis(min: number, max: number, intervals = 6) {
-  const magnitude = Math.max(Math.abs(min), Math.abs(max)) || 1
-  const span = max - min || magnitude / 10
-  const step = Math.max(
-    10 ** Math.ceil(Math.log10(span / intervals)),
-    10 ** (Math.floor(Math.log10(magnitude)) - 1),
-  )
+  const span = max - min || Math.max(Math.abs(max) * 0.01, 1e-10)
+  if (min === max) { min -= span / 2; max += span / 2 }
+  const rawStep = span / intervals
+  const power = 10 ** Math.floor(Math.log10(rawStep))
+  const normalized = rawStep / power
+  const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * power
   const round = (value: number) => Number(value.toPrecision(12))
   const lower = round(Math.floor(min / step) * step)
   const upper = round(Math.max(Math.ceil(max / step) * step, lower + step))

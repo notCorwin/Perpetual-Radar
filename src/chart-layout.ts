@@ -2,6 +2,10 @@ export type ChartPanel = "price" | "rsi" | "roc" | "oi" | "taker"
 
 type Range = readonly [number, number]
 
+export function chartHourX(hour: number, latestHour: number, start: number, end: number) {
+  return start + (hour - (latestHour - 95 * 3_600_000) + 1_800_000) * (end - start) / (96 * 3_600_000)
+}
+
 export function chartLayout(width: number, height: number, labelGutter = 64) {
   const outer = 4, top = 4, headerHeight = 24, rowGap = 3, bottomAxis = 22
   const right = width - outer - labelGutter, column: Range = [outer, right]

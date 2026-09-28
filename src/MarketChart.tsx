@@ -3,7 +3,7 @@ import { ArrowLeft, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { chartAxis, visibleTicks } from "@/chart-axis"
-import { chartLayout, type ChartPanel as Panel } from "@/chart-layout"
+import { chartHourX, chartLayout, type ChartPanel as Panel } from "@/chart-layout"
 import { cn } from "@/lib/utils"
 import { wrappedMarket } from "@/market-sort"
 
@@ -54,6 +54,10 @@ const price = (value: number | null) => value === null ? "—" : new Intl.Number
 const time = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
 const hourLabel = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", hour12: false })
 const chartPriceValues = (bars: Bar[]) => bars.flatMap(bar => [bar.low, bar.high, bar.vwap, bar.ema, bar.bollUpper, bar.bollLower].filter((value): value is number => value !== null))
+const rocAxisFor = (bars: Bar[]) => {
+  const values = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
+  return values.length ? chartAxis(Math.min(0, ...values), Math.max(0, ...values), 8) : chartAxis(-1, 1, 8)
+}
 const legendContext = document.createElement("canvas").getContext("2d")
 const legendWidth = (text: string) => {
   if (!legendContext) return text.length * 7
@@ -70,9 +74,7 @@ const chartGutter = (bars: Bar[]) => {
   const priceAxis = chartAxis(Math.min(...values), Math.max(...values), 8)
   const decimals = priceAxis.decimals
   const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
-  const rocValues = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
-  const rocExtent = Math.max(0.1, ...rocValues.map(Math.abs))
-  const rocAxis = chartAxis(-rocExtent, rocExtent, 8)
+  const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
   const takerAxis = chartAxis(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))))
   const labels = [
@@ -87,9 +89,11 @@ const chartGutter = (bars: Bar[]) => {
 const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: Bar[]; hovered: number | null; width: number; height: number; now: number }) {
   const n = bars.length
   const active = bars[hovered ?? n - 1]
+  const latestHour = bars[n - 1].hour
+  const firstHour = latestHour - 95 * 3_600_000
   const candleHigh = Math.max(...bars.map(bar => bar.high)), candleLow = Math.min(...bars.map(bar => bar.low))
   const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, chartGutter(bars))
-  const x = (index: number, panel: Panel) => columns[panel][0] + (index + 0.5) * (columns[panel][1] - columns[panel][0]) / n
+  const x = (index: number, panel: Panel) => chartHourX(bars[index].hour, latestHour, ...columns[panel])
   const barWidth = Math.max(5, Math.min(13, (right - left) / n * 0.68))
   const takerBarWidth = Math.max(2, Math.min(9, (columns.taker[1] - columns.taker[0]) / n * 0.7))
   const priceValues = chartPriceValues(bars)
@@ -98,9 +102,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
   const highIndex = bars.findIndex(bar => bar.high === candleHigh), lowIndex = bars.findIndex(bar => bar.low === candleLow)
   const priceDecimals = priceAxis.decimals
   const axisPrice = new Intl.NumberFormat("en-US", { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })
-  const rocValues = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
-  const rocExtent = Math.max(0.1, ...rocValues.map(Math.abs))
-  const rocAxis = chartAxis(-rocExtent, rocExtent, 8)
+  const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
   const oiAxis = oiValues.length ? chartAxis(Math.min(...oiValues), Math.max(...oiValues)) : null
   const maxTaker = Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0)))
@@ -124,23 +126,17 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     let segment = ""
     bars.forEach((bar, index) => {
       const value = bar[key]
-      if (typeof value !== "number") { if (segment) segments.push(segment); segment = ""; return }
+      if (typeof value !== "number" || (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000)) {
+        if (segment) segments.push(segment)
+        segment = ""
+        if (typeof value !== "number") return
+      }
       segment += `${segment ? " L" : "M"}${x(index, panelKey).toFixed(1)} ${scale(value, min, max, panels[panelKey]).toFixed(1)}`
     })
     if (segment) segments.push(segment)
     return segments.join(" ")
   }
-  const priceLine = (key: keyof Bar) => {
-    const segments: string[] = []
-    let segment = ""
-    bars.forEach((bar, index) => {
-      const value = bar[key]
-      if (typeof value !== "number") { if (segment) segments.push(segment); segment = ""; return }
-      segment += `${segment ? " L" : "M"}${x(index, "price").toFixed(1)} ${priceY(value).toFixed(1)}`
-    })
-    if (segment) segments.push(segment)
-    return segments.join(" ")
-  }
+  const priceLine = (key: keyof Bar) => line(key, "price", priceAxis.min, priceAxis.max)
   const bollBands: string[] = []
   let upper: string[] = [], lower: string[] = []
   const finishBand = () => {
@@ -149,6 +145,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
   }
   bars.forEach((bar, index) => {
     if (bar.bollUpper === null || bar.bollLower === null) { finishBand(); return }
+    if (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000) finishBand()
     const pointX = x(index, "price").toFixed(1)
     upper.push(`${pointX} ${priceY(bar.bollUpper).toFixed(1)}`)
     lower.push(`${pointX} ${priceY(bar.bollLower).toFixed(1)}`)
@@ -190,9 +187,10 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       </pattern>
     </defs>
     {bollBands.map((d, index) => <path key={index} d={d} fill="var(--chart-1)" fillOpacity="0.1" />)}
+    <rect x={columns.rsi[0]} y={scale(70, 0, 100, panels.rsi)} width={columns.rsi[1] - columns.rsi[0]} height={scale(30, 0, 100, panels.rsi) - scale(70, 0, 100, panels.rsi)} fill="var(--chart-2)" fillOpacity="0.14" />
     {grid}
-    {bars.flatMap((bar, index) => index % 12 === 0 ? panelKeys.map(key => <line key={`${bar.hour}-${key}`} x1={x(index, key)} x2={x(index, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--border)" strokeOpacity="0.22" />) : [])}
-    {[0, 24, 48, 72, n - 1].filter((index, position, values) => index < n && values.indexOf(index) === position).map(index => <text key={index} x={index === 0 ? columns.taker[0] : index === n - 1 ? columns.taker[1] : x(index, "taker")} y={height - 7} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)">{hourLabel(bars[index].hour)}</text>)}
+    {bars.flatMap((bar, index) => (bar.hour - firstHour) % (12 * 3_600_000) === 0 ? panelKeys.map(key => <line key={`${bar.hour}-${key}`} x1={x(index, key)} x2={x(index, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--border)" strokeOpacity="0.22" />) : [])}
+    {bars.map((bar, index) => ({ bar, index })).filter(({ bar, index }) => index === n - 1 || (bar.hour - firstHour) % (24 * 3_600_000) === 0).map(({ bar, index }) => <text key={bar.hour} x={x(index, "taker")} y={height - 7} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)">{hourLabel(bar.hour)}</text>)}
     {visibleTicks(priceAxis.ticks, Math.max(2, Math.floor((panels.price[1] - panels.price[0]) / 32) + 1)).map(tick => {
       const tickY = priceY(tick)
       return <g key={tick}><line x1={columns.price[0]} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.35" />{Math.abs(tickY - latestY) > 14 && lineLabel(axisStarts.price, tickY, axisPrice.format(tick))}</g>
@@ -214,13 +212,11 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     })}
     {lineStroke(priceLine("bollUpper"), "var(--chart-1)", 0.8, 0.62)}
     {lineStroke(priceLine("bollLower"), "var(--chart-1)", 0.8, 0.62)}
-    {lineStroke(priceLine("bollMiddle"), "var(--chart-1)", 1.1, 0.85)}
     {lineStroke(priceLine("vwap"), "var(--chart-2)", 1.8)}
     {lineStroke(priceLine("ema"), "var(--chart-3)", 1.8, 0.9)}
     {lineStroke(line("rsi6", "rsi", 0, 100), "var(--chart-1)")}
     {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)")}
     {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)")}
-    <line x1={columns.roc[0]} x2={columns.roc[1]} y1={scale(0, rocAxis.min, rocAxis.max, panels.roc)} y2={scale(0, rocAxis.min, rocAxis.max, panels.roc)} stroke="var(--muted-foreground)" strokeWidth="1.2" opacity="0.6" />
     {lineStroke(line("roc", "roc", rocAxis.min, rocAxis.max), "var(--chart-1)")}
     {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-2)")}
     {oiAxis && lineStroke(line("oi", "oi", oiAxis.min, oiAxis.max), "var(--chart-2)", 2)}
@@ -236,14 +232,14 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     })}
     <g>
       <rect x={right} y={priceTagY} width={tagWidth} height={tagHeight} rx="4" fill={latestColor} />
-      <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--background)">{latestPrice}</text>
-      <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--background)">{countdown}</text>
+      <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{latestPrice}</text>
+      <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{countdown}</text>
     </g>
-    {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
+    {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
     {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
     {legend("rsi", "RSI", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("oi", "OPEN INTEREST", [["OI", compact(active.oi), "var(--chart-2)"]])}
-    {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
+    {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive-text)"], ["Sell", compact(active.sell), "var(--destructive-text)"]])}
     {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
     {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], `+${rocAxis.max.toFixed(rocAxis.decimals)}`)}{lineLabel(axisStarts.roc, panels.roc[1], rocAxis.min.toFixed(rocAxis.decimals))}</>}
     {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && visibleTicks(oiAxis.ticks, Math.max(2, Math.floor((panels.oi[1] - panels.oi[0]) / 32) + 1)).map(tick => <g key={tick}>{lineLabel(axisStarts.oi, scale(tick, oiAxis.min, oiAxis.max, panels.oi), compact(tick))}</g>)}
@@ -380,7 +376,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         </div>)}
       </div>}
       <div ref={plotRef} className="relative min-h-0 flex-1">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI with a shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
@@ -395,7 +391,11 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           const svgX = event.clientX - rect.left
           const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars))
           const [start, end] = columns.price
-          const index = Math.max(0, Math.min(bars.length - 1, Math.floor((svgX - start) / (end - start) * bars.length)))
+          const latestHour = bars[bars.length - 1].hour
+          let index = 0
+          for (let i = 1; i < bars.length; i++) {
+            if (Math.abs(chartHourX(bars[i].hour, latestHour, start, end) - svgX) < Math.abs(chartHourX(bars[index].hour, latestHour, start, end) - svgX)) index = i
+          }
           setHover(current => current?.id === instId && current.index === index ? current : { id: instId, index })
         }}>
           <Plot bars={data.bars} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} now={id === instId ? now : 0} />
