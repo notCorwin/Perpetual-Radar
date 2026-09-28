@@ -71,7 +71,9 @@ final class Radar {
     private var failedPaths = Set<String>()
     private var disconnectedChannels = Set<String>()
     private var tasks: [Task<Void, Never>] = []
+    private var historyTasks: [Task<Void, Never>] = []
     private var sockets: [URLSessionWebSocketTask] = []
+    private var running = false
     private var startupError = ""
 
     init() throws {
@@ -87,6 +89,7 @@ final class Radar {
 
     deinit {
         tasks.forEach { $0.cancel() }
+        historyTasks.forEach { $0.cancel() }
         sockets.forEach { $0.cancel(with: .goingAway, reason: nil) }
     }
 
@@ -145,6 +148,15 @@ final class Radar {
         tasks.append(Task { [weak self] in await self?.bootstrap() })
     }
 
+    func resumeAfterWake() {
+        guard running else { return }
+        sockets.forEach { $0.cancel(with: .goingAway, reason: nil) }
+        disconnectedChannels.formUnion(["open-interest", "candle1H"])
+        advanceHourIfNeeded()
+        startHistoryScans()
+        Task { [weak self] in await self?.refreshTickers() }
+    }
+
     private func bootstrap() async {
         while !Task.isCancelled {
             do {
@@ -177,6 +189,7 @@ final class Radar {
                 tasks.append(Task { [weak self] in await self?.websocket(businessWS, channel: "candle1H") })
                 tasks.append(Task { [weak self] in await self?.pollTickers() })
                 tasks.append(Task { [weak self] in await self?.clock() })
+                running = true
                 return
             } catch {
                 startupError = "OKX unavailable: \(error.localizedDescription). Retrying."
@@ -186,9 +199,11 @@ final class Radar {
     }
 
     private func startHistoryScans() {
+        historyTasks.forEach { $0.cancel() }
+        historyTasks.removeAll()
         for shard in 0..<2 {
-            tasks.append(Task { [weak self] in await self?.scan("/market/candles", delay: 120_000_000, shard: shard) })
-            tasks.append(Task { [weak self] in await self?.scan("/rubik/stat/contracts/open-interest-history", delay: 250_000_000, shard: shard) })
+            historyTasks.append(Task { [weak self] in await self?.scan("/market/candles", delay: 120_000_000, shard: shard) })
+            historyTasks.append(Task { [weak self] in await self?.scan("/rubik/stat/contracts/open-interest-history", delay: 250_000_000, shard: shard) })
         }
     }
 
@@ -213,13 +228,17 @@ final class Radar {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 30_000_000_000)
             if Task.isCancelled { return }
-            do {
-                try updateTickers(await get("/market/tickers", ["instType": "SWAP"]))
-                failedPaths.remove("/market/tickers")
-            } catch {
-                failedPaths.insert("/market/tickers")
-                NSLog("/market/tickers: %@", error.localizedDescription)
-            }
+            await refreshTickers()
+        }
+    }
+
+    private func refreshTickers() async {
+        do {
+            try updateTickers(await get("/market/tickers", ["instType": "SWAP"]))
+            failedPaths.remove("/market/tickers")
+        } catch {
+            failedPaths.insert("/market/tickers")
+            NSLog("/market/tickers: %@", error.localizedDescription)
         }
     }
 
@@ -337,6 +356,7 @@ final class Radar {
                 }
                 try? await Task.sleep(nanoseconds: delay)
             }
+            if Task.isCancelled { return }
             if failed.isEmpty { failedPaths.remove(failureKey) } else { failedPaths.insert(failureKey) }
             if !repeatScan && failed.isEmpty { return }
             ids = repeatScan ? rows.keys.sorted() : failed.sorted()
@@ -393,26 +413,30 @@ final class Radar {
     private func clock() async {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            let current = millis() / hourMS * hourMS
-            guard current != hour else { continue }
-            hour = current
-            cachedRows.removeAll()
-            for id in rows.keys { chartRevisions[id, default: 0] &+= 1 }
-            chartLiveStats.removeAll()
-            for id in rows.keys {
-                if let row = rows[id], row.oiTimestamp >= Double(hour - hourMS),
-                   row.oiTimestamp < Double(hour), let oi = row.oi, oi > 0 {
-                    oiHistory[id, default: [:]][hour - hourMS] = oi
-                }
-                rows[id]?.oiBase = nil; rows[id]?.buy = nil; rows[id]?.sell = nil; rows[id]?.takerRatio = nil
-                oiHistory[id] = oiHistory[id]?.filter { $0.key >= hour - Int64(chartHours - 1) * hourMS }
-                candles[id] = candles[id]?.filter { $0.key >= hour - Int64(candleLookback) * hourMS }
-            }
-            emaStates = emaStates.filter { $0.value.0 >= hour - Int64(candleLookback + 1) * hourMS && $0.value.0 < hour }
-            touch()
-            startHistoryScans()
-            tasks.removeAll { $0.isCancelled }
+            if advanceHourIfNeeded() { startHistoryScans() }
         }
+    }
+
+    @discardableResult
+    private func advanceHourIfNeeded() -> Bool {
+        let current = millis() / hourMS * hourMS
+        guard current != hour else { return false }
+        hour = current
+        cachedRows.removeAll()
+        for id in rows.keys { chartRevisions[id, default: 0] &+= 1 }
+        chartLiveStats.removeAll()
+        for id in rows.keys {
+            if let row = rows[id], row.oiTimestamp >= Double(hour - hourMS),
+               row.oiTimestamp < Double(hour), let oi = row.oi, oi > 0 {
+                oiHistory[id, default: [:]][hour - hourMS] = oi
+            }
+            rows[id]?.oiBase = nil; rows[id]?.buy = nil; rows[id]?.sell = nil; rows[id]?.takerRatio = nil
+            oiHistory[id] = oiHistory[id]?.filter { $0.key >= hour - Int64(chartHours - 1) * hourMS }
+            candles[id] = candles[id]?.filter { $0.key >= hour - Int64(candleLookback) * hourMS }
+        }
+        emaStates = emaStates.filter { $0.value.0 >= hour - Int64(candleLookback + 1) * hourMS && $0.value.0 < hour }
+        touch()
+        return true
     }
 
     private func ema200(_ id: String, _ bars: [Int64: Candle]) -> Double? {

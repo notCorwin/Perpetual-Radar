@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     private var isCheckingUpdate = false
     private var isInstallingUpdate = false
     private lazy var checkUpdatesItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdatesNow), keyEquivalent: "")
+    private let appearanceMenu = NSMenu(title: "Appearance")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
@@ -25,6 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         appMenu.delegate = self
         checkUpdatesItem.target = self
         appMenu.addItem(checkUpdatesItem)
+        let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        for (title, value) in [("System", "system"), ("Light", "light"), ("Dark", "dark")] {
+            let item = NSMenuItem(title: title, action: #selector(changeAppearance(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = value
+            appearanceMenu.addItem(item)
+        }
+        appearanceItem.submenu = appearanceMenu
+        appMenu.addItem(appearanceItem)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Perpetual Radar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         application.submenu = appMenu; menu.addItem(application)
@@ -41,10 +51,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "Perpetual Radar"
-        window.appearance = NSAppearance(named: .darkAqua)
+        applyAppearance(UserDefaults.standard.string(forKey: "appearance") ?? "system")
         window.minSize = NSSize(width: 900, height: 700)
         window.contentView = webView
         window.center(); window.makeKeyAndOrderFront(nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeAfterWake),
+                                                        name: NSWorkspace.didWakeNotification, object: nil)
 
         do {
             radar = try Radar()
@@ -74,11 +86,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         updateTimer?.invalidate()
         updater.cancel()
     }
 
+    @objc private func resumeAfterWake() {
+        radar?.resumeAfterWake()
+        webView.reload()
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webView.reload()
+    }
+
     func menuWillOpen(_ menu: NSMenu) { renderUpdateItem() }
+
+    @objc private func changeAppearance(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(value, forKey: "appearance")
+        applyAppearance(value)
+    }
+
+    private func applyAppearance(_ value: String) {
+        window.appearance = value == "light" ? NSAppearance(named: .aqua) : value == "dark" ? NSAppearance(named: .darkAqua) : nil
+        for item in appearanceMenu.items { item.state = (item.representedObject as? String == value) ? .on : .off }
+    }
 
     @objc private func checkForUpdatesNow() {
         if updateState == "available", let update { presentUpdate(update) }
