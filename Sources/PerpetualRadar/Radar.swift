@@ -573,7 +573,7 @@ final class Radar {
             let hasLiveOI = row.oiTimestamp >= Double(hour) && (row.oi ?? 0) > 0
             if hasLiveOI, let oi = row.oi { oiPoints.append((hour: hour, oi: oi)) }
             let result: [String: Any] = [
-                "instId": id, "price": price as Any? ?? null,
+                "instId": id, "turnover24hUSDT": turnover, "price": price as Any? ?? null,
                 "priceChange": percentChange(price, previous?.confirmed == true ? previous?.close : nil) as Any? ?? null,
                 "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
                 "vwap14": vwap14(bars, hour) as Any? ?? null,

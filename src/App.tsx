@@ -11,11 +11,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
-import { compareMarketRows, marketTrend, momentumScores, type SortKey } from "@/market-sort"
+import { compareMarketRows, compareMarketTurnover, marketTrend, momentumScores, type SortKey } from "@/market-sort"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 
 type MarketRow = {
   instId: string
+  turnover24hUSDT: number
   price: number | null
   priceChange: number | null
   currentLow: number | null
@@ -157,6 +158,7 @@ function App() {
       .filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase()))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
   }, [rows, query, sort, descending])
+  const chartOrder = useMemo(() => [...rows].sort(compareMarketTurnover).map(row => row.instId), [rows])
 
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
@@ -201,7 +203,7 @@ function App() {
     </Button>
   }
 
-  if (selected) return <MarketChart instId={selected} onBack={() => setSelected(null)} />
+  if (selected) return <MarketChart instId={selected} order={chartOrder} onSelect={setSelected} onBack={() => setSelected(null)} />
 
   return (
     <main className="flex min-h-svh flex-col">

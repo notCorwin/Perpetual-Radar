@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { compareMarketRows, marketTrend, momentumScores, type SortableRow, type SortKey } from "./market-sort.ts"
+import { compareMarketRows, compareMarketTurnover, marketTrend, momentumScores, type SortableRow, type SortKey } from "./market-sort.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
   instId, momentum: value, oiUsd: 1, high48: value, low48: value, oiLog: value, oiSignal: "Building", takerRatio: value, volumeLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, bollUpper: value, bollMiddle: value, bollLower: value,
@@ -15,6 +15,15 @@ test("every column sorts both ways and keeps missing data last", () => {
     assert.deepEqual(sorted(key, true), ["High", "Middle", "Low", "Missing"])
     assert.deepEqual(sorted(key, false), ["Low", "Middle", "High", "Missing"])
   }
+})
+
+test("chart navigation follows descending 24h turnover with stable ties", () => {
+  const markets = [
+    { instId: "B", turnover24hUSDT: 20 },
+    { instId: "C", turnover24hUSDT: 10 },
+    { instId: "A", turnover24hUSDT: 20 },
+  ]
+  assert.deepEqual(markets.sort(compareMarketTurnover).map(market => market.instId), ["A", "B", "C"])
 })
 
 test("momentum counts positive OI only during Building", () => {

@@ -12,6 +12,22 @@ type Bar = {
 export type ChartResponse = { bars: Bar[]; error: string; revision: number }
 export type ChartPollResponse = ChartResponse | { unchanged: true; error: string; revision: number }
 
+const chartCache = new Map<string, { data: ChartResponse; loadedAt: number }>()
+const chartLoads = new Map<string, Promise<ChartResponse>>()
+function loadChart(id: string): Promise<ChartResponse> {
+  const pending = chartLoads.get(id)
+  if (pending) return pending
+  const request = window.webkit.messageHandlers.radar.postMessage({ chartInstId: id, loadChart: true }).then(result => {
+    if ("unchanged" in result) throw new Error("No chart data returned")
+    chartCache.delete(id)
+    chartCache.set(id, { data: result, loadedAt: Date.now() })
+    if (chartCache.size > 8) chartCache.delete(chartCache.keys().next().value!)
+    return result
+  }).finally(() => chartLoads.delete(id))
+  chartLoads.set(id, request)
+  return request
+}
+
 const compact = (value: number | null) => value === null ? "—" : new Intl.NumberFormat("en-US", { maximumSignificantDigits: 5, notation: "compact" }).format(value)
 const price = (value: number | null) => value === null ? "—" : new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 }).format(value)
 const time = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
@@ -171,13 +187,18 @@ function Plot({ bars, hovered, width, height }: { bars: Bar[]; hovered: number |
   </>
 }
 
-export function MarketChart({ instId, onBack }: { instId: string; onBack: () => void }) {
-  const [chart, setChart] = useState<ChartResponse | null>(null)
-  const [hovered, setHovered] = useState<number | null>(null)
-  const [error, setError] = useState("")
+export function MarketChart({ instId, order, onSelect, onBack }: { instId: string; order: string[]; onSelect: (id: string) => void; onBack: () => void }) {
+  const [displayed, setDisplayed] = useState<{ id: string; data: ChartResponse } | null>(null)
+  const [hover, setHover] = useState<{ id: string; index: number } | null>(null)
+  const [chartError, setChartError] = useState<{ id: string; message: string } | null>(null)
   const plotRef = useRef<HTMLDivElement>(null)
-  const revision = useRef(-1)
+  const navigationId = useRef(instId)
   const [plotSize, setPlotSize] = useState({ width: 0, height: 0 })
+  const position = order.indexOf(instId)
+  const previous = order[position - 1], next = order[position + 1]
+  const chart = displayed?.id === instId ? displayed.data : chartCache.get(instId)?.data ?? null
+  const hovered = hover?.id === instId ? hover.index : null
+  const error = chartError?.id === instId ? chartError.message : chart?.error ?? ""
   useEffect(() => {
     const element = plotRef.current
     if (!element) return
@@ -188,27 +209,50 @@ export function MarketChart({ instId, onBack }: { instId: string; onBack: () => 
   useEffect(() => {
     let stopped = false
     let timer: number
-    let lastLoad = 0
-    revision.current = -1
+    let lastLoad = chartCache.get(instId)?.loadedAt ?? 0
+    let revision = chartCache.get(instId)?.data.revision ?? -1
     const refresh = async () => {
       try {
-        const loadChart = Date.now() - lastLoad >= 60_000
-        const result = await window.webkit.messageHandlers.radar.postMessage({ chartInstId: instId, loadChart, sinceRevision: revision.current })
+        const shouldLoad = Date.now() - lastLoad >= 60_000
+        const result = shouldLoad ? await loadChart(instId) : await window.webkit.messageHandlers.radar.postMessage({ chartInstId: instId, sinceRevision: revision })
         if (stopped) return
-        if (loadChart) lastLoad = Date.now()
+        if (shouldLoad) lastLoad = chartCache.get(instId)?.loadedAt ?? Date.now()
         if (!("unchanged" in result)) {
-          revision.current = result.error ? -1 : result.revision
-          setChart(result)
+          revision = result.error ? -1 : result.revision
+          if (!shouldLoad) chartCache.set(instId, { data: result, loadedAt: lastLoad })
+          setDisplayed({ id: instId, data: result })
         }
-        setError(result.error)
+        setChartError(current => current?.id === instId && current.message === result.error ? current : { id: instId, message: result.error })
       } catch (cause) {
-        if (!stopped) setError(cause instanceof Error ? cause.message : "Cannot load chart")
+        if (!stopped) {
+          const message = cause instanceof Error ? cause.message : "Cannot load chart"
+          setChartError(current => current?.id === instId && current.message === message ? current : { id: instId, message })
+        }
       }
       if (!stopped) timer = window.setTimeout(refresh, 2000)
     }
     void refresh()
     return () => { stopped = true; window.clearTimeout(timer) }
   }, [instId])
+
+  useEffect(() => {
+    for (const id of [previous, next]) {
+      if (id && !chartCache.has(id)) void loadChart(id).catch(() => {})
+    }
+  }, [previous, next])
+
+  useEffect(() => {
+    const navigate = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.defaultPrevented) return
+      if (!(event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight")) return
+      event.preventDefault()
+      const index = order.indexOf(navigationId.current)
+      const id = order[index + (event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1)]
+      if (id) { navigationId.current = id; onSelect(id) }
+    }
+    window.addEventListener("keydown", navigate)
+    return () => window.removeEventListener("keydown", navigate)
+  }, [order, onSelect])
 
   const bars = chart?.bars ?? []
   const active = bars[hovered ?? bars.length - 1]
@@ -217,7 +261,7 @@ export function MarketChart({ instId, onBack }: { instId: string; onBack: () => 
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-lg font-semibold tracking-tight">{instId.replace(/-SWAP$/, "")}</h1>
-        <p className="text-xs text-muted-foreground">OKX perpetual · 1h · Last 96 hours</p>
+        <p className="text-xs text-muted-foreground">OKX perpetual · 1h · Last 96 hours · 24h turnover rank {position + 1}/{order.length} · ↑/← higher · ↓/→ lower</p>
       </div>
       <Badge variant="secondary"><Radio aria-hidden="true" />{active && !active.confirmed ? "Live candle" : "Hourly chart"}</Badge>
     </header>
@@ -233,13 +277,13 @@ export function MarketChart({ instId, onBack }: { instId: string; onBack: () => 
         </div>)}
       </div>}
       <div ref={plotRef} className="min-h-0 flex-1">
-        {bars.length && plotSize.width > 0 ? <svg viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className="h-full w-full focus-visible:outline-2 focus-visible:outline-ring" role="img" tabIndex={0} aria-label={`${instId} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI with shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Use left and right arrow keys to inspect candles.`} onPointerLeave={() => setHovered(null)} onKeyDown={event => {
-          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        {bars.length && plotSize.width > 0 ? <svg viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className="h-full w-full focus-visible:outline-2 focus-visible:outline-ring" role="img" tabIndex={0} aria-label={`${instId} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands, RSI with shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => setHover(null)} onKeyDown={event => {
+          if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
-            setHovered(current => Math.max(0, Math.min(bars.length - 1, (current ?? bars.length - 1) + (event.key === "ArrowLeft" ? -1 : 1))))
+            setHover(current => ({ id: instId, index: Math.max(0, Math.min(bars.length - 1, (current?.id === instId ? current.index : bars.length - 1) + (event.key === "ArrowLeft" ? -1 : 1))) }))
           } else if (event.key === "Home" || event.key === "End") {
             event.preventDefault()
-            setHovered(event.key === "Home" ? 0 : bars.length - 1)
+            setHover({ id: instId, index: event.key === "Home" ? 0 : bars.length - 1 })
           }
         }} onPointerMove={event => {
           const rect = event.currentTarget.getBoundingClientRect()
@@ -249,7 +293,7 @@ export function MarketChart({ instId, onBack }: { instId: string; onBack: () => 
             ? svgX < plotSize.width / 2 ? "rsi" : "roc"
             : svgX < plotSize.width / 2 ? "oi" : "taker"
           const [start, end] = columns[panel]
-          setHovered(Math.max(0, Math.min(bars.length - 1, Math.floor((svgX - start) / (end - start) * bars.length))))
+          setHover({ id: instId, index: Math.max(0, Math.min(bars.length - 1, Math.floor((svgX - start) / (end - start) * bars.length))) })
         }}>
           <Plot bars={bars} hovered={hovered} width={plotSize.width} height={plotSize.height} />
         </svg> : <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
