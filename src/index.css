@@ -82,8 +82,8 @@
     --accent-foreground: oklch(0.2 0.012 260);
     --positive: rgb(142 188 57);
     --destructive: rgb(232 85 168);
-    --chart-roc-positive-bg: color-mix(in srgb, var(--positive) 12%, transparent);
-    --chart-roc-negative-bg: color-mix(in srgb, var(--destructive) 12%, transparent);
+    --chart-roc-positive-area: color-mix(in srgb, var(--positive) 12%, transparent);
+    --chart-roc-negative-area: color-mix(in srgb, var(--destructive) 12%, transparent);
     --border: oklch(0.8 0.01 260 / 75%);
     --input: oklch(0.8 0.01 260);
     --ring: #006da3;
@@ -122,8 +122,8 @@
         --accent-foreground: oklch(0.96 0.01 260);
         --positive: rgb(202 253 92);
         --destructive: rgb(232 85 168);
-        --chart-roc-positive-bg: color-mix(in srgb, var(--positive) 16%, transparent);
-        --chart-roc-negative-bg: color-mix(in srgb, var(--destructive) 16%, transparent);
+        --chart-roc-positive-area: color-mix(in srgb, var(--positive) 16%, transparent);
+        --chart-roc-negative-area: color-mix(in srgb, var(--destructive) 16%, transparent);
         --border: oklch(0.32 0.014 260 / 55%);
         --input: oklch(0.3 0.014 260);
         --ring: #56b4e9;

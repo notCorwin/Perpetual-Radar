@@ -1,4 +1,4 @@
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, startTransition, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -102,6 +102,7 @@ const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length -
 }
 
 const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, endHour }: { bars: Bar[]; liveBar: Bar; hovered: number | null; width: number; height: number; now: number; endHour: number }) {
+  const areaClipId = useId().replaceAll(":", "")
   const n = bars.length
   const active = bars[hovered ?? n - 1]
   const latestHour = endHour
@@ -165,6 +166,27 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     return segments.join(" ")
   }
   const priceLine = (key: keyof Bar) => line(key, "price", priceAxis.min, priceAxis.max)
+  const rocArea = (key: "roc" | "maroc") => {
+    const segments: string[] = []
+    let points: [number, number][] = []
+    const finish = () => {
+      if (points.length > 1) {
+        const firstX = points[0][0], lastX = points[points.length - 1][0]
+        segments.push(`M${firstX} ${rocZeroY} L${points.map(([pointX, pointY]) => `${pointX} ${pointY}`).join(" L")} L${lastX} ${rocZeroY} Z`)
+      }
+      points = []
+    }
+    bars.forEach((bar, index) => {
+      if (bar[key] === null || (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000)) finish()
+      if (bar[key] === null) return
+      const pointY = Number(scale(bar[key], rocAxis.min, rocAxis.max, panels.roc).toFixed(1))
+      if (index === 0 && firstAtLeft) points.push([left, pointY])
+      points.push([Number(x(index, "roc").toFixed(1)), pointY])
+    })
+    finish()
+    return segments.join(" ")
+  }
+  const rocAreas = [rocArea("roc"), rocArea("maroc")]
   const bollBands: string[] = []
   let upper: string[] = [], lower: string[] = []
   const finishBand = () => {
@@ -235,10 +257,14 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
       <pattern id="sell-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
         <line x1="0" x2="0" y1="0" y2="4" stroke="var(--background)" strokeWidth="1" opacity="0.55" />
       </pattern>
+      <clipPath id={`${areaClipId}-positive`}><rect x={columns.roc[0]} y={panels.roc[0]} width={columns.roc[1] - columns.roc[0]} height={rocZeroY - panels.roc[0]} /></clipPath>
+      <clipPath id={`${areaClipId}-negative`}><rect x={columns.roc[0]} y={rocZeroY} width={columns.roc[1] - columns.roc[0]} height={panels.roc[1] - rocZeroY} /></clipPath>
     </defs>
     {bollBands.map((d, index) => <path key={index} d={d} fill="var(--chart-1)" fillOpacity="0.1" />)}
-    <rect x={columns.roc[0]} y={panels.roc[0]} width={columns.roc[1] - columns.roc[0]} height={rocZeroY - panels.roc[0]} fill="var(--chart-roc-positive-bg)" />
-    <rect x={columns.roc[0]} y={rocZeroY} width={columns.roc[1] - columns.roc[0]} height={panels.roc[1] - rocZeroY} fill="var(--chart-roc-negative-bg)" />
+    {rocAreas.map((area, index) => <g key={index}>
+      <path d={area} fill="var(--chart-roc-positive-area)" clipPath={`url(#${areaClipId}-positive)`} />
+      <path d={area} fill="var(--chart-roc-negative-area)" clipPath={`url(#${areaClipId}-negative)`} />
+    </g>)}
     <rect x={columns.rsi[0]} y={scale(70, 0, 100, panels.rsi)} width={columns.rsi[1] - columns.rsi[0]} height={scale(30, 0, 100, panels.rsi) - scale(70, 0, 100, panels.rsi)} fill="var(--muted)" />
     {grid}
     {rocZeroY > panels.roc[0] && rocZeroY < panels.roc[1] && <line x1={columns.roc[0]} x2={columns.roc[1]} y1={rocZeroY} y2={rocZeroY} stroke="var(--muted-foreground)" strokeWidth="1" strokeOpacity="0.5" />}
@@ -562,7 +588,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         })
       }}>
         <div className="relative h-full w-full">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC and MAROC with positive and negative areas shaded, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
