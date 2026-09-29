@@ -1,5 +1,5 @@
 import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react"
-import { ArrowLeft, Radio } from "lucide-react"
+import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { chartAxis, visibleTicks } from "@/chart-axis"
@@ -252,6 +252,8 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
   const [hover, setHover] = useState<{ id: string; index: number } | null>(null)
   const [chartError, setChartError] = useState<{ id: string; message: string } | null>(null)
   const [warmCharts, setWarmCharts] = useState(() => new Map<string, ChartResponse>())
+  const [capture, setCapture] = useState<{ id: string; status: "idle" | "copying" | "copied" | "failed"; error: string }>({ id: instId, status: "idle", error: "" })
+  const chartRef = useRef<HTMLElement>(null)
   const plotRef = useRef<HTMLDivElement>(null)
   const navigationId = useRef(instId)
   const navigationFrame = useRef<number | null>(null)
@@ -263,6 +265,19 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
   const chart = displayed?.id === instId ? displayed.data : chartCache.get(instId)?.data ?? warmCharts.get(instId) ?? null
   const hovered = hover?.id === instId ? hover.index : null
   const error = chartError?.id === instId ? chartError.message : chart?.error ?? ""
+  const captureStatus = capture.id === instId ? capture.status : "idle"
+  const captureError = capture.id === instId ? capture.error : ""
+  const captureChart = async () => {
+    const rect = chartRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0 || rect.height <= 0) return
+    setCapture({ id: instId, status: "copying", error: "" })
+    try {
+      await window.webkit.messageHandlers.radar.postMessage({ captureChart: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } })
+      setCapture({ id: instId, status: "copied", error: "" })
+    } catch (cause) {
+      setCapture({ id: instId, status: "failed", error: cause instanceof Error ? cause.message : "Could not copy chart screenshot" })
+    }
+  }
   const warmChart = useCallback((id: string, data: ChartResponse, deferred = true) => {
     if (!data.bars.length) return
     const update = () => setWarmCharts(current => {
@@ -365,12 +380,14 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
         <p className="text-muted-foreground">OKX perpetual · 1h · Last 96 hours · 24h turnover rank {position + 1}/{order.length} · ↑/← higher · ↓/→ lower</p>
       </div>
+      <Button variant="outline" size="sm" disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}><Camera data-icon="inline-start" aria-hidden="true" />{captureStatus === "copied" ? "Copied" : captureStatus === "copying" ? "Copying…" : "Copy chart"}</Button>
       <Badge variant="secondary"><Radio aria-hidden="true" /><span className="text-[length:var(--chart-text-size)] font-normal">{active && !active.confirmed ? "Live candle" : "Hourly chart"}</span></Badge>
     </header>
     {error && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{error}</p>}
-    <section aria-label={`${instId} chart`} className="flex min-h-0 flex-1 flex-col bg-card">
+    {captureError && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{captureError}</p>}
+    <section ref={chartRef} aria-label={`${instId} chart`} className="flex min-h-0 flex-1 flex-col bg-card">
       {active && <div className="grid shrink-0 grid-cols-[minmax(9rem,1.2fr)_repeat(4,minmax(0,1fr))] items-center border-b px-4 py-1.5" aria-live="off">
-        <p className="min-w-0 truncate border-r pr-3"><span className="text-muted-foreground">{hovered === null ? "Latest" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
+        <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{hovered === null ? "Latest" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
         {([ ["Open", active.open], ["High", active.high], ["Low", active.low], ["Close", active.close] ] as const).map(([label, value]) => <div key={label} className="min-w-0 px-3">
           <span className="text-muted-foreground">{label} </span><span title={price(value)}>{price(value)}</span>
         </div>)}

@@ -47,6 +47,7 @@ type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
+  postMessage(request: { captureChart: { x: number; y: number; width: number; height: number } }): Promise<{ ok: boolean }>
   postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number }): Promise<ChartPollResponse>
 }
 declare global {

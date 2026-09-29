@@ -220,6 +220,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             replyHandler(["ok": true], nil)
             return
         }
+        if let bounds = parameters["captureChart"] as? [String: Any] {
+            guard let x = bounds["x"] as? Double, x.isFinite,
+                  let y = bounds["y"] as? Double, y.isFinite,
+                  let width = bounds["width"] as? Double, width.isFinite, width > 0,
+                  let height = bounds["height"] as? Double, height.isFinite, height > 0 else {
+                replyHandler(nil, "Invalid chart bounds"); return
+            }
+            let rect = CGRect(x: x, y: y, width: width, height: height).intersection(webView.bounds)
+            guard !rect.isNull, rect.width > 0, rect.height > 0 else {
+                replyHandler(nil, "Chart is outside the window"); return
+            }
+            let configuration = WKSnapshotConfiguration()
+            configuration.rect = rect
+            configuration.afterScreenUpdates = true
+            webView.takeSnapshot(with: configuration) { image, error in
+                guard let image else {
+                    replyHandler(nil, error?.localizedDescription ?? "Could not capture chart screenshot"); return
+                }
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                guard pasteboard.writeObjects([image]) else {
+                    replyHandler(nil, "Could not copy chart screenshot"); return
+                }
+                replyHandler(["ok": true], nil)
+            }
+            return
+        }
         if let id = parameters["chartInstId"] as? String {
             guard let radar else { replyHandler(["bars": [], "error": startupError, "revision": -1], nil); return }
             if parameters["loadChart"] as? Bool == true {
