@@ -3,7 +3,7 @@ import { flushSync } from "react-dom"
 import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { chartAxis, visibleTicks } from "@/chart-axis"
+import { chartAxis, chartAxisForLabels } from "@/chart-axis"
 import { chartCandleWidth, chartHourX, chartLayout, fitPriceTag, type ChartPanel as Panel } from "@/chart-layout"
 import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
@@ -60,6 +60,8 @@ const rocAxisFor = (bars: Bar[]) => {
   const values = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
   return values.length ? chartAxis(Math.min(0, ...values), Math.max(0, ...values), 8) : chartAxis(-1, 1, 8)
 }
+const axisLabelLimit = (panel: readonly [number, number], maximum: number) =>
+  Math.min(maximum, Math.max(2, Math.floor((panel[1] - panel[0]) / 32) + 1))
 const legendContext = document.createElement("canvas").getContext("2d")
 const chartTextWidth = (text: string, fontSize: string) => {
   if (!legendContext) return text.length * 7
@@ -74,18 +76,19 @@ const priceTagWidth = (priceText: string, countdown: string) => {
   const fontSize = style.getPropertyValue("--chart-price-tag-text-size").trim()
   return Math.ceil(Math.max(chartTextWidth(priceText, fontSize), chartTextWidth(countdown, fontSize)) + padding * 2)
 }
-const chartGutter = (bars: Bar[], liveClose = bars[bars.length - 1].close) => {
+const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length - 1].close) => {
+  const { panels } = chartLayout(0, height)
   const values = chartPriceValues(bars)
-  const priceAxis = chartAxis(Math.min(...values), Math.max(...values), 8)
+  const priceAxis = chartAxisForLabels(Math.min(...values), Math.max(...values), axisLabelLimit(panels.price, 9))
   const decimals = priceAxis.decimals
   const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
   const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
-  const takerAxis = chartAxis(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))))
+  const takerAxis = chartAxisForLabels(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))), axisLabelLimit(panels.taker, 7))
   const labels = [
     ...priceAxis.ticks.map(tick => priceFormatter.format(tick)),
     `+${rocAxis.max.toFixed(rocAxis.decimals)}`, rocAxis.min.toFixed(rocAxis.decimals), "100", "0",
-    ...(oiValues.length ? chartAxis(Math.min(...oiValues), Math.max(...oiValues)).ticks.map(compact) : []),
+    ...(oiValues.length ? chartAxisForLabels(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7)).ticks.map(compact) : []),
     ...takerAxis.ticks.map(compact),
   ]
   const style = getComputedStyle(document.documentElement)
@@ -105,21 +108,21 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const firstHour = endHour - 95 * 3_600_000
   const firstAtLeft = bars[0].hour === firstHour
   const candleHigh = Math.max(...bars.map(bar => bar.high)), candleLow = Math.min(...bars.map(bar => bar.low))
-  const { gutter, scale: tagScale } = chartGutter(bars, liveBar.close)
+  const { gutter, scale: tagScale } = chartGutter(bars, height, liveBar.close)
   const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, gutter)
   const x = (index: number, panel: Panel) => chartHourX(bars[index].hour, latestHour, ...columns[panel])
   const barWidth = chartCandleWidth(right - left)
   const priceValues = chartPriceValues(bars)
   const priceMin = Math.min(...priceValues), priceMax = Math.max(...priceValues)
-  const priceAxis = chartAxis(priceMin, priceMax, 8)
+  const priceAxis = chartAxisForLabels(priceMin, priceMax, axisLabelLimit(panels.price, 9))
   const highIndex = bars.findIndex(bar => bar.high === candleHigh), lowIndex = bars.findIndex(bar => bar.low === candleLow)
   const priceDecimals = priceAxis.decimals
   const axisPrice = new Intl.NumberFormat("en-US", { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })
   const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
-  const oiAxis = oiValues.length ? chartAxis(Math.min(...oiValues), Math.max(...oiValues)) : null
+  const oiAxis = oiValues.length ? chartAxisForLabels(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7)) : null
   const maxTaker = Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0)))
-  const takerAxis = chartAxis(0, maxTaker)
+  const takerAxis = chartAxisForLabels(0, maxTaker, axisLabelLimit(panels.taker, 7))
   const scale = (value: number, min: number, max: number, panel: readonly [number, number]) =>
     panel[1] - (value - min) / (max - min || 1) * (panel[1] - panel[0])
   const priceY = (value: number) => scale(value, priceAxis.min, priceAxis.max, panels.price)
@@ -237,7 +240,7 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     {grid}
     {bars.flatMap((bar, index) => (bar.hour - firstHour) % (12 * 3_600_000) === 0 ? panelKeys.map(key => <line key={`${bar.hour}-${key}`} x1={x(index, key)} x2={x(index, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--border)" strokeOpacity="0.22" />) : [])}
     {bars.map((bar, index) => ({ bar, index })).filter(({ bar, index }) => index === n - 1 || (bar.hour - firstHour) % (24 * 3_600_000) === 0).map(({ bar, index }) => <text key={bar.hour} x={x(index, "taker")} y={height - 7} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)">{hourLabel(bar.hour)}</text>)}
-    {visibleTicks(priceAxis.ticks, Math.max(2, Math.floor((panels.price[1] - panels.price[0]) / 32) + 1)).map(tick => {
+    {priceAxis.ticks.map(tick => {
       const tickY = priceY(tick)
       return <g key={tick}><line x1={columns.price[0]} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.35" />{(tickY + tickHalfHeight < priceTagY || tickY - tickHalfHeight > priceTagY + scaledTagHeight) && lineLabel(axisStarts.price, tickY, axisPrice.format(tick))}</g>
     })}
@@ -282,8 +285,8 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     {legend("taker", [["Taker Buy", compact(active.buy), "var(--positive)"], ["Taker Sell", compact(active.sell), "var(--destructive)"]])}
     {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
     {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], `+${rocAxis.max.toFixed(rocAxis.decimals)}`)}{lineLabel(axisStarts.roc, panels.roc[1], rocAxis.min.toFixed(rocAxis.decimals))}</>}
-    {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && visibleTicks(oiAxis.ticks, Math.max(2, Math.floor((panels.oi[1] - panels.oi[0]) / 32) + 1)).map(tick => <g key={tick}>{lineLabel(axisStarts.oi, scale(tick, oiAxis.min, oiAxis.max, panels.oi), compact(tick))}</g>)}
-    {panels.taker[1] - panels.taker[0] >= 35 && visibleTicks(takerAxis.ticks, Math.max(2, Math.floor((panels.taker[1] - panels.taker[0]) / 32) + 1)).map(tick => <g key={tick}>{lineLabel(axisStarts.taker, scale(tick, takerAxis.min, takerAxis.max, panels.taker), compact(tick))}</g>)}
+    {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && oiAxis.ticks.map(tick => <g key={tick}>{lineLabel(axisStarts.oi, scale(tick, oiAxis.min, oiAxis.max, panels.oi), compact(tick))}</g>)}
+    {panels.taker[1] - panels.taker[0] >= 35 && takerAxis.ticks.map(tick => <g key={tick}>{lineLabel(axisStarts.taker, scale(tick, takerAxis.min, takerAxis.max, panels.taker), compact(tick))}</g>)}
   </>
 })
 
@@ -568,7 +571,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           if (id !== instId) return
           const rect = event.currentTarget.getBoundingClientRect()
           const svgX = event.clientX - rect.left
-          const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars, chart?.bars.at(-1)?.close).gutter)
+          const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars, plotSize.height, chart?.bars.at(-1)?.close).gutter)
           const [start, end] = columns.price
           const latestHour = viewportEnd
           let index = 0

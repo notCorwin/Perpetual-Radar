@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { chartAxis, visibleTicks } from "./chart-axis.ts"
+import { chartAxis, chartAxisForLabels } from "./chart-axis.ts"
 
 test("axes fit the plotted range and keep labels sparse", () => {
   const price = chartAxis(90, 94.34, 8)
@@ -10,10 +10,16 @@ test("axes fit the plotted range and keep labels sparse", () => {
   assert.deepEqual(chartAxis(2_567_200, 4_813_800).ticks, [2_500_000, 3_000_000, 3_500_000, 4_000_000, 4_500_000, 5_000_000])
   const taker = chartAxis(0, 519_660)
   assert.equal(taker.max, 600_000)
-  assert.deepEqual(visibleTicks(taker.ticks, 4), [0, 200_000, 400_000, 600_000])
   const roc = chartAxis(-38.9, 38.9, 8)
   assert.deepEqual([roc.min, roc.max], [-40, 40])
   const narrowOI = chartAxis(10_000_000, 10_100_000)
   assert.deepEqual([narrowOI.min, narrowOI.max], [10_000_000, 10_100_000])
   assert.deepEqual([chartAxis(0, 0.03, 8).min, chartAxis(0, 0.03, 8).max], [0, 0.03])
+})
+
+test("indicator labels use an even, rounded interval within the available height", () => {
+  const oi = chartAxisForLabels(1_450_000_000, 1_700_000_000, 4)
+  assert.deepEqual(oi.ticks, [1_400_000_000, 1_500_000_000, 1_600_000_000, 1_700_000_000])
+  assert.deepEqual(chartAxisForLabels(1_430_000_000, 1_730_000_000, 4).ticks, [1_400_000_000, 1_600_000_000, 1_800_000_000])
+  assert.deepEqual(chartAxisForLabels(0, 519_660, 4).ticks, [0, 200_000, 400_000, 600_000])
 })
