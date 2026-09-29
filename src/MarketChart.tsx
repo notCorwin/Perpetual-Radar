@@ -151,17 +151,17 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     lower.push(`${pointX} ${priceY(bar.bollLower).toFixed(1)}`)
   })
   finishBand()
-  const lineStroke = (d: string, color: string, width = 1.8, opacity = 1) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinejoin="round" opacity={opacity} />
+  const lineStroke = (d: string, color: string, width = 1.8, opacity = 1, dash?: string) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={dash} opacity={opacity} />
   const lineLabel = (x: number, y: number, label: string, color = "var(--muted-foreground)") =>
     <text x={x} y={y} dominantBaseline="middle" fill={color}>{label}</text>
   const panelKeys: Panel[] = ["price", "roc", "rsi", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>
     <line key={`${key}-${index}`} x1={columns[key][0]} x2={columns[key][1]} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" opacity={index ? 0.32 : 0.55} />))
-  const legend = (key: Panel, title: string, items: [string, string, string][]) => {
+  const legend = (key: Panel, title: string, items: [string, string, string, string?][]) => {
     const start = columns[key][0]
     const titleWidth = legendWidth(title)
     const gap = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chart-legend-gap"))
-    const widths = items.map(([label, value]) => legendWidth(label) + 10 + legendWidth(value))
+    const widths = items.map(([label, value, , dash]) => legendWidth(label) + 10 + legendWidth(value) + (dash === undefined ? 0 : 22))
     const available = right - start
     const required = titleWidth + widths.reduce((sum, itemWidth) => sum + itemWidth, 0) + gap * items.length
     const shrink = Math.min(1, available / required)
@@ -169,12 +169,14 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     return <g key={title}>
       <g transform={`translate(${start},${headerY[key]}) scale(${shrink})`}>
       <text dominantBaseline="middle" fill="var(--foreground)">{title}</text>
-      {items.map(([label, value, color], index) => {
+      {items.map(([label, value, color, dash], index) => {
         const itemStart = cursor
         cursor += widths[index] + gap
+        const labelStart = dash === undefined ? 0 : 22
         return <g key={label} transform={`translate(${itemStart},0)`}>
-        <text dominantBaseline="middle" fill="var(--muted-foreground)">{label}</text>
-        <text x={legendWidth(label) + 10} dominantBaseline="middle" fill={color}>{value}</text>
+        {dash !== undefined && <line x1="0" x2="16" y1="0" y2="0" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeDasharray={dash} />}
+        <text x={labelStart} dominantBaseline="middle" fill="var(--muted-foreground)">{label}</text>
+        <text x={labelStart + legendWidth(label) + 10} dominantBaseline="middle" fill={color}>{value}</text>
         </g>
       })}
       </g>
@@ -187,7 +189,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       </pattern>
     </defs>
     {bollBands.map((d, index) => <path key={index} d={d} fill="var(--chart-1)" fillOpacity="0.1" />)}
-    <rect x={columns.rsi[0]} y={scale(70, 0, 100, panels.rsi)} width={columns.rsi[1] - columns.rsi[0]} height={scale(30, 0, 100, panels.rsi) - scale(70, 0, 100, panels.rsi)} fill="var(--chart-2)" fillOpacity="0.14" />
+    <rect x={columns.rsi[0]} y={scale(70, 0, 100, panels.rsi)} width={columns.rsi[1] - columns.rsi[0]} height={scale(30, 0, 100, panels.rsi) - scale(70, 0, 100, panels.rsi)} fill="var(--muted)" />
     {grid}
     {bars.flatMap((bar, index) => (bar.hour - firstHour) % (12 * 3_600_000) === 0 ? panelKeys.map(key => <line key={`${bar.hour}-${key}`} x1={x(index, key)} x2={x(index, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--border)" strokeOpacity="0.22" />) : [])}
     {bars.map((bar, index) => ({ bar, index })).filter(({ bar, index }) => index === n - 1 || (bar.hour - firstHour) % (24 * 3_600_000) === 0).map(({ bar, index }) => <text key={bar.hour} x={x(index, "taker")} y={height - 7} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)">{hourLabel(bar.hour)}</text>)}
@@ -215,11 +217,11 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     {lineStroke(priceLine("bollLower"), "var(--chart-1)", 0.8, 0.62)}
     {lineStroke(priceLine("vwap"), "var(--chart-2)", 1.8)}
     {lineStroke(priceLine("ema"), "var(--chart-3)", 1.8, 0.9)}
-    {lineStroke(line("rsi6", "rsi", 0, 100), "var(--chart-1)")}
-    {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)")}
-    {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)")}
-    {lineStroke(line("roc", "roc", rocAxis.min, rocAxis.max), "var(--chart-1)")}
-    {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-2)")}
+    {lineStroke(line("rsi6", "rsi", 0, 100), "var(--chart-1)", 2.4)}
+    {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)", 2.4, 1, "7 4")}
+    {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)", 2.4, 1, "1 4")}
+    {lineStroke(line("roc", "roc", rocAxis.min, rocAxis.max), "var(--chart-1)", 2.4)}
+    {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-2)", 2.4, 1, "7 4")}
     {oiAxis && lineStroke(line("oi", "oi", oiAxis.min, oiAxis.max), "var(--chart-2)", 2)}
     {hovered !== null && panelKeys.map(key => <line key={key} x1={x(hovered, key)} x2={x(hovered, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeWidth="0.65" strokeDasharray="3 5" opacity="0.3" />)}
     {([[highIndex, candleHigh, "high"], [lowIndex, candleLow, "low"]] as const).map(([index, value, kind]) => {
@@ -237,8 +239,8 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
       <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{countdown}</text>
     </g>
     {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
-    {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
-    {legend("rsi", "RSI", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
+    {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)", ""], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)", "7 4"]])}
+    {legend("rsi", "RSI", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)", ""], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)", "7 4"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)", "1 4"]])}
     {legend("oi", "OPEN INTEREST", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
     {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
