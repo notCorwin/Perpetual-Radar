@@ -2,6 +2,15 @@ import XCTest
 @testable import PerpetualRadar
 
 final class AppUpdaterTests: XCTestCase {
+    func testAutomaticUpdatesAreOnByDefaultAndCanBeDisabled() throws {
+        let name = "PerpetualRadarTests-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertTrue(AppDelegate.automaticUpdatesEnabled(in: defaults))
+        defaults.set(false, forKey: "AutomaticallyInstallUpdates")
+        XCTAssertFalse(AppDelegate.automaticUpdatesEnabled(in: defaults))
+    }
+
     func testManifestUsesOnlyTheExpectedAppAndDigest() throws {
         let revision = String(repeating: "a", count: 40)
         let digest = String(repeating: "b", count: 64)

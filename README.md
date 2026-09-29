@@ -11,7 +11,7 @@ Perpetual Radar is a native macOS app for OKX's live, non-TradFi USDT perpetual 
 - Click a symbol for an in-app chart of the latest 96 one-hour candles, VWAP14, EMA200, Bollinger bands, volume, RSI, ROC/MAROC, open interest, and taker buy/sell volume. Arrow keys cycle through charts in descending 24-hour turnover order, wrapping between the first and last; Shift+Left/Right inspects candles. Nearby charts load and render in the background, and the open chart refreshes automatically.
 - Uses nine one-hour periods for ROC and MAROC.
 - Permanently stores completed one-hour candles, hourly open-interest values, taker volumes, EMA200 state, and chart statistics in SQLite under Application Support for future backtesting. The live calculations load only their recent window into memory.
-- Checks a small GitHub release manifest every 15 seconds without using the GitHub API. Use **Perpetual Radar → Check for Updates** to check immediately, then confirm to download, install, and relaunch a verified update. If GitHub limits requests, checks pause until its retry time.
+- Checks a small GitHub release manifest every 15 seconds without using the GitHub API. Automatic installation is enabled by default: a verified update downloads, installs, and relaunches the app. Turn it off with **Perpetual Radar → Automatically Install Updates**; **Check for Updates** remains available for a manual check. If GitHub limits requests, checks pause until its retry time.
 
 The list shows all eligible contracts together. New markets and indicators appear as OKX history loads. Missing values display as `—`. The collector reconnects WebSocket subscriptions and retries failed history requests.
 

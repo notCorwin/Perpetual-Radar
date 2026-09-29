@@ -14,8 +14,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     private var update: AppUpdate?
     private var isCheckingUpdate = false
     private var isInstallingUpdate = false
+    private var isPresentingUpdate = false
+    private var automaticInstallRetryAfter: Date?
     private lazy var checkUpdatesItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdatesNow), keyEquivalent: "")
+    private lazy var automaticUpdatesItem = NSMenuItem(title: "Automatically Install Updates", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
     private let appearanceMenu = NSMenu(title: "Appearance")
+    private nonisolated static let automaticUpdatesKey = "AutomaticallyInstallUpdates"
+
+    nonisolated static func automaticUpdatesEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: automaticUpdatesKey) as? Bool ?? true
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_PID_FILE"], !path.isEmpty {
@@ -29,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         appMenu.delegate = self
         checkUpdatesItem.target = self
         appMenu.addItem(checkUpdatesItem)
+        automaticUpdatesItem.target = self
+        automaticUpdatesItem.state = Self.automaticUpdatesEnabled() ? .on : .off
+        appMenu.addItem(automaticUpdatesItem)
         let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
         for (title, value) in [("System", "system"), ("Light", "light"), ("Dark", "dark")] {
             let item = NSMenuItem(title: title, action: #selector(changeAppearance(_:)), keyEquivalent: "")
@@ -130,6 +141,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     }
     @objc private func checkForUpdatesAutomatically() { checkForUpdates(silently: true) }
 
+    @objc private func toggleAutomaticUpdates() {
+        let enabled = !Self.automaticUpdatesEnabled()
+        UserDefaults.standard.set(enabled, forKey: Self.automaticUpdatesKey)
+        automaticUpdatesItem.state = enabled ? .on : .off
+        if enabled, updateState == "available", let update,
+           !isInstallingUpdate, !isPresentingUpdate {
+            installUpdate(update, automatically: true)
+        }
+    }
+
     private func renderUpdateItem() {
         if updateState == "available", let update {
             let revision = update.revision == "unknown" ? "" : " · \(update.revision.prefix(7))"
@@ -148,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     }
 
     private func checkForUpdates(silently: Bool) {
-        guard !isCheckingUpdate, !isInstallingUpdate else { return }
+        guard !isCheckingUpdate, !isInstallingUpdate, !isPresentingUpdate else { return }
         isCheckingUpdate = true
         updateState = "checking"
         renderUpdateItem()
@@ -160,7 +181,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 update = found
                 updateState = found == nil ? "latest" : "available"
                 if let found {
-                    if !silently { presentUpdate(found) }
+                    if Self.automaticUpdatesEnabled(),
+                       automaticInstallRetryAfter.map({ $0 <= Date() }) ?? true {
+                        installUpdate(found, automatically: true)
+                    } else if !silently {
+                        presentUpdate(found)
+                    }
                 } else if !silently {
                     showUpdateAlert("Up to Date", "You have the latest version of Perpetual Radar.")
                 }
@@ -173,13 +199,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     }
 
     private func presentUpdate(_ update: AppUpdate) {
+        guard !isInstallingUpdate, !isPresentingUpdate else { return }
+        isPresentingUpdate = true
         let alert = NSAlert()
         alert.messageText = "Update Available"
         let revision = update.revision == "unknown" ? "" : " (\(update.revision.prefix(7)))"
         alert.informativeText = "\(update.name)\(revision) is available. Download and install it now?"
         alert.addButton(withTitle: "Update")
         alert.addButton(withTitle: "Later")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let shouldInstall = alert.runModal() == .alertFirstButtonReturn
+        isPresentingUpdate = false
+        guard shouldInstall else { return }
+        installUpdate(update, automatically: false)
+    }
+
+    private func installUpdate(_ update: AppUpdate, automatically: Bool) {
+        guard !isInstallingUpdate else { return }
         isInstallingUpdate = true
         updateState = "installing"
         renderUpdateItem()
@@ -188,8 +223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             if case .failure(let error) = result {
                 isInstallingUpdate = false
                 updateState = "available"
+                if automatically { automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60) }
                 renderUpdateItem()
-                showUpdateAlert("Update Failed", error.localizedDescription)
+                if !automatically { showUpdateAlert("Update Failed", error.localizedDescription) }
             }
         }
     }
