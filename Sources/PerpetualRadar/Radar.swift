@@ -603,7 +603,7 @@ final class Radar {
             ema = chartEMA[ts] ?? ema.map { $0 + (bar.close - $0) * 2 / 201 }
             guard let open = bar.open else { continue }
             let (roc, maroc) = rocMaroc(series, ts, 9, 9)
-            let (upper, middle, lower) = boll(series, ts)
+            let (upper, middle, lower) = logBB(series, ts)
             let stat = stats[ts]
             let live = chartLiveStats[id]
             let oi = ts == hour ? rows[id]?.oiUsd ?? live?.oi : stat?.oi
@@ -613,7 +613,7 @@ final class Radar {
                 "hour": ts, "open": open, "high": bar.high, "low": bar.low, "close": bar.close,
                 "volume": bar.quoteVolume, "confirmed": bar.confirmed,
                 "vwap": vwap14(series, ts) as Any? ?? null, "ema": ema as Any? ?? null,
-                "bollUpper": upper as Any? ?? null, "bollMiddle": middle as Any? ?? null, "bollLower": lower as Any? ?? null,
+                "logBBUpper": upper as Any? ?? null, "logBBMiddle": middle as Any? ?? null, "logBBLower": lower as Any? ?? null,
                 "roc": roc as Any? ?? null, "maroc": maroc as Any? ?? null,
                 "rsi6": rsi(series, ts, 6) as Any? ?? null,
                 "rsi12": rsi(series, ts, 12) as Any? ?? null,
@@ -654,7 +654,7 @@ final class Radar {
             if let cached = cachedRows[id] { output.append(cached); continue }
             let bars = candles[id] ?? [:]
             let (high, low) = extremes(bars, hour)
-            let (upper, middle, lower) = boll(bars, hour)
+            let (upper, middle, lower) = logBB(bars, hour)
             let (roc, maroc) = rocMaroc(bars, hour, rocPeriod, marocPeriod)
             let current = bars[hour], previous = bars[hour - hourMS]
             let live = current?.confirmed == false ? current : nil
@@ -677,7 +677,7 @@ final class Radar {
                 "rsi6": rsi(bars, hour, 6) as Any? ?? null,
                 "rsi12": rsi(bars, hour, 12) as Any? ?? null,
                 "rsi24": rsi(bars, hour, 24) as Any? ?? null,
-                "bollUpper": upper as Any? ?? null, "bollMiddle": middle as Any? ?? null, "bollLower": lower as Any? ?? null,
+                "logBBUpper": upper as Any? ?? null, "logBBMiddle": middle as Any? ?? null, "logBBLower": lower as Any? ?? null,
             ]
             cachedRows[id] = result
             output.append(result)

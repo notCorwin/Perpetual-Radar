@@ -3,7 +3,7 @@ import { flushSync } from "react-dom"
 import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { chartAxis, chartAxisForLabels } from "@/chart-axis"
+import { chartAxis, logarithmicChartAxis, logarithmicY } from "@/chart-axis"
 import { chartCandleWidth, chartHourX, chartLayout, fitPriceTag, type ChartPanel as Panel } from "@/chart-layout"
 import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
@@ -11,7 +11,7 @@ import { chartNavigationTarget, wrappedMarket } from "@/market-sort"
 
 type Bar = {
   hour: number; open: number; high: number; low: number; close: number; confirmed: boolean
-  vwap: number | null; ema: number | null; bollUpper: number | null; bollMiddle: number | null; bollLower: number | null
+  vwap: number | null; ema: number | null; logBBUpper: number | null; logBBMiddle: number | null; logBBLower: number | null
   roc: number | null; maroc: number | null; rsi6: number | null; rsi12: number | null; rsi24: number | null
   oi: number | null; buy: number | null; sell: number | null
 }
@@ -55,7 +55,7 @@ const compact = (value: number | null) => value === null ? "—" : new Intl.Numb
 const price = (value: number | null) => value === null ? "—" : new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 }).format(value)
 const time = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
 const hourLabel = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", hour12: false })
-const chartPriceValues = (bars: Bar[]) => bars.flatMap(bar => [bar.low, bar.high, bar.vwap, bar.ema, bar.bollUpper, bar.bollMiddle, bar.bollLower].filter((value): value is number => value !== null))
+const chartPriceValues = (bars: Bar[]) => bars.flatMap(bar => [bar.low, bar.high, bar.vwap, bar.ema, bar.logBBUpper, bar.logBBMiddle, bar.logBBLower].filter((value): value is number => value !== null && value > 0))
 const rocAxisFor = (bars: Bar[]) => {
   const values = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
   const extent = values.length ? Math.max(...values.map(Math.abs)) || 1 : 1
@@ -80,16 +80,17 @@ const priceTagWidth = (priceText: string, countdown: string) => {
 const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length - 1].close) => {
   const { panels } = chartLayout(0, height)
   const values = chartPriceValues(bars)
-  const priceAxis = chartAxisForLabels(Math.min(...values), Math.max(...values), axisLabelLimit(panels.price, 9))
+  const priceAxis = logarithmicChartAxis(Math.min(...values), Math.max(...values), axisLabelLimit(panels.price, 9))
   const decimals = priceAxis.decimals
   const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
   const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
-  const takerAxis = chartAxisForLabels(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))), axisLabelLimit(panels.taker, 7))
+  const rsiAxis = logarithmicChartAxis(0, 100, axisLabelLimit(panels.rsi, 7), true)
+  const takerAxis = logarithmicChartAxis(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))), axisLabelLimit(panels.taker, 7), true)
   const labels = [
     ...priceAxis.ticks.map(tick => priceFormatter.format(tick)),
-    `+${rocAxis.max.toFixed(rocAxis.decimals)}`, rocAxis.min.toFixed(rocAxis.decimals), "100", "0",
-    ...(oiValues.length ? chartAxisForLabels(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7)).ticks.map(compact) : []),
+    `+${rocAxis.max.toFixed(rocAxis.decimals)}`, rocAxis.min.toFixed(rocAxis.decimals), ...rsiAxis.ticks.map(String),
+    ...(oiValues.length ? logarithmicChartAxis(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7), true).ticks.map(compact) : []),
     ...takerAxis.ticks.map(compact),
   ]
   const style = getComputedStyle(document.documentElement)
@@ -116,18 +117,22 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const barWidth = chartCandleWidth(right - left)
   const priceValues = chartPriceValues(bars)
   const priceMin = Math.min(...priceValues), priceMax = Math.max(...priceValues)
-  const priceAxis = chartAxisForLabels(priceMin, priceMax, axisLabelLimit(panels.price, 9))
+  const priceAxis = logarithmicChartAxis(priceMin, priceMax, axisLabelLimit(panels.price, 9))
   const highIndex = bars.findIndex(bar => bar.high === candleHigh), lowIndex = bars.findIndex(bar => bar.low === candleLow)
   const priceDecimals = priceAxis.decimals
   const axisPrice = new Intl.NumberFormat("en-US", { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })
   const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
-  const oiAxis = oiValues.length ? chartAxisForLabels(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7)) : null
+  const rsiAxis = logarithmicChartAxis(0, 100, axisLabelLimit(panels.rsi, 7), true)
+  const oiAxis = oiValues.length ? logarithmicChartAxis(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7), true) : null
   const maxTaker = Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0)))
-  const takerAxis = chartAxisForLabels(0, maxTaker, axisLabelLimit(panels.taker, 7))
+  const takerAxis = logarithmicChartAxis(0, maxTaker, axisLabelLimit(panels.taker, 7), true)
   const scale = (value: number, min: number, max: number, panel: readonly [number, number]) =>
     panel[1] - (value - min) / (max - min || 1) * (panel[1] - panel[0])
-  const priceY = (value: number) => scale(value, priceAxis.min, priceAxis.max, panels.price)
+  const priceY = (value: number) => logarithmicY(value, priceAxis, panels.price)
+  const rsiY = (value: number) => logarithmicY(value, rsiAxis, panels.rsi)
+  const oiY = (value: number) => oiAxis ? logarithmicY(value, oiAxis, panels.oi) : NaN
+  const takerY = (value: number) => logarithmicY(value, takerAxis, panels.taker)
   const rocZeroY = scale(0, rocAxis.min, rocAxis.max, panels.roc)
   const tag = livePriceTag(liveBar, endHour, now)
   const latestY = priceY(tag.price)
@@ -149,24 +154,24 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const scaledTagHeight = tagHeight * tagScale
   const priceTagY = tag.inViewport ? Math.max(panels.price[0], Math.min(latestY - scaledTagHeight / 2, panels.price[1] - scaledTagHeight)) : panels.price[0]
   const tagX = right + tagGap + tagStrokeWidth * tagScale / 2
-  const line = (key: keyof Bar, panelKey: Panel, min: number, max: number) => {
+  const line = (key: keyof Bar, panelKey: Panel, y: (value: number) => number) => {
     const segments: string[] = []
     let segment = ""
     bars.forEach((bar, index) => {
       const value = bar[key]
-      if (typeof value !== "number" || (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000)) {
+      const pointY = typeof value === "number" ? y(value) : NaN
+      if (!Number.isFinite(pointY) || (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000)) {
         if (segment) segments.push(segment)
         segment = ""
-        if (typeof value !== "number") return
+        if (!Number.isFinite(pointY)) return
       }
-      const pointY = scale(value, min, max, panels[panelKey]).toFixed(1)
-      if (index === 0 && firstAtLeft) segment = `M${left} ${pointY}`
-      segment += `${segment ? " L" : "M"}${x(index, panelKey).toFixed(1)} ${pointY}`
+      if (index === 0 && firstAtLeft) segment = `M${left} ${pointY.toFixed(1)}`
+      segment += `${segment ? " L" : "M"}${x(index, panelKey).toFixed(1)} ${pointY.toFixed(1)}`
     })
     if (segment) segments.push(segment)
     return segments.join(" ")
   }
-  const priceLine = (key: keyof Bar) => line(key, "price", priceAxis.min, priceAxis.max)
+  const priceLine = (key: keyof Bar) => line(key, "price", priceY)
   const rocArea = (key: "roc" | "maroc") => {
     const segments: string[] = []
     let points: [number, number][] = []
@@ -188,22 +193,22 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     return segments.join(" ")
   }
   const rocAreas = [rocArea("roc"), rocArea("maroc")]
-  const bollBands: string[] = []
+  const logBBBands: string[] = []
   let upper: string[] = [], lower: string[] = []
   const finishBand = () => {
-    if (upper.length > 1) bollBands.push(`M${upper.join(" L")} L${lower.reverse().join(" L")} Z`)
+    if (upper.length > 1) logBBBands.push(`M${upper.join(" L")} L${lower.reverse().join(" L")} Z`)
     upper = []; lower = []
   }
   bars.forEach((bar, index) => {
-    if (bar.bollUpper === null || bar.bollLower === null) { finishBand(); return }
+    if (bar.logBBUpper === null || bar.logBBLower === null) { finishBand(); return }
     if (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000) finishBand()
     const pointX = x(index, "price").toFixed(1)
     if (index === 0 && firstAtLeft) {
-      upper.push(`${left} ${priceY(bar.bollUpper).toFixed(1)}`)
-      lower.push(`${left} ${priceY(bar.bollLower).toFixed(1)}`)
+      upper.push(`${left} ${priceY(bar.logBBUpper).toFixed(1)}`)
+      lower.push(`${left} ${priceY(bar.logBBLower).toFixed(1)}`)
     }
-    upper.push(`${pointX} ${priceY(bar.bollUpper).toFixed(1)}`)
-    lower.push(`${pointX} ${priceY(bar.bollLower).toFixed(1)}`)
+    upper.push(`${pointX} ${priceY(bar.logBBUpper).toFixed(1)}`)
+    lower.push(`${pointX} ${priceY(bar.logBBLower).toFixed(1)}`)
   })
   finishBand()
   const indicatorWidth = "var(--chart-indicator-line-width)"
@@ -224,10 +229,10 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     bodies.push(rectangle(center - barWidth / 2, top, barWidth, Math.max(1.5, priceY(Math.min(bar.open, bar.close)) - top)))
     const volumeCenter = x(index, "taker")
     const volumeX = volumeCenter - barWidth / 2
-    const buyHeight = (bar.buy ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
-    const sellHeight = (bar.sell ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
-    if (buyHeight) buys.push(rectangle(volumeX, panels.taker[1] - buyHeight, barWidth, buyHeight))
-    if (sellHeight) sells.push(rectangle(volumeX, panels.taker[1] - buyHeight - sellHeight, barWidth, sellHeight))
+    const buy = bar.buy ?? 0, sell = bar.sell ?? 0
+    const zeroY = takerY(0), buyY = takerY(buy), totalY = takerY(buy + sell)
+    if (buy > 0) buys.push(rectangle(volumeX, buyY, barWidth, zeroY - buyY))
+    if (sell > 0) sells.push(rectangle(volumeX, totalY, barWidth, buyY - totalY))
   }
   const panelKeys: Panel[] = ["price", "roc", "rsi", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>
@@ -261,12 +266,12 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
       <clipPath id={`${areaClipId}-positive`}><rect x={columns.roc[0]} y={panels.roc[0]} width={columns.roc[1] - columns.roc[0]} height={rocZeroY - panels.roc[0]} /></clipPath>
       <clipPath id={`${areaClipId}-negative`}><rect x={columns.roc[0]} y={rocZeroY} width={columns.roc[1] - columns.roc[0]} height={panels.roc[1] - rocZeroY} /></clipPath>
     </defs>
-    {bollBands.map((d, index) => <path key={index} d={d} fill="var(--chart-1)" fillOpacity="0.1" />)}
+    {logBBBands.map((d, index) => <path key={index} d={d} fill="var(--chart-1)" fillOpacity="0.1" />)}
     {rocAreas.map((area, index) => <g key={index}>
       <path d={area} fill="var(--chart-roc-positive-area)" clipPath={`url(#${areaClipId}-positive)`} />
       <path d={area} fill="var(--chart-roc-negative-area)" clipPath={`url(#${areaClipId}-negative)`} />
     </g>)}
-    <rect x={columns.rsi[0]} y={scale(70, 0, 100, panels.rsi)} width={columns.rsi[1] - columns.rsi[0]} height={scale(30, 0, 100, panels.rsi) - scale(70, 0, 100, panels.rsi)} fill="var(--muted)" />
+    <rect x={columns.rsi[0]} y={rsiY(70)} width={columns.rsi[1] - columns.rsi[0]} height={rsiY(30) - rsiY(70)} fill="var(--muted)" />
     {grid}
     {rocZeroY > panels.roc[0] && rocZeroY < panels.roc[1] && <line x1={columns.roc[0]} x2={columns.roc[1]} y1={rocZeroY} y2={rocZeroY} stroke="var(--muted-foreground)" strokeWidth="1" strokeOpacity="0.5" />}
     {bars.flatMap((bar, index) => (bar.hour - firstHour) % (12 * 3_600_000) === 0 ? panelKeys.map(key => <line key={`${bar.hour}-${key}`} x1={x(index, key)} x2={x(index, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--border)" strokeOpacity="0.22" />) : [])}
@@ -283,17 +288,17 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     <path d={buys.join(" ")} fill="var(--positive)" opacity="0.9" />
     <path d={sells.join(" ")} fill="var(--destructive)" opacity="0.9" />
     <path d={sells.join(" ")} fill="url(#sell-hatch)" opacity="0.7" />
-    {lineStroke(priceLine("bollUpper"), "var(--chart-1)", indicatorWidth, 0.62)}
-    {lineStroke(priceLine("bollMiddle"), "var(--chart-1)")}
-    {lineStroke(priceLine("bollLower"), "var(--chart-1)", indicatorWidth, 0.62)}
+    {lineStroke(priceLine("logBBUpper"), "var(--chart-1)", indicatorWidth, 0.62)}
+    {lineStroke(priceLine("logBBMiddle"), "var(--chart-1)")}
+    {lineStroke(priceLine("logBBLower"), "var(--chart-1)", indicatorWidth, 0.62)}
     {lineStroke(priceLine("vwap"), "var(--chart-2)")}
     {lineStroke(priceLine("ema"), "var(--chart-3)", indicatorWidth, 0.9)}
-    {lineStroke(line("rsi6", "rsi", 0, 100), "var(--chart-1)")}
-    {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)", indicatorWidth, 1, "7 4")}
-    {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)", indicatorWidth, 1, "1 4")}
-    {lineStroke(line("roc", "roc", rocAxis.min, rocAxis.max), "var(--chart-1)")}
-    {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-2)", indicatorWidth, 1, "7 4")}
-    {oiAxis && lineStroke(line("oi", "oi", oiAxis.min, oiAxis.max), "var(--chart-2)")}
+    {lineStroke(line("rsi6", "rsi", rsiY), "var(--chart-1)")}
+    {lineStroke(line("rsi12", "rsi", rsiY), "var(--chart-2)", indicatorWidth, 1, "7 4")}
+    {lineStroke(line("rsi24", "rsi", rsiY), "var(--chart-3)", indicatorWidth, 1, "1 4")}
+    {lineStroke(line("roc", "roc", value => scale(value, rocAxis.min, rocAxis.max, panels.roc)), "var(--chart-1)")}
+    {lineStroke(line("maroc", "roc", value => scale(value, rocAxis.min, rocAxis.max, panels.roc)), "var(--chart-2)", indicatorWidth, 1, "7 4")}
+    {oiAxis && lineStroke(line("oi", "oi", oiY), "var(--chart-2)")}
     {hovered !== null && panelKeys.map(key => <line key={key} x1={x(hovered, key)} x2={x(hovered, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeWidth="0.65" strokeDasharray="3 5" opacity="0.3" />)}
     {([[highIndex, candleHigh, "high"], [lowIndex, candleLow, "low"]] as const).map(([index, value, kind]) => {
       const markerX = x(index, "price"), label = price(value)
@@ -309,15 +314,15 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
       <text x={tagWidth / 2} y={tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{latestPrice}</text>
       {showCountdown && <text x={tagWidth / 2} y={tagPaddingY + tagLineHeight * 1.5 + tagRowGap} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{countdown}</text>}
     </g>
-    {legend("price", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
+    {legend("price", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["Log BB(20)", `U ${price(active.logBBUpper)}\u00a0·\u00a0M ${price(active.logBBMiddle)}\u00a0·\u00a0L ${price(active.logBBLower)}`, "var(--chart-1)"]])}
     {legend("roc", [["ROC(9)", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC(9)", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
     {legend("rsi", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("oi", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", [["Taker Buy", compact(active.buy), "var(--positive)"], ["Taker Sell", compact(active.sell), "var(--destructive)"]])}
-    {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
+    {panels.rsi[1] - panels.rsi[0] >= 35 && rsiAxis.ticks.map(tick => <g key={tick}><line x1={columns.rsi[0]} x2={right} y1={rsiY(tick)} y2={rsiY(tick)} stroke="var(--border)" strokeOpacity="0.25" />{lineLabel(axisStarts.rsi, rsiY(tick), String(tick))}</g>)}
     {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], `+${rocAxis.max.toFixed(rocAxis.decimals)}`)}{lineLabel(axisStarts.roc, panels.roc[1], rocAxis.min.toFixed(rocAxis.decimals))}</>}
-    {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && oiAxis.ticks.map(tick => <g key={tick}>{lineLabel(axisStarts.oi, scale(tick, oiAxis.min, oiAxis.max, panels.oi), compact(tick))}</g>)}
-    {panels.taker[1] - panels.taker[0] >= 35 && takerAxis.ticks.map(tick => <g key={tick}>{lineLabel(axisStarts.taker, scale(tick, takerAxis.min, takerAxis.max, panels.taker), compact(tick))}</g>)}
+    {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && oiAxis.ticks.map(tick => <g key={tick}><line x1={columns.oi[0]} x2={right} y1={oiY(tick)} y2={oiY(tick)} stroke="var(--border)" strokeOpacity="0.25" />{lineLabel(axisStarts.oi, oiY(tick), compact(tick))}</g>)}
+    {panels.taker[1] - panels.taker[0] >= 35 && takerAxis.ticks.map(tick => <g key={tick}><line x1={columns.taker[0]} x2={right} y1={takerY(tick)} y2={takerY(tick)} stroke="var(--border)" strokeOpacity="0.25" />{lineLabel(axisStarts.taker, takerY(tick), compact(tick))}</g>)}
   </>
 })
 
@@ -591,7 +596,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
         })
       }}>
         <div className="relative h-full w-full">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC and MAROC with positive and negative areas shaded, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the highest turnover market and right jumps to the lowest. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200 and Log BB on a logarithmic price scale; RSI, open interest, and taker volume use zero-inclusive logarithmic scales, while ROC and MAROC remain linear. RSI has a shaded 30 to 70 range and ROC and MAROC have shaded positive and negative areas. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the highest turnover market and right jumps to the lowest. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()

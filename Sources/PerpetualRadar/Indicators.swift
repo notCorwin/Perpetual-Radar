@@ -97,13 +97,17 @@ func rsi(_ bars: [Int64: Candle], _ hour: Int64, _ period: Int) -> Double? {
     return gain + loss > 0 ? 100 * gain / (gain + loss) : 50
 }
 
-func boll(_ bars: [Int64: Candle], _ hour: Int64) -> (Double?, Double?, Double?) {
-    var closes: [Double] = []
+func logBB(_ bars: [Int64: Candle], _ hour: Int64) -> (Double?, Double?, Double?) {
+    var logCloses: [Double] = []
     for age in 0..<20 {
-        guard let bar = bars[hour - Int64(age) * hourMS], age == 0 || bar.confirmed else { return (nil, nil, nil) }
-        closes.append(bar.close)
+        guard let bar = bars[hour - Int64(age) * hourMS], age == 0 || bar.confirmed,
+              bar.close > 0 else { return (nil, nil, nil) }
+        logCloses.append(log(bar.close))
     }
-    let middle = closes.reduce(0, +) / 20
-    let width = 2 * sqrt(closes.reduce(0) { $0 + pow($1 - middle, 2) } / 20)
-    return (middle + width, middle, middle - width)
+    let middle = logCloses.reduce(0, +) / 20
+    let width = 2 * sqrt(logCloses.reduce(0) { $0 + pow($1 - middle, 2) } / 20)
+    let upper = exp(middle + width), center = exp(middle), lower = exp(middle - width)
+    guard upper.isFinite, center.isFinite, lower.isFinite,
+          upper > 0, center > 0, lower > 0 else { return (nil, nil, nil) }
+    return (upper, center, lower)
 }

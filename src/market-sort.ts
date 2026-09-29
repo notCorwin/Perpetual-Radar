@@ -1,4 +1,4 @@
-export type SortKey = "instId" | "turnover24hUSDT" | "high48" | "low48" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "bollUpper" | "bollMiddle" | "bollLower"
+export type SortKey = "instId" | "turnover24hUSDT" | "high48" | "low48" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBUpper" | "logBBMiddle" | "logBBLower"
 
 export type SortableRow = {
   instId: string
@@ -13,9 +13,9 @@ export type SortableRow = {
   rsi6: number | null
   rsi12: number | null
   rsi24: number | null
-  bollUpper: number | null
-  bollMiddle: number | null
-  bollLower: number | null
+  logBBUpper: number | null
+  logBBMiddle: number | null
+  logBBLower: number | null
 }
 
 export function compareMarketTurnover(a: { instId: string; turnover24hUSDT: number }, b: { instId: string; turnover24hUSDT: number }): number {

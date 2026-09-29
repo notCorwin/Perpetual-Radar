@@ -56,12 +56,32 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertEqual(rocMaroc(bars, hour, 9, 9).1!, expectedMAROC, accuracy: 0.000001)
         XCTAssertEqual(vwap14(bars, hour), 100)
         XCTAssertEqual(rsi(bars, hour, 6), 100)
-        XCTAssertEqual(boll(bars, hour).1, 190.5)
+        let geometricMean = exp((181...200).map { log(Double($0)) }.reduce(0, +) / 20)
+        XCTAssertEqual(logBB(bars, hour).1!, geometricMean, accuracy: 0.000001)
         bars.removeValue(forKey: hour - 7 * hourMS)
         XCTAssertNil(extremes(bars, hour).0)
         XCTAssertNil(vwap14(bars, hour))
-        XCTAssertNil(boll(bars, hour).0)
+        XCTAssertNil(logBB(bars, hour).0)
         XCTAssertNil(rocMaroc(bars, hour, 9, 9).1)
+    }
+
+    func testLogBBRemainsPositiveForWidePriceRanges() throws {
+        let hour = Int64(20) * hourMS
+        var bars: [Int64: Candle] = [:]
+        for age in 0..<20 {
+            let ts = hour - Int64(age) * hourMS
+            bars[ts] = Candle(hour: ts, high: 100, low: 1, close: age.isMultiple(of: 2) ? 1 : 100,
+                              quoteVolume: 100, baseVolume: 1)
+        }
+        let (upper, middle, lower) = logBB(bars, hour)
+        XCTAssertEqual(try XCTUnwrap(upper), 1_000, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(middle), 10, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(lower), 0.1, accuracy: 0.000001)
+        bars.removeValue(forKey: hour - 19 * hourMS)
+        XCTAssertNil(logBB(bars, hour).0)
+        bars[hour - 19 * hourMS] = Candle(hour: hour - 19 * hourMS, high: 100, low: 0,
+                                         close: 0, quoteVolume: 100, baseVolume: 1)
+        XCTAssertNil(logBB(bars, hour).0)
     }
 
     func testCandleValidationAndPermanentHistory() throws {
