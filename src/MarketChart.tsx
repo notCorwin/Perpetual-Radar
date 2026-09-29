@@ -239,7 +239,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
     {legend("rsi", "RSI", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("oi", "OPEN INTEREST", [["OI", compact(active.oi), "var(--chart-2)"]])}
-    {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive-text)"], ["Sell", compact(active.sell), "var(--destructive-text)"]])}
+    {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
     {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
     {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], `+${rocAxis.max.toFixed(rocAxis.decimals)}`)}{lineLabel(axisStarts.roc, panels.roc[1], rocAxis.min.toFixed(rocAxis.decimals))}</>}
     {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && visibleTicks(oiAxis.ticks, Math.max(2, Math.floor((panels.oi[1] - panels.oi[0]) / 32) + 1)).map(tick => <g key={tick}>{lineLabel(axisStarts.oi, scale(tick, oiAxis.min, oiAxis.max, panels.oi), compact(tick))}</g>)}
