@@ -135,6 +135,102 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "new")
     }
 
+    func testRelaunchWaitsForOldProcessAndReusesDockApp() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarRelaunchTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let app = root.appendingPathComponent("Perpetual Radar.app")
+        let backup = root.appendingPathComponent("backup.app")
+        let log = root.appendingPathComponent("open.log")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let opener = try makeFakeOpener(in: root, fail: false)
+
+        let oldApp = Process()
+        oldApp.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        oldApp.arguments = ["30"]
+        try oldApp.run()
+        defer {
+            if oldApp.isRunning {
+                oldApp.terminate()
+                oldApp.waitUntilExit()
+            }
+        }
+
+        let helper = try runRelaunchHelper(
+            app: app, oldPID: oldApp.processIdentifier, backup: backup,
+            opener: opener, log: log
+        )
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path), "The replacement must not open while the old app is running")
+
+        oldApp.terminate()
+        oldApp.waitUntilExit()
+        helper.waitUntilExit()
+        XCTAssertEqual(helper.terminationStatus, 0)
+        let arguments = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(arguments.contains("-a\n\(app.path)\n"))
+        XCTAssertFalse(arguments.contains("-n\n"), "A forced new instance creates a second Dock tile")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    func testRelaunchRestoresBackupIfNewAppCannotOpen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarRelaunchTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let app = root.appendingPathComponent("Perpetual Radar.app")
+        let backup = root.appendingPathComponent("backup.app")
+        let log = root.appendingPathComponent("open.log")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: backup.appendingPathComponent("marker"))
+        let opener = try makeFakeOpener(in: root, fail: true)
+
+        let helper = try runRelaunchHelper(
+            app: app, oldPID: Int32.max, backup: backup,
+            opener: opener, log: log
+        )
+        helper.waitUntilExit()
+        XCTAssertNotEqual(helper.terminationStatus, 0)
+        XCTAssertEqual(try String(contentsOf: app.appendingPathComponent("marker"), encoding: .utf8), "old")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+        XCTAssertTrue(try String(contentsOf: log, encoding: .utf8).contains("PERPETUAL_RADAR_UPDATE_ROLLBACK=1"))
+    }
+
+    private func makeFakeOpener(in root: URL, fail: Bool) throws -> URL {
+        let opener = root.appendingPathComponent("open")
+        let body = fail ? "exit 1" : """
+        for argument in "$@"; do
+            case "$argument" in
+                PERPETUAL_RADAR_PID_FILE=*) pid_file="${argument#*=}" ;;
+                PERPETUAL_RADAR_READY_FILE=*) ready_file="${argument#*=}" ;;
+            esac
+        done
+        printf '%s' "$PERPETUAL_RADAR_TEST_PID" > "$pid_file"
+        /usr/bin/touch "$ready_file"
+        """
+        try Data("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$PERPETUAL_RADAR_TEST_LOG\"\n\(body)\n".utf8).write(to: opener)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: opener.path)
+        return opener
+    }
+
+    private func runRelaunchHelper(
+        app: URL, oldPID: Int32, backup: URL, opener: URL, log: URL
+    ) throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", AppUpdater.defaultRelauncherScript, "Perpetual Radar updater",
+            app.path, String(oldPID), backup.path, opener.path,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PERPETUAL_RADAR_TEST_LOG"] = log.path
+        environment["PERPETUAL_RADAR_TEST_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        process.environment = environment
+        try process.run()
+        return process
+    }
+
     private func makeApp(at url: URL, marker: String) throws {
         let contents = url.appendingPathComponent("Contents")
         let executable = contents.appendingPathComponent("MacOS/PerpetualRadar")

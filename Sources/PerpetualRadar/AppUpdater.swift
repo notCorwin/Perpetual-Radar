@@ -977,34 +977,55 @@ final class AppUpdater: @unchecked Sendable {
         return output
     }
 
-    private static let defaultRelauncherScript = #"""
+    // Run after the current app exits so Launch Services can reuse its pinned Dock tile.
+    // The helper is detached from the updater's lifetime by Process.run().
+    static let defaultRelauncherScript = #"""
     ready_dir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/PerpetualRadar-ready.XXXXXX") || exit 1
     ready_file="$ready_dir/ready"
     pid_file="$ready_dir/pid"
-    trap 'rm -rf "$ready_dir"' EXIT
-    /usr/bin/open -n -a "$1" --env "PERPETUAL_RADAR_PID_FILE=$pid_file" --env "PERPETUAL_RADAR_READY_FILE=$ready_file" || exit 1
+    trap '/bin/rm -rf "$ready_dir"' EXIT
+    attempt=0
+    while /bin/kill -0 "$2" 2>/dev/null; do
+        if [ "$attempt" -ge 300 ]; then exit 1; fi
+        attempt=$((attempt + 1))
+        /bin/sleep 0.1
+    done
+    opener="${4:-/usr/bin/open}"
+    "$opener" -a "$1" --env "PERPETUAL_RADAR_PID_FILE=$pid_file" --env "PERPETUAL_RADAR_READY_FILE=$ready_file"
+    launched=$?
     new_pid=
     attempt=0
-    while [ "$attempt" -lt 50 ]; do
-        if [ -z "$new_pid" ] && [ -s "$pid_file" ]; then
-            new_pid=$(cat "$pid_file")
-        fi
-        if [ -f "$ready_file" ]; then
-            sleep 0.2
-            if [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then
-                kill "$2" 2>/dev/null || true
-                rm -rf "$3"
-                exit 0
+    if [ "$launched" -eq 0 ]; then
+        while [ "$attempt" -lt 100 ]; do
+            if [ -z "$new_pid" ] && [ -s "$pid_file" ]; then
+                new_pid=$(/bin/cat "$pid_file")
             fi
-            break
+            if [ -f "$ready_file" ]; then
+                /bin/sleep 0.2
+                if [ -n "$new_pid" ] && /bin/kill -0 "$new_pid" 2>/dev/null; then
+                    /bin/rm -rf "$3"
+                    exit 0
+                fi
+                break
+            fi
+            if [ -n "$new_pid" ] && ! /bin/kill -0 "$new_pid" 2>/dev/null; then
+                break
+            fi
+            attempt=$((attempt + 1))
+            /bin/sleep 0.1
+        done
+    fi
+    if [ -n "$new_pid" ]; then /bin/kill "$new_pid" 2>/dev/null || true; fi
+    if [ -d "$3" ]; then
+        failed_app="$1.failed-$$"
+        if [ -e "$1" ]; then /bin/mv "$1" "$failed_app" || exit 1; fi
+        if ! /bin/mv "$3" "$1"; then
+            if [ -e "$failed_app" ]; then /bin/mv "$failed_app" "$1"; fi
+            exit 1
         fi
-        if [ -n "$new_pid" ] && ! kill -0 "$new_pid" 2>/dev/null; then
-            break
-        fi
-        attempt=$((attempt + 1))
-        sleep 0.1
-    done
-    if [ -n "$new_pid" ]; then kill "$new_pid" 2>/dev/null || true; fi
+        if [ -e "$failed_app" ]; then /bin/rm -rf "$failed_app"; fi
+        "$opener" -a "$1" --env "PERPETUAL_RADAR_UPDATE_ROLLBACK=1" || true
+    fi
     exit 1
     """#
 
@@ -1017,7 +1038,8 @@ final class AppUpdater: @unchecked Sendable {
             "Perpetual Radar updater",
             appURL.path,
             String(ProcessInfo.processInfo.processIdentifier),
-            backupURL.path
+            backupURL.path,
+            "/usr/bin/open"
         ]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -1027,10 +1049,6 @@ final class AppUpdater: @unchecked Sendable {
             throw AppUpdateError.installFailed(
                 "Could not launch the updated app: \(error.localizedDescription)"
             )
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw AppUpdateError.installFailed("The updated app did not start.")
         }
     }
 }

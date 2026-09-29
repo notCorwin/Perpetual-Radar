@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ProcessInfo.processInfo.environment["PERPETUAL_RADAR_UPDATE_ROLLBACK"] == "1" {
+            automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60)
+        }
         if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_PID_FILE"], !path.isEmpty {
             FileManager.default.createFile(atPath: path, contents: Data(String(ProcessInfo.processInfo.processIdentifier).utf8))
         }
@@ -220,7 +223,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         renderUpdateItem()
         updater.downloadAndInstall(update) { [weak self] result in
             guard let self else { return }
-            if case .failure(let error) = result {
+            switch result {
+            case .success:
+                NSApp.terminate(nil)
+            case .failure(let error):
                 isInstallingUpdate = false
                 updateState = "available"
                 if automatically { automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60) }
