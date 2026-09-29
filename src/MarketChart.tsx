@@ -99,6 +99,7 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const active = bars[hovered ?? n - 1]
   const latestHour = endHour
   const firstHour = endHour - 95 * 3_600_000
+  const firstAtLeft = bars[0].hour === firstHour
   const candleHigh = Math.max(...bars.map(bar => bar.high)), candleLow = Math.min(...bars.map(bar => bar.low))
   const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, chartGutter(bars, liveBar.close))
   const x = (index: number, panel: Panel) => chartHourX(bars[index].hour, latestHour, ...columns[panel])
@@ -147,7 +148,9 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
         segment = ""
         if (typeof value !== "number") return
       }
-      segment += `${segment ? " L" : "M"}${x(index, panelKey).toFixed(1)} ${scale(value, min, max, panels[panelKey]).toFixed(1)}`
+      const pointY = scale(value, min, max, panels[panelKey]).toFixed(1)
+      if (index === 0 && firstAtLeft) segment = `M${left} ${pointY}`
+      segment += `${segment ? " L" : "M"}${x(index, panelKey).toFixed(1)} ${pointY}`
     })
     if (segment) segments.push(segment)
     return segments.join(" ")
@@ -163,6 +166,10 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     if (bar.bollUpper === null || bar.bollLower === null) { finishBand(); return }
     if (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000) finishBand()
     const pointX = x(index, "price").toFixed(1)
+    if (index === 0 && firstAtLeft) {
+      upper.push(`${left} ${priceY(bar.bollUpper).toFixed(1)}`)
+      lower.push(`${left} ${priceY(bar.bollLower).toFixed(1)}`)
+    }
     upper.push(`${pointX} ${priceY(bar.bollUpper).toFixed(1)}`)
     lower.push(`${pointX} ${priceY(bar.bollLower).toFixed(1)}`)
   })
@@ -182,12 +189,15 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     const bodies = rising ? upBodies : downBodies
     wicks.push(`M${center} ${priceY(bar.high)}V${priceY(bar.low)}`)
     const top = priceY(Math.max(bar.open, bar.close))
-    bodies.push(rectangle(center - barWidth / 2, top, barWidth, Math.max(1.5, priceY(Math.min(bar.open, bar.close)) - top)))
-    const volumeX = x(index, "taker") - takerBarWidth / 2
+    const bodyX = index === 0 && firstAtLeft ? left : center - barWidth / 2
+    bodies.push(rectangle(bodyX, top, center + barWidth / 2 - bodyX, Math.max(1.5, priceY(Math.min(bar.open, bar.close)) - top)))
+    const volumeCenter = x(index, "taker")
+    const volumeX = index === 0 && firstAtLeft ? left : volumeCenter - takerBarWidth / 2
+    const volumeWidth = volumeCenter + takerBarWidth / 2 - volumeX
     const buyHeight = (bar.buy ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
     const sellHeight = (bar.sell ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
-    if (buyHeight) buys.push(rectangle(volumeX, panels.taker[1] - buyHeight, takerBarWidth, buyHeight))
-    if (sellHeight) sells.push(rectangle(volumeX, panels.taker[1] - buyHeight - sellHeight, takerBarWidth, sellHeight))
+    if (buyHeight) buys.push(rectangle(volumeX, panels.taker[1] - buyHeight, volumeWidth, buyHeight))
+    if (sellHeight) sells.push(rectangle(volumeX, panels.taker[1] - buyHeight - sellHeight, volumeWidth, sellHeight))
   }
   const panelKeys: Panel[] = ["price", "roc", "rsi", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>
