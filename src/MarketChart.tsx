@@ -63,7 +63,7 @@ const legendWidth = (text: string) => {
   if (!legendContext) return text.length * 7
   const style = getComputedStyle(document.documentElement)
   legendContext.font = `${style.getPropertyValue("--chart-text-size").trim()} ${style.fontFamily}`
-  return legendContext.measureText(text).width
+  return legendContext.measureText(text.replace(/\d/g, "0")).width
 }
 const priceTagWidth = (priceText: string, countdown: string) => {
   const padding = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chart-price-tag-padding-x"))

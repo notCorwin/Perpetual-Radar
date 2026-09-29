@@ -135,7 +135,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring/50 tabular-nums;
     }
   body {
     @apply overflow-x-clip bg-background text-foreground;
