@@ -2,8 +2,13 @@ export type ChartPanel = "price" | "rsi" | "roc" | "oi" | "taker"
 
 type Range = readonly [number, number]
 
+export function chartCandleWidth(plotWidth: number) {
+  return Math.max(5, Math.min(13, plotWidth / 96 * 0.68))
+}
+
 export function chartHourX(hour: number, latestHour: number, start: number, end: number) {
-  return start + (hour - (latestHour - 95 * 3_600_000) + 1_800_000) * (end - start) / (96 * 3_600_000)
+  const candleWidth = chartCandleWidth(end - start)
+  return start + candleWidth / 2 + (hour - (latestHour - 95 * 3_600_000)) * (end - start - candleWidth) / (95 * 3_600_000)
 }
 
 export function fitPriceTag(axisGutter: number, tagWidth: number, gap: number, strokeWidth: number, minimumScale: number) {

@@ -4,7 +4,7 @@ import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { chartAxis, visibleTicks } from "@/chart-axis"
-import { chartHourX, chartLayout, fitPriceTag, type ChartPanel as Panel } from "@/chart-layout"
+import { chartCandleWidth, chartHourX, chartLayout, fitPriceTag, type ChartPanel as Panel } from "@/chart-layout"
 import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
 import { wrappedMarket } from "@/market-sort"
@@ -108,8 +108,7 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const { gutter, scale: tagScale } = chartGutter(bars, liveBar.close)
   const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, gutter)
   const x = (index: number, panel: Panel) => chartHourX(bars[index].hour, latestHour, ...columns[panel])
-  const barWidth = Math.max(5, Math.min(13, (right - left) / n * 0.68))
-  const takerBarWidth = Math.max(2, Math.min(9, (columns.taker[1] - columns.taker[0]) / n * 0.7))
+  const barWidth = chartCandleWidth(right - left)
   const priceValues = chartPriceValues(bars)
   const priceMin = Math.min(...priceValues), priceMax = Math.max(...priceValues)
   const priceAxis = chartAxis(priceMin, priceMax, 8)
@@ -195,15 +194,13 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     const bodies = rising ? upBodies : downBodies
     wicks.push(`M${center} ${priceY(bar.high)}V${priceY(bar.low)}`)
     const top = priceY(Math.max(bar.open, bar.close))
-    const bodyX = index === 0 && firstAtLeft ? left : center - barWidth / 2
-    bodies.push(rectangle(bodyX, top, center + barWidth / 2 - bodyX, Math.max(1.5, priceY(Math.min(bar.open, bar.close)) - top)))
+    bodies.push(rectangle(center - barWidth / 2, top, barWidth, Math.max(1.5, priceY(Math.min(bar.open, bar.close)) - top)))
     const volumeCenter = x(index, "taker")
-    const volumeX = index === 0 && firstAtLeft ? left : volumeCenter - takerBarWidth / 2
-    const volumeWidth = volumeCenter + takerBarWidth / 2 - volumeX
+    const volumeX = volumeCenter - barWidth / 2
     const buyHeight = (bar.buy ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
     const sellHeight = (bar.sell ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
-    if (buyHeight) buys.push(rectangle(volumeX, panels.taker[1] - buyHeight, volumeWidth, buyHeight))
-    if (sellHeight) sells.push(rectangle(volumeX, panels.taker[1] - buyHeight - sellHeight, volumeWidth, sellHeight))
+    if (buyHeight) buys.push(rectangle(volumeX, panels.taker[1] - buyHeight, barWidth, buyHeight))
+    if (sellHeight) sells.push(rectangle(volumeX, panels.taker[1] - buyHeight - sellHeight, barWidth, sellHeight))
   }
   const panelKeys: Panel[] = ["price", "roc", "rsi", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { chartHourX, chartLayout, fitPriceTag, type ChartPanel } from "./chart-layout.ts"
+import { chartCandleWidth, chartHourX, chartLayout, fitPriceTag, type ChartPanel } from "./chart-layout.ts"
 
 test("stacked chart layout stays aligned and bounded", () => {
   const order: ChartPanel[] = ["price", "roc", "rsi", "oi", "taker"]
@@ -22,9 +22,12 @@ test("stacked chart layout stays aligned and bounded", () => {
 
 test("chart hours retain their position when candles are missing", () => {
   const hour = 3_600_000
-  assert.equal(chartHourX(0, 95 * hour, 0, 960), 5)
-  assert.equal(chartHourX(10 * hour, 95 * hour, 0, 960), 105)
-  assert.equal(chartHourX(95 * hour, 95 * hour, 0, 960), 955)
+  const first = chartHourX(0, 95 * hour, 0, 960)
+  const last = chartHourX(95 * hour, 95 * hour, 0, 960)
+  const candleWidth = chartCandleWidth(960)
+  assert.equal(first - candleWidth / 2, 0)
+  assert.equal(last + candleWidth / 2, 960)
+  assert.equal(chartHourX(10 * hour, 95 * hour, 0, 960), first + (last - first) * 10 / 95)
 })
 
 test("price tag scales to the axis gutter without clipping or shrinking below axis text", () => {
