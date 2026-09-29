@@ -152,7 +152,8 @@ function App() {
       .filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase()))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
   }, [rows, query, sort, descending])
-  const chartOrder = useMemo(() => [...rows].sort(compareMarketTurnover).map(row => row.instId), [rows])
+  const listOrder = useMemo(() => visible.map(row => row.instId), [visible])
+  const turnoverOrder = useMemo(() => [...rows].sort(compareMarketTurnover).map(row => row.instId), [rows])
 
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
@@ -197,7 +198,7 @@ function App() {
     </Button>
   }
 
-  if (selected) return <MarketChart instId={selected} order={chartOrder} onSelect={setSelected} onBack={() => setSelected(null)} />
+  if (selected) return <MarketChart instId={selected} listOrder={listOrder} turnoverOrder={turnoverOrder} onSelect={setSelected} onBack={() => setSelected(null)} />
 
   return (
     <main className="flex min-h-svh flex-col">

@@ -17,7 +17,7 @@ test("every column sorts both ways and keeps missing data last", () => {
   }
 })
 
-test("market list and chart navigation follow descending 24h turnover with stable ties", () => {
+test("turnover ranking keeps stable ties", () => {
   const markets = [
     { instId: "B", turnover24hUSDT: 20 },
     { instId: "C", turnover24hUSDT: 10 },
@@ -37,14 +37,29 @@ test("chart navigation wraps at both ends", () => {
   assert.equal(wrappedMarket([], 0), undefined)
 })
 
-test("chart left and right arrows jump to turnover ranking endpoints", () => {
-  const order = ["A", "B", "C"]
-  assert.equal(chartNavigationTarget(order, "B", "ArrowLeft"), "A")
-  assert.equal(chartNavigationTarget(order, "A", "ArrowLeft"), "A")
-  assert.equal(chartNavigationTarget(order, "B", "ArrowRight"), "C")
-  assert.equal(chartNavigationTarget(order, "C", "ArrowRight"), "C")
-  assert.equal(chartNavigationTarget(order, "A", "ArrowUp"), "C")
-  assert.equal(chartNavigationTarget(order, "C", "ArrowDown"), "A")
-  assert.equal(chartNavigationTarget(order, "Missing", "ArrowLeft"), undefined)
-  assert.equal(chartNavigationTarget([], "A", "ArrowRight"), undefined)
+test("chart vertical navigation follows the sorted visible list while horizontal navigation uses turnover rank", () => {
+  const markets = [
+    { ...row("A", 30), turnover24hUSDT: 10 },
+    { ...row("B", 20), turnover24hUSDT: 30 },
+    { ...row("C", 10), turnover24hUSDT: 20 },
+  ]
+  const turnoverOrder = [...markets].sort(compareMarketTurnover).map(market => market.instId)
+  const listOrder = [...markets].filter(market => market.instId !== "B")
+    .sort((a, b) => compareMarketRows(a, b, "rsi6", true)).map(market => market.instId)
+  assert.deepEqual(turnoverOrder, ["B", "C", "A"])
+  assert.deepEqual(listOrder, ["A", "C"])
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "C", "ArrowUp"), "A")
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "A", "ArrowDown"), "C")
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "A", "ArrowUp"), "C")
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "C", "ArrowDown"), "A")
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "C", "ArrowLeft"), "B")
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "A", "ArrowRight"), "A")
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "B", "ArrowUp"), "C")
+  assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "B", "ArrowDown"), "A")
+  const ascendingOrder = [...markets].filter(market => market.instId !== "B")
+    .sort((a, b) => compareMarketRows(a, b, "rsi6", false)).map(market => market.instId)
+  assert.deepEqual(ascendingOrder, ["C", "A"])
+  assert.equal(chartNavigationTarget(ascendingOrder, turnoverOrder, "C", "ArrowDown"), "A")
+  assert.equal(chartNavigationTarget([], turnoverOrder, "A", "ArrowUp"), undefined)
+  assert.equal(chartNavigationTarget(listOrder, [], "A", "ArrowLeft"), undefined)
 })

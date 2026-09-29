@@ -321,7 +321,7 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   </>
 })
 
-export function MarketChart({ instId, order, onSelect, onBack }: { instId: string; order: string[]; onSelect: (id: string) => void; onBack: () => void }) {
+export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack }: { instId: string; listOrder: string[]; turnoverOrder: string[]; onSelect: (id: string) => void; onBack: () => void }) {
   const [displayed, setDisplayed] = useState<{ id: string; data: ChartResponse } | null>(null)
   const [historyBars, setHistoryBars] = useState<{ id: string; bars: Bar[] } | null>(null)
   const [historyBoundary, setHistoryBoundary] = useState<{ id: string; oldestHour: number } | null>(null)
@@ -344,9 +344,12 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
   const navigationFrame = useRef<number | null>(null)
   const [plotSize, setPlotSize] = useState({ width: 0, height: 0 })
   const [now, setNow] = useState(Date.now)
-  const position = order.indexOf(instId)
-  const previous = wrappedMarket(order, position - 1), next = wrappedMarket(order, position + 1)
-  const beforePrevious = wrappedMarket(order, position - 2), afterNext = wrappedMarket(order, position + 2)
+  const listPosition = listOrder.indexOf(instId)
+  const turnoverPosition = turnoverOrder.indexOf(instId)
+  const previous = chartNavigationTarget(listOrder, turnoverOrder, instId, "ArrowUp")
+  const next = chartNavigationTarget(listOrder, turnoverOrder, instId, "ArrowDown")
+  const beforePrevious = listPosition < 0 ? undefined : wrappedMarket(listOrder, listPosition - 2)
+  const afterNext = listPosition < 0 ? undefined : wrappedMarket(listOrder, listPosition + 2)
   const historicalEnd = windowEnd?.id === instId ? windowEnd.hour : null
   const chart = chartCache.get(instId)?.data ?? (displayed?.id === instId ? displayed.data : null) ?? warmCharts.get(instId) ?? null
   const cachedBars = useMemo(() => {
@@ -500,7 +503,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
 
   useEffect(() => {
     let stopped = false
-    for (const id of new Set([beforePrevious, previous, next, afterNext])) {
+    for (const id of new Set([beforePrevious, previous, next, afterNext, turnoverOrder[0], turnoverOrder[turnoverOrder.length - 1]])) {
       if (!id || id === instId) continue
       void previewChart(id).then(data => { if (!stopped) warmChart(id, data) }).catch(() => {})
       if ((id === previous || id === next) && !chartCache.get(id)?.loadedAt) {
@@ -508,14 +511,14 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       }
     }
     return () => { stopped = true }
-  }, [instId, beforePrevious, previous, next, afterNext, warmChart])
+  }, [instId, beforePrevious, previous, next, afterNext, turnoverOrder, warmChart])
 
   useEffect(() => {
     const navigate = (event: KeyboardEvent) => {
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.defaultPrevented) return
       if (!(event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight")) return
       event.preventDefault()
-      const id = chartNavigationTarget(order, navigationId.current, event.key)
+      const id = chartNavigationTarget(listOrder, turnoverOrder, navigationId.current, event.key)
       if (id && id !== navigationId.current) {
         navigationId.current = id
         if (navigationFrame.current === null) navigationFrame.current = window.requestAnimationFrame(() => {
@@ -529,7 +532,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       window.removeEventListener("keydown", navigate)
       if (navigationFrame.current !== null) window.cancelAnimationFrame(navigationFrame.current)
     }
-  }, [order, onSelect])
+  }, [listOrder, turnoverOrder, onSelect])
 
   const viewportEnd = historicalEnd ?? chart?.bars.at(-1)?.hour ?? 0
   const bars = useMemo(() => visibleChartBars(cachedBars, viewportEnd), [cachedBars, viewportEnd])
@@ -556,7 +559,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
-        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {position + 1}/{order.length} · ↑ higher · ↓ lower · ← first · → last</p>
+        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {turnoverPosition + 1}/{turnoverOrder.length} · ↑/↓ list order · ← turnover first · → turnover last</p>
       </div>
       <Button variant="outline" size="sm" disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}><Camera data-icon="inline-start" aria-hidden="true" />{captureStatus === "copying" ? "Copying…" : "Copy chart"}</Button>
       <span role="status" className="sr-only">{captureStatus === "flashing" ? "Chart copied to clipboard" : ""}</span>
@@ -588,7 +591,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         })
       }}>
         <div className="relative h-full w-full">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC and MAROC with positive and negative areas shaded, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows switch to the next market by 24 hour turnover; left jumps to first and right jumps to last. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC and MAROC with positive and negative areas shaded, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the highest turnover market and right jumps to the lowest. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
