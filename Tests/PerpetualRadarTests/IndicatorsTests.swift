@@ -110,4 +110,27 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertThrowsError(try store.saveCandles("BTC-USDT-SWAP", [first, second]))
         XCTAssertTrue(try store.load(hour: hourMS, ids: ["BTC-USDT-SWAP"]).candles.isEmpty)
     }
+
+    func testHistoricalPageAndBoundedIndicatorWindow() throws {
+        let id = "BTC-USDT-SWAP"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try Store(url: url)
+        let end = Int64(400) * hourMS
+        let rows: [Any] = [
+            [String(end - hourMS), "100", "110", "90", "100", "1", "2", "200", "1"],
+            [String(end), "100", "110", "90", "100", "1", "2", "200", "0"],
+            [String(end + hourMS), "100", "110", "90", "100", "1", "2", "200", "1"],
+        ]
+        XCTAssertEqual(historicalPage(rows, before: end).map(\.hour), [end - hourMS])
+        try store.saveCandles(id, (0...400).map { index in
+            Candle(hour: Int64(index) * hourMS, high: 110, low: 90, close: 100 + Double(index % 5), quoteVolume: 200, baseVolume: 2, open: 100)
+        })
+        let window = try store.candles(id, since: 50 * hourMS, through: end)
+        XCTAssertEqual(window.count, 351)
+        XCTAssertNotNil(rsi(window, end - 95 * hourMS, 24))
+        XCTAssertEqual(try store.oldestCandleHour(id), 0)
+        try store.saveChartStat(id, hour: end, oi: 12)
+        XCTAssertTrue(try store.chartStats(id, since: 0, through: end - hourMS).isEmpty)
+    }
 }

@@ -48,7 +48,7 @@ type NativeBridge = {
   postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
   postMessage(request: { captureChart: { x: number; y: number; width: number; height: number } }): Promise<{ ok: boolean }>
-  postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number }): Promise<ChartPollResponse>
+  postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number; chartEndHour?: number }): Promise<ChartPollResponse>
 }
 declare global {
   interface Window { webkit: { messageHandlers: { radar: NativeBridge } } }

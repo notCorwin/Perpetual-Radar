@@ -93,14 +93,37 @@ final class Store {
         }
     }
 
+    func candles(_ id: String, since: Int64, through: Int64) throws -> [Int64: Candle] {
+        let stmt = try statement("SELECT hour,high,low,close,volume,base_volume,open FROM candles WHERE inst_id=? AND hour>=? AND hour<=? ORDER BY hour")
+        defer { sqlite3_finalize(stmt) }
+        bind([id, since, through], to: stmt)
+        var result: [Int64: Candle] = [:]
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            let ts = sqlite3_column_int64(stmt, 0)
+            result[ts] = Candle(hour: ts, high: sqlite3_column_double(stmt, 1), low: sqlite3_column_double(stmt, 2), close: sqlite3_column_double(stmt, 3), quoteVolume: sqlite3_column_double(stmt, 4), baseVolume: sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 5), open: sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 6))
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        return result
+    }
+
+    func oldestCandleHour(_ id: String) throws -> Int64? {
+        let stmt = try statement("SELECT MIN(hour) FROM candles WHERE inst_id=?")
+        defer { sqlite3_finalize(stmt) }
+        bind([id], to: stmt)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }
+        return sqlite3_column_type(stmt, 0) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 0)
+    }
+
     func saveChartStat(_ id: String, hour: Int64, oi: Double? = nil, sell: Double? = nil, buy: Double? = nil) throws {
         try execute("INSERT INTO chart_stats (inst_id,hour,oi,sell,buy) VALUES (?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET oi=COALESCE(excluded.oi,chart_stats.oi),sell=COALESCE(excluded.sell,chart_stats.sell),buy=COALESCE(excluded.buy,chart_stats.buy)", [id, hour, oi, sell, buy])
     }
 
-    func chartStats(_ id: String, since: Int64) throws -> [Int64: (oi: Double?, sell: Double?, buy: Double?)] {
-        let stmt = try statement("SELECT hour,oi,sell,buy FROM chart_stats WHERE inst_id=? AND hour>=?")
+    func chartStats(_ id: String, since: Int64, through: Int64 = .max) throws -> [Int64: (oi: Double?, sell: Double?, buy: Double?)] {
+        let stmt = try statement("SELECT hour,oi,sell,buy FROM chart_stats WHERE inst_id=? AND hour>=? AND hour<=?")
         defer { sqlite3_finalize(stmt) }
-        bind([id, since], to: stmt)
+        bind([id, since, through], to: stmt)
         var result: [Int64: (oi: Double?, sell: Double?, buy: Double?)] = [:]
         while sqlite3_step(stmt) == SQLITE_ROW {
             result[sqlite3_column_int64(stmt, 0)] = (

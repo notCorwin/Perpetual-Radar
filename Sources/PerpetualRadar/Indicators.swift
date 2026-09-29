@@ -32,6 +32,10 @@ struct Candle {
     }
 }
 
+func historicalPage(_ rows: [Any], before: Int64) -> [Candle] {
+    rows.compactMap { ($0 as? [String]).flatMap(Candle.init) }.filter { $0.confirmed && $0.hour < before }
+}
+
 func logChange(_ current: Double?, _ previous: Double?) -> Double? {
     guard let current, let previous, current > 0, previous > 0 else { return nil }
     return log(current / previous)

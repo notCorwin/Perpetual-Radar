@@ -285,7 +285,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         }
         if let id = parameters["chartInstId"] as? String {
             guard let radar else { replyHandler(["bars": [], "error": startupError, "revision": -1], nil); return }
-            if parameters["loadChart"] as? Bool == true {
+            if let endHour = parameters["chartEndHour"] as? Int64 {
+                Task { replyHandler(await radar.loadHistoricalChart(id, endingAt: endHour), nil) }
+            } else if parameters["loadChart"] as? Bool == true {
                 Task { replyHandler(await radar.loadChart(id), nil) }
             } else { replyHandler(radar.chartSnapshot(id, sinceRevision: parameters["sinceRevision"] as? Int), nil) }
             return

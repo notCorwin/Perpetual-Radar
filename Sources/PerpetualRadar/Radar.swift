@@ -61,6 +61,8 @@ final class Radar {
     private var candles: [String: [Int64: Candle]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
     private var chartLiveStats: [String: (oi: Double?, sell: Double?, buy: Double?)] = [:]
+    private var exhaustedCandleHistory = Set<String>()
+    private var loadedStatPages = Set<String>()
     private var takerHistorySavedAt: [String: Int64] = [:]
     private var hour = millis() / hourMS * hourMS
     private var updatedAt: Int64?
@@ -488,22 +490,86 @@ final class Radar {
         return result
     }
 
-    func chartSnapshot(_ id: String, sinceRevision: Int? = nil) -> [String: Any] {
+    func loadHistoricalChart(_ id: String, endingAt requestedEnd: Int64) async -> [String: Any] {
+        guard rows[id] != nil, requestedEnd >= 0, requestedEnd <= hour, requestedEnd % hourMS == 0 else {
+            return ["bars": [], "error": "Invalid chart time", "revision": -1]
+        }
+        var failures: [String] = []
+        let warmupStart = max(0, requestedEnd - Int64(candleLookback * 2 - 1) * hourMS)
+        do {
+            var cached = try store.candles(id, since: warmupStart, through: requestedEnd)
+            for (ts, bar) in candles[id] ?? [:] where ts >= warmupStart && ts <= requestedEnd { cached[ts] = bar }
+            var cursor: Int64?
+            for ts in stride(from: requestedEnd, through: warmupStart, by: -Int(hourMS)) where ts < hour {
+                if cached[ts] == nil { cursor = ts + hourMS; break }
+            }
+            var pages = 0
+            while let next = cursor, next > warmupStart && pages < 5 && !exhaustedCandleHistory.contains(id) {
+                let rows = try await get("/market/history-candles", ["instId": id, "bar": "1H", "after": String(next), "limit": "300"])
+                let fetched = historicalPage(rows, before: next)
+                guard let oldest = fetched.map(\.hour).min() else { exhaustedCandleHistory.insert(id); break }
+                try store.saveCandles(id, fetched)
+                for bar in fetched { cached[bar.hour] = bar }
+                cursor = oldest
+                pages += 1
+                if oldest <= warmupStart { break }
+            }
+        } catch { failures.append("candles") }
+        let oldest = (try? store.oldestCandleHour(id)) ?? nil
+        let end = exhaustedCandleHistory.contains(id) && oldest != nil
+            ? min(hour, max(requestedEnd, oldest! + Int64(chartHours - 1) * hourMS)) : requestedEnd
+        let first = end - Int64(candleLookback - 1) * hourMS
+        for path in ["/rubik/stat/contracts/open-interest-history", "/rubik/stat/taker-volume-contract"] {
+            for pageStart in stride(from: first / (Int64(chartHours) * hourMS) * Int64(chartHours) * hourMS,
+                                    through: end, by: Int(chartHours) * Int(hourMS)) {
+                let key = "\(id)|\(path)|\(pageStart)"
+                if loadedStatPages.contains(key) { continue }
+                let pageEnd = pageStart + Int64(chartHours - 1) * hourMS
+                do {
+                    let values = try await get(path, ["instId": id, "period": "1H", "end": String(pageEnd + hourMS), "limit": "100"])
+                    for case let row as [String] in values {
+                        guard let stamp = row.first.flatMap(Int64.init), stamp >= pageStart, stamp <= pageEnd, stamp < hour else { continue }
+                        if path.contains("open-interest"), row.count >= 4, let oi = Double(row[3]), oi.isFinite, oi >= 0 {
+                            try store.saveChartStat(id, hour: stamp, oi: oi)
+                        } else if !path.contains("open-interest"), row.count >= 3,
+                                  let sell = Double(row[1]), let buy = Double(row[2]),
+                                  sell.isFinite, buy.isFinite, sell >= 0, buy >= 0 {
+                            try store.saveChartStat(id, hour: stamp, sell: sell, buy: buy)
+                        }
+                    }
+                    loadedStatPages.insert(key)
+                } catch { failures.append(path.contains("open-interest") ? "OI" : "taker volume") }
+            }
+        }
+        var result = chartSnapshot(id, endingAt: end)
+        result["endHour"] = end
+        if !failures.isEmpty { result["error"] = "Some chart data is unavailable: \(Set(failures).sorted().joined(separator: ", "))." }
+        return result
+    }
+
+    func chartSnapshot(_ id: String, sinceRevision: Int? = nil, endingAt endHour: Int64? = nil) -> [String: Any] {
         guard rows[id] != nil else { return ["bars": [], "error": "Unknown contract", "revision": -1] }
         let chartRevision = chartRevisions[id] ?? 0
-        if sinceRevision == chartRevision {
+        if endHour == nil && sinceRevision == chartRevision {
             return ["unchanged": true, "revision": chartRevision, "error": ""]
         }
         let null = NSNull()
-        let series = candles[id] ?? [:]
+        let end = endHour ?? hour
+        let first = end - Int64(candleLookback - 1) * hourMS
+        var series: [Int64: Candle]
         let stats: [Int64: (oi: Double?, sell: Double?, buy: Double?)]
-        do { stats = try store.chartStats(id, since: hour - Int64(chartHours - 1) * hourMS) }
+        do {
+            series = endHour == nil ? candles[id] ?? [:] : try store.candles(id, since: max(0, first - Int64(candleLookback) * hourMS), through: end)
+            if endHour != nil {
+                for (ts, bar) in candles[id] ?? [:] where ts >= first - Int64(candleLookback) * hourMS && ts <= end { series[ts] = bar }
+            }
+            stats = try store.chartStats(id, since: first, through: end)
+        }
         catch { return ["bars": [], "error": "Cannot read chart cache: \(error.localizedDescription)", "revision": chartRevision] }
-        let first = hour - Int64(chartHours - 1) * hourMS
         let seed = (1...200).compactMap { series[first - Int64($0) * hourMS]?.confirmed == true ? series[first - Int64($0) * hourMS]?.close : nil }
         var ema: Double? = seed.count == 200 ? seed.reduce(0, +) / 200 : nil
         var chartEMA: [Int64: Double] = [:]
-        if let previous = ema200(id, series) {
+        if endHour == nil, let previous = ema200(id, series) {
             let alpha = 2.0 / 201.0
             let last = series[hour] == nil ? hour - hourMS : hour
             var value = series[hour].map { previous + ($0.close - previous) * alpha } ?? previous
@@ -514,7 +580,7 @@ final class Radar {
             }
         }
         var output: [[String: Any]] = []
-        for ts in stride(from: first, through: hour, by: Int(hourMS)) {
+        for ts in stride(from: first, through: end, by: Int(hourMS)) {
             guard let bar = series[ts] else { ema = nil; continue }
             ema = chartEMA[ts] ?? ema.map { $0 + (bar.close - $0) * 2 / 201 }
             guard let open = bar.open else { continue }

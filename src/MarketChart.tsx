@@ -1,9 +1,10 @@
-import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react"
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, Camera, Check, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { chartAxis, visibleTicks } from "@/chart-axis"
 import { chartHourX, chartLayout, type ChartPanel as Panel } from "@/chart-layout"
+import { scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
 import { wrappedMarket } from "@/market-sort"
 
@@ -13,7 +14,7 @@ type Bar = {
   roc: number | null; maroc: number | null; rsi6: number | null; rsi12: number | null; rsi24: number | null
   oi: number | null; buy: number | null; sell: number | null
 }
-export type ChartResponse = { bars: Bar[]; error: string; revision: number }
+export type ChartResponse = { bars: Bar[]; error: string; revision: number; endHour?: number }
 export type ChartPollResponse = ChartResponse | { unchanged: true; error: string; revision: number }
 
 const chartCache = new Map<string, { data: ChartResponse; loadedAt: number }>()
@@ -86,11 +87,11 @@ const chartGutter = (bars: Bar[]) => {
   return Math.ceil(Math.max(priceTagWidth(price(bars[bars.length - 1].close), "00:00"), ...labels.map(label => 8 + legendWidth(label))))
 }
 
-const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: Bar[]; hovered: number | null; width: number; height: number; now: number }) {
+const Plot = memo(function Plot({ bars, hovered, width, height, now, endHour }: { bars: Bar[]; hovered: number | null; width: number; height: number; now: number; endHour: number }) {
   const n = bars.length
   const active = bars[hovered ?? n - 1]
-  const latestHour = bars[n - 1].hour
-  const firstHour = latestHour - 95 * 3_600_000
+  const latestHour = endHour
+  const firstHour = endHour - 95 * 3_600_000
   const candleHigh = Math.max(...bars.map(bar => bar.high)), candleLow = Math.min(...bars.map(bar => bar.low))
   const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, chartGutter(bars))
   const x = (index: number, panel: Panel) => chartHourX(bars[index].hour, latestHour, ...columns[panel])
@@ -113,13 +114,14 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
   const latest = bars[n - 1]
   const latestY = priceY(latest.close)
   const latestColor = latest.close >= latest.open ? "var(--positive)" : "var(--destructive)"
-  const secondsLeft = now && !latest.confirmed ? Math.max(0, Math.floor((latest.hour + 3_600_000 - now) / 1000)) : 0
+  const showCountdown = now > 0 && !latest.confirmed
+  const secondsLeft = showCountdown ? Math.max(0, Math.floor((latest.hour + 3_600_000 - now) / 1000)) : 0
   const countdown = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`
   const latestPrice = price(latest.close), tagWidth = priceTagWidth(latestPrice, countdown)
   const tagStyle = getComputedStyle(document.documentElement)
   const tagLineHeight = Number.parseFloat(tagStyle.getPropertyValue("--chart-text-size")) * Number.parseFloat(tagStyle.getPropertyValue("--chart-price-tag-line-height"))
   const tagPaddingY = Number.parseFloat(tagStyle.getPropertyValue("--chart-price-tag-padding-y"))
-  const tagHeight = tagLineHeight * 2 + tagPaddingY * 2
+  const tagHeight = tagLineHeight * (showCountdown ? 2 : 1) + tagPaddingY * 2
   const priceTagY = Math.max(panels.price[0], Math.min(latestY - tagHeight / 2, panels.price[1] - tagHeight))
   const line = (key: keyof Bar, panelKey: Panel, min: number, max: number) => {
     const segments: string[] = []
@@ -236,7 +238,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
     <g>
       <rect x={right} y={priceTagY} width={tagWidth} height={tagHeight} rx="4" fill={latestColor} />
       <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{latestPrice}</text>
-      <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{countdown}</text>
+      {showCountdown && <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{countdown}</text>}
     </g>
     {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
     {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)", ""], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)", "7 4"]])}
@@ -252,6 +254,14 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now }: { bars: B
 
 export function MarketChart({ instId, order, onSelect, onBack }: { instId: string; order: string[]; onSelect: (id: string) => void; onBack: () => void }) {
   const [displayed, setDisplayed] = useState<{ id: string; data: ChartResponse } | null>(null)
+  const [historyBars, setHistoryBars] = useState<{ id: string; bars: Bar[] } | null>(null)
+  const [windowEnd, setWindowEnd] = useState<{ id: string; hour: number } | null>(null)
+  const [historyLoading, setHistoryLoading] = useState<string | null>(null)
+  const windowEndRef = useRef<{ id: string; hour: number } | null>(null)
+  const wheelPixels = useRef(0)
+  const historyRequests = useRef(new Map<string, Promise<ChartPollResponse>>())
+  const loadedHistoryBuckets = useRef(new Set<string>())
+  const requestedHistoryEnds = useRef(new Set<string>())
   const [hover, setHover] = useState<{ id: string; index: number } | null>(null)
   const [chartError, setChartError] = useState<{ id: string; message: string } | null>(null)
   const [warmCharts, setWarmCharts] = useState(() => new Map<string, ChartResponse>())
@@ -265,7 +275,17 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
   const position = order.indexOf(instId)
   const previous = wrappedMarket(order, position - 1), next = wrappedMarket(order, position + 1)
   const beforePrevious = wrappedMarket(order, position - 2), afterNext = wrappedMarket(order, position + 2)
-  const chart = displayed?.id === instId ? displayed.data : chartCache.get(instId)?.data ?? warmCharts.get(instId) ?? null
+  const historicalEnd = windowEnd?.id === instId ? windowEnd.hour : null
+  const chart = chartCache.get(instId)?.data ?? (displayed?.id === instId ? displayed.data : null) ?? warmCharts.get(instId) ?? null
+  const cachedBars = useMemo(() => {
+    const merged = new Map<number, Bar>()
+    for (const bar of chart?.bars ?? []) merged.set(bar.hour, bar)
+    if (historyBars?.id === instId) for (const bar of historyBars.bars) merged.set(bar.hour, bar)
+    const live = chart?.bars.at(-1)
+    if (live && !live.confirmed) merged.set(live.hour, live)
+    return [...merged.values()].sort((a, b) => a.hour - b.hour)
+  }, [chart, historyBars, instId])
+  const oldestCachedHour = cachedBars[0]?.hour ?? Infinity
   const hovered = hover?.id === instId ? hover.index : null
   const error = chartError?.id === instId ? chartError.message : chart?.error ?? ""
   const captureStatus = capture.id === instId ? capture.status : "idle"
@@ -311,6 +331,54 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
     return () => window.clearInterval(timer)
   }, [])
   useEffect(() => {
+    if (historicalEnd === null) return
+    const bucket = `${instId}:${Math.floor(historicalEnd / (96 * 3_600_000))}`
+    const needsCandles = historicalEnd - 95 * 3_600_000 <= oldestCachedHour + 48 * 3_600_000
+    const key = `${instId}:${historicalEnd}`
+    if ((!needsCandles && loadedHistoryBuckets.current.has(bucket)) || requestedHistoryEnds.current.has(key)) return
+    let stopped = false
+    const timer = window.setTimeout(() => {
+      setHistoryLoading(key)
+      void (async () => {
+        try { await historyRequests.current.get(instId) } catch { /* retry the newest position */ }
+        if (stopped || windowEndRef.current?.id !== instId || windowEndRef.current.hour !== historicalEnd) return
+        requestedHistoryEnds.current.add(key)
+        const request = window.webkit.messageHandlers.radar.postMessage({ chartInstId: instId, chartEndHour: historicalEnd })
+        historyRequests.current.set(instId, request)
+        try {
+          const result = await request
+        if (stopped || windowEndRef.current?.id !== instId || windowEndRef.current.hour !== historicalEnd || "unchanged" in result) return
+        loadedHistoryBuckets.current.add(bucket)
+        setHistoryBars(current => {
+          const merged = new Map<number, Bar>(current?.id === instId ? current.bars.map(bar => [bar.hour, bar]) : [])
+          for (const bar of result.bars) merged.set(bar.hour, bar)
+          const first = historicalEnd - 499 * 3_600_000
+          const last = historicalEnd + 249 * 3_600_000
+          return { id: instId, bars: [...merged.values()].filter(bar => bar.hour >= first && bar.hour <= last).sort((a, b) => a.hour - b.hour) }
+        })
+        setHover(null)
+        if (result.endHour !== undefined && result.endHour !== historicalEnd) {
+          const latestHour = chartCache.get(instId)?.data.bars.at(-1)?.hour ?? result.bars.at(-1)?.hour ?? result.endHour
+          const next = result.endHour >= latestHour ? null : { id: instId, hour: result.endHour }
+          windowEndRef.current = next
+          setWindowEnd(next)
+        }
+        setChartError({ id: instId, message: result.error })
+        setHistoryLoading(null)
+        } catch (cause) {
+          if (!stopped && windowEndRef.current?.id === instId && windowEndRef.current.hour === historicalEnd) {
+            setChartError({ id: instId, message: cause instanceof Error ? cause.message : "Cannot load history" })
+            setHistoryLoading(null)
+          }
+        } finally {
+          if (historyRequests.current.get(instId) === request) historyRequests.current.delete(instId)
+        }
+      })()
+    }, 80)
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [instId, historicalEnd, oldestCachedHour])
+  useEffect(() => { wheelPixels.current = 0 }, [instId])
+  useEffect(() => {
     let stopped = false
     let timer: number
     let lastLoad = chartCache.get(instId)?.loadedAt ?? 0
@@ -324,20 +392,20 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         if (!("unchanged" in result)) {
           revision = result.error ? -1 : result.revision
           if (!shouldLoad) rememberChart(instId, result, lastLoad)
-          setDisplayed({ id: instId, data: result })
+          if (windowEndRef.current?.id !== instId) setDisplayed({ id: instId, data: result })
           warmChart(instId, result, false)
         }
-        setChartError(current => current?.id === instId && current.message === result.error ? current : { id: instId, message: result.error })
+        if (windowEndRef.current?.id !== instId) setChartError(current => current?.id === instId && current.message === result.error ? current : { id: instId, message: result.error })
       } catch (cause) {
         if (!stopped) {
           const message = cause instanceof Error ? cause.message : "Cannot load chart"
-          setChartError(current => current?.id === instId && current.message === message ? current : { id: instId, message })
+          if (windowEndRef.current?.id !== instId) setChartError(current => current?.id === instId && current.message === message ? current : { id: instId, message })
         }
       }
       if (!stopped) timer = window.setTimeout(refresh, 2000)
     }
     if (!chartCache.has(instId)) void previewChart(instId).then(data => {
-      if (!stopped) { setDisplayed({ id: instId, data }); warmChart(instId, data, false) }
+      if (!stopped) { if (windowEndRef.current?.id !== instId) setDisplayed({ id: instId, data }); warmChart(instId, data, false) }
     }).catch(() => {})
     void refresh()
     return () => { stopped = true; window.clearTimeout(timer) }
@@ -377,31 +445,53 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
     }
   }, [order, onSelect])
 
-  const bars = chart?.bars ?? []
+  const viewportEnd = historicalEnd ?? chart?.bars.at(-1)?.hour ?? 0
+  const bars = useMemo(() => visibleChartBars(cachedBars, viewportEnd), [cachedBars, viewportEnd])
+  const moveHistory = (steps: number) => {
+    const latestHour = chartCache.get(instId)?.data.bars.at(-1)?.hour ?? bars.at(-1)?.hour
+    if (latestHour === undefined || steps === 0) return
+    const current = windowEndRef.current?.id === instId ? windowEndRef.current.hour : null
+    const nextHour = scrollChartEnd(current, latestHour, steps, Number.isFinite(oldestCachedHour) ? oldestCachedHour : 0)
+    const next = nextHour === null ? null : { id: instId, hour: nextHour }
+    requestedHistoryEnds.current.clear()
+    windowEndRef.current = next
+    setWindowEnd(next)
+    setHover(null)
+  }
   const active = bars[hovered ?? bars.length - 1]
-  const surfaces = new Map(warmCharts)
-  if (chart?.bars.length) surfaces.set(instId, chart)
+  const warmSurfaces = useMemo(() => new Map([...warmCharts].map(([id, data]) => [id, { ...data, bars: visibleChartBars(data.bars, data.bars.at(-1)?.hour ?? 0) }])), [warmCharts])
+  const surfaces = new Map(warmSurfaces)
+  if (bars.length && chart) surfaces.set(instId, { ...chart, bars, endHour: viewportEnd })
   return <main className="flex h-svh min-h-0 flex-col overflow-hidden overscroll-none text-[length:var(--chart-text-size)] font-normal tabular-nums">
     <header className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
-        <p className="text-muted-foreground">OKX perpetual · 1h · Last 96 hours · 24h turnover rank {position + 1}/{order.length} · ↑/← higher · ↓/→ lower</p>
+        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {position + 1}/{order.length} · ↑/← higher · ↓/→ lower</p>
       </div>
       <Button variant="outline" size="sm" className={captureStatus === "copied" ? "border-ring bg-ring/15 ring-2 ring-ring/50" : ""} disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}>{captureStatus === "copied" ? <Check data-icon="inline-start" aria-hidden="true" /> : <Camera data-icon="inline-start" aria-hidden="true" />}<span role="status" aria-live="polite">{captureStatus === "copied" ? "Copied" : captureStatus === "copying" ? "Copying…" : "Copy chart"}</span></Button>
-      <Badge variant="secondary"><Radio aria-hidden="true" /><span className="text-[length:var(--chart-text-size)] font-normal">{active && !active.confirmed ? "Live candle" : "Hourly chart"}</span></Badge>
+      <Badge variant="secondary"><Radio aria-hidden="true" /><span className="text-[length:var(--chart-text-size)] font-normal">{historicalEnd !== null ? "History" : active && !active.confirmed ? "Live candle" : "Hourly chart"}</span></Badge>
     </header>
     {error && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{error}</p>}
     {captureError && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{captureError}</p>}
     <section ref={chartRef} aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-card">
       {active && <div className="grid shrink-0 grid-cols-[minmax(9rem,1.2fr)_repeat(4,minmax(0,1fr))] items-center border-b px-4 py-1.5" aria-live="off">
-        <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{hovered === null ? "Latest" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
+        <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{hovered === null ? historicalEnd === null ? "Latest" : "Window end" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
         {([ ["Open", active.open], ["High", active.high], ["Low", active.low], ["Close", active.close] ] as const).map(([label, value]) => <div key={label} className="min-w-0 px-3">
           <span className="text-muted-foreground">{label} </span><span title={price(value)}>{price(value)}</span>
         </div>)}
       </div>}
-      <div ref={plotRef} className="relative min-h-0 flex-1">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+      <div ref={plotRef} className="relative min-h-0 flex-1 overflow-hidden" onWheel={event => {
+        const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        const delta = horizontal ? event.deltaX : -event.deltaY
+        wheelPixels.current += delta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 240 : 1)
+        const steps = Math.max(-12, Math.min(12, Math.trunc(wheelPixels.current / 12)))
+        if (!steps) return
+        wheelPixels.current -= steps * 12
+        moveHistory(steps)
+      }}>
+        <div className="relative h-full w-full">
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
@@ -416,15 +506,17 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           const svgX = event.clientX - rect.left
           const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars))
           const [start, end] = columns.price
-          const latestHour = bars[bars.length - 1].hour
+          const latestHour = viewportEnd
           let index = 0
           for (let i = 1; i < bars.length; i++) {
             if (Math.abs(chartHourX(bars[i].hour, latestHour, start, end) - svgX) < Math.abs(chartHourX(bars[index].hour, latestHour, start, end) - svgX)) index = i
           }
           setHover(current => current?.id === instId && current.index === index ? current : { id: instId, index })
         }}>
-          <Plot bars={data.bars} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} now={id === instId ? now : 0} />
+          <Plot bars={data.bars} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} now={id === instId && historicalEnd === null ? now : 0} endHour={data.endHour ?? data.bars.at(-1)!.hour} />
         </svg>) : <p className="flex h-full items-center justify-center text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
+        {historicalEnd !== null && historyLoading === `${instId}:${historicalEnd}` && <span role="status" className="pointer-events-none absolute right-4 top-2 rounded-md bg-card/90 px-2 py-1 text-muted-foreground">Loading history…</span>}
+        </div>
       </div>
       {captureStatus === "copied" && <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 bg-ring/50 motion-safe:animate-[chart-capture-flash_550ms_ease-out_both] motion-reduce:hidden" />}
     </section>
