@@ -179,26 +179,22 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const panelKeys: Panel[] = ["price", "roc", "rsi", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>
     <line key={`${key}-${index}`} x1={columns[key][0]} x2={columns[key][1]} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" opacity={index ? 0.32 : 0.55} />))
-  const legend = (key: Panel, title: string, items: [string, string, string, string?][]) => {
-    const start = columns[key][0]
-    const titleWidth = legendWidth(title)
+  const legend = (key: Panel, items: [string, string, string][]) => {
     const gap = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chart-legend-gap"))
-    const widths = items.map(([label, value, , dash]) => legendWidth(label) + 10 + legendWidth(value) + (dash === undefined ? 0 : 22))
+    const start = columns[key][0] + gap / 2
+    const widths = items.map(([label, value]) => legendWidth(label) + 10 + legendWidth(value))
     const available = right - start
-    const required = titleWidth + widths.reduce((sum, itemWidth) => sum + itemWidth, 0) + gap * (title ? items.length : items.length - 1)
+    const required = widths.reduce((sum, itemWidth) => sum + itemWidth, 0) + gap * (items.length - 1)
     const shrink = Math.min(1, available / required)
-    let cursor = title ? titleWidth + gap : 0
+    let cursor = 0
     return <g key={key}>
       <g transform={`translate(${start},${headerY[key]}) scale(${shrink})`}>
-      {title && <text dominantBaseline="middle" fill="var(--foreground)">{title}</text>}
-      {items.map(([label, value, color, dash], index) => {
+      {items.map(([label, value, color], index) => {
         const itemStart = cursor
         cursor += widths[index] + gap
-        const labelStart = dash === undefined ? 0 : 22
         return <g key={label} transform={`translate(${itemStart},0)`}>
-        {dash !== undefined && <line x1="0" x2="16" y1="0" y2="0" stroke={color} strokeWidth={indicatorWidth} strokeLinecap="round" strokeDasharray={dash} />}
-        <text x={labelStart} dominantBaseline="middle" fill="var(--muted-foreground)">{label}</text>
-        <text x={labelStart + legendWidth(label) + 10} dominantBaseline="middle" fill={color}>{value}</text>
+        <text dominantBaseline="middle" fill="var(--muted-foreground)">{label}</text>
+        <text x={legendWidth(label) + 10} dominantBaseline="middle" fill={color}>{value}</text>
         </g>
       })}
       </g>
@@ -253,11 +249,11 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
       <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{latestPrice}</text>
       {showCountdown && <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{countdown}</text>}
     </g>
-    {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
-    {legend("roc", "", [["ROC(9)", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC(9)", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
-    {legend("rsi", "RSI", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)", ""], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)", "7 4"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)", "1 4"]])}
-    {legend("oi", "OPEN INTEREST", [["OI", compact(active.oi), "var(--chart-2)"]])}
-    {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
+    {legend("price", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
+    {legend("roc", [["ROC(9)", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC(9)", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
+    {legend("rsi", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
+    {legend("oi", [["OI", compact(active.oi), "var(--chart-2)"]])}
+    {legend("taker", [["Taker Buy", compact(active.buy), "var(--positive)"], ["Taker Sell", compact(active.sell), "var(--destructive)"]])}
     {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
     {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], `+${rocAxis.max.toFixed(rocAxis.decimals)}`)}{lineLabel(axisStarts.roc, panels.roc[1], rocAxis.min.toFixed(rocAxis.decimals))}</>}
     {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && visibleTicks(oiAxis.ticks, Math.max(2, Math.floor((panels.oi[1] - panels.oi[0]) / 32) + 1)).map(tick => <g key={tick}>{lineLabel(axisStarts.oi, scale(tick, oiAxis.min, oiAxis.max, panels.oi), compact(tick))}</g>)}
