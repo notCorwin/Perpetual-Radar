@@ -1,5 +1,5 @@
 import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react"
-import { ArrowLeft, Camera, Radio } from "lucide-react"
+import { ArrowLeft, Camera, Check, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { chartAxis, visibleTicks } from "@/chart-axis"
@@ -267,6 +267,11 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
   const error = chartError?.id === instId ? chartError.message : chart?.error ?? ""
   const captureStatus = capture.id === instId ? capture.status : "idle"
   const captureError = capture.id === instId ? capture.error : ""
+  useEffect(() => {
+    if (capture.status !== "copied") return
+    const timer = window.setTimeout(() => setCapture(current => current === capture ? { ...current, status: "idle" } : current), 2000)
+    return () => window.clearTimeout(timer)
+  }, [capture])
   const captureChart = async () => {
     const rect = chartRef.current?.getBoundingClientRect()
     if (!rect || rect.width <= 0 || rect.height <= 0) return
@@ -380,12 +385,12 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
         <p className="text-muted-foreground">OKX perpetual · 1h · Last 96 hours · 24h turnover rank {position + 1}/{order.length} · ↑/← higher · ↓/→ lower</p>
       </div>
-      <Button variant="outline" size="sm" disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}><Camera data-icon="inline-start" aria-hidden="true" />{captureStatus === "copied" ? "Copied" : captureStatus === "copying" ? "Copying…" : "Copy chart"}</Button>
+      <Button variant="outline" size="sm" className={captureStatus === "copied" ? "border-ring bg-ring/15 ring-2 ring-ring/50" : ""} disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}>{captureStatus === "copied" ? <Check data-icon="inline-start" aria-hidden="true" /> : <Camera data-icon="inline-start" aria-hidden="true" />}<span role="status" aria-live="polite">{captureStatus === "copied" ? "Copied" : captureStatus === "copying" ? "Copying…" : "Copy chart"}</span></Button>
       <Badge variant="secondary"><Radio aria-hidden="true" /><span className="text-[length:var(--chart-text-size)] font-normal">{active && !active.confirmed ? "Live candle" : "Hourly chart"}</span></Badge>
     </header>
     {error && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{error}</p>}
     {captureError && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{captureError}</p>}
-    <section ref={chartRef} aria-label={`${instId} chart`} className="flex min-h-0 flex-1 flex-col bg-card">
+    <section ref={chartRef} aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-card">
       {active && <div className="grid shrink-0 grid-cols-[minmax(9rem,1.2fr)_repeat(4,minmax(0,1fr))] items-center border-b px-4 py-1.5" aria-live="off">
         <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{hovered === null ? "Latest" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
         {([ ["Open", active.open], ["High", active.high], ["Low", active.low], ["Close", active.close] ] as const).map(([label, value]) => <div key={label} className="min-w-0 px-3">
@@ -418,6 +423,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           <Plot bars={data.bars} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} now={id === instId ? now : 0} />
         </svg>) : <p className="flex h-full items-center justify-center text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
       </div>
+      {captureStatus === "copied" && <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 bg-ring/50 motion-safe:animate-[chart-capture-flash_550ms_ease-out_both] motion-reduce:hidden" />}
     </section>
   </main>
 }
