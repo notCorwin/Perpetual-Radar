@@ -7,8 +7,8 @@ export function chartHourX(hour: number, latestHour: number, start: number, end:
 }
 
 export function chartLayout(width: number, height: number, labelGutter = 64) {
-  const outer = 4, top = 4, headerHeight = 24, rowGap = 3, bottomAxis = 22
-  const right = width - outer - labelGutter, column: Range = [outer, right]
+  const rightMargin = 4, top = 4, headerHeight = 24, rowGap = 3, bottomAxis = 22
+  const right = width - rightMargin - labelGutter, column: Range = [0, right]
   const availableHeight = Math.max(1, height - top - bottomAxis - headerHeight * 5 - rowGap * 4)
   const order: ChartPanel[] = ["price", "roc", "rsi", "oi", "taker"]
   const weights: Record<ChartPanel, number> = { price: 0.4, roc: 0.15, rsi: 0.15, oi: 0.15, taker: 0.15 }
