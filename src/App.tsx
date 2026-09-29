@@ -54,7 +54,6 @@ type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: b
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
-  postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
   postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number }): Promise<ChartPollResponse>
 }
 declare global {
@@ -81,7 +80,6 @@ const math = (formula: string) => {
 }
 function App() {
   const revision = useRef(-1)
-  const requestedFitWidth = useRef(0)
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
@@ -135,10 +133,6 @@ function App() {
       const width = table.scrollWidth
       const available = container.clientWidth
       if (!width || !available) return
-      if (width > available + 1 && width !== requestedFitWidth.current) {
-        requestedFitWidth.current = width
-        void window.webkit.messageHandlers.radar.postMessage({ fitWidth: Math.ceil(width) }).catch(() => {})
-      }
       table.style.width = `${Math.max(width, available)}px`
       const target = width > available ? available - 1 : available
       const zoom = Math.min(1, target / width)
