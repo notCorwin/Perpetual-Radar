@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
-import { compareMarketRows, compareMarketTurnover, marketTrend, momentumScores, type SortKey } from "@/market-sort"
+import { compareMarketRows, compareMarketTurnover, type SortKey } from "@/market-sort"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 
 type MarketRow = {
@@ -21,14 +21,6 @@ type MarketRow = {
   priceChange: number | null
   currentLow: number | null
   currentHigh: number | null
-  vwap14: number | null
-  ema200: number | null
-  ema200Slope: number | null
-  oi: number | null
-  oiBase: number | null
-  oiLog: number | null
-  oiUsd: number | null
-  oiSignal: "Stable" | "Building" | "Peaking" | "Unwinding" | null
   buy: number | null
   sell: number | null
   takerRatio: number | null
@@ -68,6 +60,7 @@ const formatLog = (value: number | null) => value === null ? "—" : value === 0
 const formatPercent = (value: number | null) => value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`
 const formatIndicator = (value: number | null) => value === null ? "—" : value.toFixed(2)
 const priceFormatter = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 })
+const turnoverFormatter = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 })
 const formatPrice = (value: number | null) => value === null ? "—" : priceFormatter.format(value)
 const directionClass = (value: number | null) => value === null ? "text-muted-foreground" : value > 0 ? "text-positive" : value < 0 ? "text-destructive" : ""
 const rsiClass = (value: number | null) => value === null ? "text-muted-foreground" : value > 70 ? "text-positive" : value < 30 ? "text-destructive" : ""
@@ -91,7 +84,7 @@ function App() {
   const [spreadFilterEnabled, setSpreadFilterEnabled] = useState(true)
   const [maximumSpreadPercent, setMaximumSpreadPercent] = useState(0.15)
   const [spreadDraft, setSpreadDraft] = useState("0.15")
-  const [sort, setSort] = useState<SortKey>("momentum")
+  const [sort, setSort] = useState<SortKey>("turnover24hUSDT")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => {
@@ -153,8 +146,7 @@ function App() {
   }, [selected, rows, query, sort, descending])
 
   const visible = useMemo(() => {
-    const scores = momentumScores(rows)
-    return rows.map((row, index) => ({ ...row, momentum: scores[index], trend: marketTrend(row) }))
+    return rows
       .filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase()))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
   }, [rows, query, sort, descending])
@@ -252,15 +244,13 @@ function App() {
           <TableHeader>
             <TableRow className="bg-muted/30">
               <TableHead className="text-center" aria-sort={sort === "instId" ? descending ? "descending" : "ascending" : "none"}>{header("Symbol", "instId", String.raw`\operatorname{Symbol}`)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "momentum" ? descending ? "descending" : "ascending" : "none"} title="Equal-weighted price momentum (mean rank of |ROC| and |MAROC|), positive OI log change during Building, and positive volume log change">{header("Momentum", "momentum", String.raw`\operatorname{Momentum}`)}</TableHead>
-              <TableHead className="text-center" title="LONG: price above VWAP14, EMA200 and BOLL middle, with rising EMA200 in the last closed hour, positive ROC and MAROC, and Taker Buy above Sell. SHORT: all seven reversed. Otherwise TRAP. OI Signal is direction-neutral.">{math(String.raw`\operatorname{Trend}`)}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>{header("24h USDT turnover", "turnover24hUSDT", String.raw`\operatorname{24h\ USDT\ Turnover}`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "high48" || sort === "low48" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {header("48h high", "high48", String.raw`\operatorname{High}_{48}=\max(H_{t-48},\ldots,H_{t-1})`)}
                   {header("48h low", "low48", String.raw`\operatorname{Low}_{48}=\min(L_{t-48},\ldots,L_{t-1})`)}
                 </div>
               </TableHead>
-              <TableHead className="text-center">{math(String.raw`\operatorname{OI\ Signal}`)}</TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
               <TableHead className="text-center" aria-sort={sort === "volumeLog" ? descending ? "descending" : "ascending" : "none"}>{header("Volume Log Change", "volumeLog", String.raw`\ln\left(\frac{V_t}{V_{t-1}}\right)`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
@@ -294,8 +284,7 @@ function App() {
                   <span className="text-muted-foreground">High</span><span>{formatPrice(row.currentHigh)}</span>
                 </div>
               </TableCell>
-              <TableCell className="text-center tabular-nums" title="Score from 0 to 100 across markets with complete data">{formatIndicator(row.momentum)}</TableCell>
-              <TableCell className={cn("text-center font-medium", row.trend === "LONG" ? "text-positive" : row.trend === "SHORT" ? "text-destructive" : "text-muted-foreground")}>{row.trend ?? "—"}</TableCell>
+              <TableCell className="text-center tabular-nums" title={`${row.turnover24hUSDT.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`}>{turnoverFormatter.format(row.turnover24hUSDT)}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
                   <span><span className="sr-only">48h high </span>{formatPrice(row.high48)}</span>
@@ -304,7 +293,6 @@ function App() {
                   <span className={directionClass(row.low48Diff)}><span className="sr-only">current price versus low </span>{formatPercent(row.low48Diff)}</span>
                 </div>
               </TableCell>
-              <TableCell className={cn("text-center font-medium", row.oiSignal === "Building" ? "text-positive" : row.oiSignal === "Unwinding" ? "text-destructive" : row.oiSignal === "Stable" || row.oiSignal === null ? "text-muted-foreground" : "")}>{row.oiSignal ?? "—"}</TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.volumeLog))}>{formatLog(row.volumeLog)}</TableCell>
               <TableCell className="text-center tabular-nums">
@@ -325,7 +313,7 @@ function App() {
                   {BOLL_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={bollClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={10} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>

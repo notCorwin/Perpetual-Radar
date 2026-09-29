@@ -41,9 +41,7 @@ private struct Market {
     let id: String
     var turnover24hUSDT: Double?
     var spreadPercent: Double?
-    var oi: Double?
     var oiTimestamp = 0.0
-    var oiBase: Double?
     var oiUsd: Double?
     var buy: Double?
     var sell: Double?
@@ -61,7 +59,6 @@ final class Radar {
     private var cachedPeriods: (roc: Int, maroc: Int)?
     private var chartRevisions: [String: Int] = [:]
     private var candles: [String: [Int64: Candle]] = [:]
-    private var oiHistory: [String: [Int64: Double]] = [:]
     private var emaStates: [String: (Int64, Double)] = [:]
     private var chartLiveStats: [String: (oi: Double?, sell: Double?, buy: Double?)] = [:]
     private var takerHistorySavedAt: [String: Int64] = [:]
@@ -174,8 +171,7 @@ final class Radar {
                 guard !rows.isEmpty else { throw NSError(domain: "OKX", code: 2, userInfo: [NSLocalizedDescriptionKey: "No live USDT perpetual swaps found"]) }
                 try updateTickers(tickers)
                 let cached = try store.load(hour: hour, ids: Set(rows.keys))
-                candles = cached.candles; oiHistory = cached.oiHistory; emaStates = cached.ema
-                for (id, value) in cached.oi { rows[id]?.oiBase = value }
+                candles = cached.candles; emaStates = cached.ema
                 startupError = ""; touch()
                 tasks.append(Task { [weak self] in
                     guard let self else { return }
@@ -246,7 +242,7 @@ final class Radar {
         guard let id = item["instId"] as? String, var row = rows[id],
               let current = numeric(item["oi"]), current >= 0,
               let stamp = numeric(item["ts"]), stamp >= row.oiTimestamp else { return }
-        row.oi = current; row.oiTimestamp = stamp; row.oiUsd = numeric(item["oiUsd"])
+        row.oiTimestamp = stamp; row.oiUsd = numeric(item["oiUsd"])
         rows[id] = row; cachedRows.removeValue(forKey: id); touch(id)
     }
 
@@ -313,24 +309,14 @@ final class Radar {
                     case "/market/candles":
                         try updateHistoricalCandles(id, result)
                     case "/rubik/stat/contracts/open-interest-history":
-                        var fixed: [Int64: Double] = [:]
+                        var hasPreviousHour = false
                         for case let item as [String] in result {
-                            guard item.count >= 2, let ts = Int64(item[0]), ts % hourMS == 0,
-                                  ts < hour,
-                                  let value = Double(item[1]), value.isFinite, value > 0 else { continue }
-                            fixed[ts] = value
-                            if item.count >= 4, let oiUSD = Double(item[3]), oiUSD.isFinite, oiUSD >= 0 {
-                                try store.saveChartStat(id, hour: ts, oi: oiUSD)
-                            }
+                            guard item.count >= 4, let ts = Int64(item[0]), ts % hourMS == 0,
+                                  ts < hour, let oiUSD = Double(item[3]), oiUSD.isFinite, oiUSD >= 0 else { continue }
+                            try store.saveChartStat(id, hour: ts, oi: oiUSD)
+                            if ts == hour - hourMS { hasPreviousHour = true }
                         }
-                        try store.saveOIHistory(id, fixed)
-                        if let base = fixed[hour - hourMS] {
-                            oiHistory[id, default: [:]].merge(fixed.filter { $0.key >= hour - Int64(chartHours - 1) * hourMS }) { _, latest in latest }
-                            rows[id]?.oiBase = base
-                            try store.execute("INSERT OR REPLACE INTO oi_base VALUES (?,?,?)", [id, hour, base])
-                            cachedRows.removeValue(forKey: id)
-                            touch(id)
-                        } else { failed.insert(id) }
+                        if !hasPreviousHour { failed.insert(id) }
                     default:
                         if takerHistorySavedAt[id] != hour {
                             for case let item as [String] in result {
@@ -426,12 +412,7 @@ final class Radar {
         for id in rows.keys { chartRevisions[id, default: 0] &+= 1 }
         chartLiveStats.removeAll()
         for id in rows.keys {
-            if let row = rows[id], row.oiTimestamp >= Double(hour - hourMS),
-               row.oiTimestamp < Double(hour), let oi = row.oi, oi > 0 {
-                oiHistory[id, default: [:]][hour - hourMS] = oi
-            }
-            rows[id]?.oiBase = nil; rows[id]?.buy = nil; rows[id]?.sell = nil; rows[id]?.takerRatio = nil
-            oiHistory[id] = oiHistory[id]?.filter { $0.key >= hour - Int64(chartHours - 1) * hourMS }
+            rows[id]?.buy = nil; rows[id]?.sell = nil; rows[id]?.takerRatio = nil
             candles[id] = candles[id]?.filter { $0.key >= hour - Int64(candleLookback) * hourMS }
         }
         emaStates = emaStates.filter { $0.value.0 >= hour - Int64(candleLookback + 1) * hourMS && $0.value.0 < hour }
@@ -589,22 +570,10 @@ final class Radar {
             let live = current?.confirmed == false ? current : nil
             let (oldRoc, oldMaroc) = previous?.confirmed == true ? rocMaroc(bars, hour - hourMS, rocPeriod, marocPeriod) : (nil, nil)
             let price = current?.close
-            let previousEMA = ema200(id, bars)
-            let ema = previousEMA.flatMap { old in price.map { old + ($0 - old) * 2 / 201 } }
-            // Recover the last closed hour's EMA slope from its close and EMA value.
-            let priorEMASlope = previous.flatMap { bar in bar.confirmed ? previousEMA.map { (bar.close - $0) * 2 / 199 } : nil }
-            var oiPoints = (oiHistory[id] ?? [:]).map { (hour: $0.key, oi: $0.value) }.sorted { $0.hour < $1.hour }
-            let hasLiveOI = row.oiTimestamp >= Double(hour) && (row.oi ?? 0) > 0
-            if hasLiveOI, let oi = row.oi { oiPoints.append((hour: hour, oi: oi)) }
             let result: [String: Any] = [
                 "instId": id, "turnover24hUSDT": turnover, "price": price as Any? ?? null,
                 "priceChange": percentChange(price, previous?.confirmed == true ? previous?.close : nil) as Any? ?? null,
                 "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
-                "vwap14": vwap14(bars, hour) as Any? ?? null,
-                "ema200": ema as Any? ?? null, "ema200Slope": priorEMASlope as Any? ?? null,
-                "oi": row.oi as Any? ?? null, "oiBase": row.oiBase as Any? ?? null,
-                "oiLog": logChange(row.oi, row.oiBase) as Any? ?? null, "oiUsd": row.oiUsd as Any? ?? null,
-                "oiSignal": (hasLiveOI ? oiSignal(oiPoints)?.rawValue : nil) as Any? ?? null,
                 "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
                 "takerRatio": row.takerRatio as Any? ?? null,
                 "volumeLog": logChange(current?.quoteVolume, previous?.confirmed == true ? previous?.quoteVolume : nil) as Any? ?? null,
