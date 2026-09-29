@@ -58,7 +58,8 @@ const hourLabel = (hour: number) => new Date(hour).toLocaleString("en-US", { mon
 const chartPriceValues = (bars: Bar[]) => bars.flatMap(bar => [bar.low, bar.high, bar.vwap, bar.ema, bar.bollUpper, bar.bollMiddle, bar.bollLower].filter((value): value is number => value !== null))
 const rocAxisFor = (bars: Bar[]) => {
   const values = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
-  return values.length ? chartAxis(Math.min(0, ...values), Math.max(0, ...values), 8) : chartAxis(-1, 1, 8)
+  const extent = values.length ? Math.max(...values.map(Math.abs)) || 1 : 1
+  return chartAxis(-extent, extent, 8)
 }
 const axisLabelLimit = (panel: readonly [number, number], maximum: number) =>
   Math.min(maximum, Math.max(2, Math.floor((panel[1] - panel[0]) / 32) + 1))
