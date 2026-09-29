@@ -205,6 +205,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let parameters = message.body as? [String: Any] else { replyHandler(nil, "Invalid request"); return }
+        if let width = parameters["fitWidth"] as? Double, width.isFinite, width > 0 {
+            let requested = CGFloat(width)
+            let available = (window.screen ?? NSScreen.main)?.visibleFrame.width ?? requested
+            let target = min(ceil(requested), available)
+            if let content = window.contentView, target > content.bounds.width + 1 {
+                let center = window.frame.midX
+                window.setContentSize(NSSize(width: target, height: content.bounds.height))
+                var frame = window.frame
+                let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? frame
+                frame.origin.x = max(visible.minX, min(center - frame.width / 2, visible.maxX - frame.width))
+                window.setFrame(frame, display: true)
+            }
+            replyHandler(["ok": true], nil)
+            return
+        }
         if let id = parameters["chartInstId"] as? String {
             guard let radar else { replyHandler(["bars": [], "error": startupError, "revision": -1], nil); return }
             if parameters["loadChart"] as? Bool == true {
