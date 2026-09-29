@@ -3,7 +3,7 @@ import { flushSync } from "react-dom"
 import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { chartAxis, logarithmicChartAxis, logarithmicY } from "@/chart-axis"
+import { chartAxis, chartAxisForLabels, logarithmicChartAxis, logarithmicY } from "@/chart-axis"
 import { chartCandleWidth, chartHourX, chartLayout, fitPriceTag, type ChartPanel as Panel } from "@/chart-layout"
 import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
@@ -85,11 +85,10 @@ const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length -
   const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
   const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
-  const rsiAxis = logarithmicChartAxis(0, 100, axisLabelLimit(panels.rsi, 7), true)
-  const takerAxis = logarithmicChartAxis(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))), axisLabelLimit(panels.taker, 7), true)
+  const takerAxis = chartAxisForLabels(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))), axisLabelLimit(panels.taker, 7))
   const labels = [
     ...priceAxis.ticks.map(tick => priceFormatter.format(tick)),
-    `+${rocAxis.max.toFixed(rocAxis.decimals)}`, rocAxis.min.toFixed(rocAxis.decimals), ...rsiAxis.ticks.map(String),
+    `+${rocAxis.max.toFixed(rocAxis.decimals)}`, rocAxis.min.toFixed(rocAxis.decimals), "100", "0",
     ...(oiValues.length ? logarithmicChartAxis(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7), true).ticks.map(compact) : []),
     ...takerAxis.ticks.map(compact),
   ]
@@ -123,16 +122,15 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const axisPrice = new Intl.NumberFormat("en-US", { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })
   const rocAxis = rocAxisFor(bars)
   const oiValues = bars.flatMap(bar => bar.oi === null ? [] : [bar.oi])
-  const rsiAxis = logarithmicChartAxis(0, 100, axisLabelLimit(panels.rsi, 7), true)
   const oiAxis = oiValues.length ? logarithmicChartAxis(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7), true) : null
   const maxTaker = Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0)))
-  const takerAxis = logarithmicChartAxis(0, maxTaker, axisLabelLimit(panels.taker, 7), true)
+  const takerAxis = chartAxisForLabels(0, maxTaker, axisLabelLimit(panels.taker, 7))
   const scale = (value: number, min: number, max: number, panel: readonly [number, number]) =>
     panel[1] - (value - min) / (max - min || 1) * (panel[1] - panel[0])
   const priceY = (value: number) => logarithmicY(value, priceAxis, panels.price)
-  const rsiY = (value: number) => logarithmicY(value, rsiAxis, panels.rsi)
+  const rsiY = (value: number) => scale(value, 0, 100, panels.rsi)
   const oiY = (value: number) => oiAxis ? logarithmicY(value, oiAxis, panels.oi) : NaN
-  const takerY = (value: number) => logarithmicY(value, takerAxis, panels.taker)
+  const takerY = (value: number) => scale(value, takerAxis.min, takerAxis.max, panels.taker)
   const rocZeroY = scale(0, rocAxis.min, rocAxis.max, panels.roc)
   const tag = livePriceTag(liveBar, endHour, now)
   const latestY = priceY(tag.price)
@@ -319,10 +317,10 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     {legend("rsi", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("oi", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", [["Taker Buy", compact(active.buy), "var(--positive)"], ["Taker Sell", compact(active.sell), "var(--destructive)"]])}
-    {panels.rsi[1] - panels.rsi[0] >= 35 && rsiAxis.ticks.map(tick => <g key={tick}><line x1={columns.rsi[0]} x2={right} y1={rsiY(tick)} y2={rsiY(tick)} stroke="var(--border)" strokeOpacity="0.25" />{lineLabel(axisStarts.rsi, rsiY(tick), String(tick))}</g>)}
+    {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
     {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], `+${rocAxis.max.toFixed(rocAxis.decimals)}`)}{lineLabel(axisStarts.roc, panels.roc[1], rocAxis.min.toFixed(rocAxis.decimals))}</>}
     {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && oiAxis.ticks.map(tick => <g key={tick}><line x1={columns.oi[0]} x2={right} y1={oiY(tick)} y2={oiY(tick)} stroke="var(--border)" strokeOpacity="0.25" />{lineLabel(axisStarts.oi, oiY(tick), compact(tick))}</g>)}
-    {panels.taker[1] - panels.taker[0] >= 35 && takerAxis.ticks.map(tick => <g key={tick}><line x1={columns.taker[0]} x2={right} y1={takerY(tick)} y2={takerY(tick)} stroke="var(--border)" strokeOpacity="0.25" />{lineLabel(axisStarts.taker, takerY(tick), compact(tick))}</g>)}
+    {panels.taker[1] - panels.taker[0] >= 35 && takerAxis.ticks.map(tick => <g key={tick}>{lineLabel(axisStarts.taker, takerY(tick), compact(tick))}</g>)}
   </>
 })
 
@@ -596,7 +594,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
         })
       }}>
         <div className="relative h-full w-full">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200 and Log BB on a logarithmic price scale; RSI, open interest, and taker volume use zero-inclusive logarithmic scales, while ROC and MAROC remain linear. RSI has a shaded 30 to 70 range and ROC and MAROC have shaded positive and negative areas. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the highest turnover market and right jumps to the lowest. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200 and Log BB on a logarithmic price scale; open interest uses a zero-inclusive logarithmic scale, while RSI, ROC, MAROC, and taker volume use linear scales. RSI has a shaded 30 to 70 range and ROC and MAROC have shaded positive and negative areas. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the highest turnover market and right jumps to the lowest. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()

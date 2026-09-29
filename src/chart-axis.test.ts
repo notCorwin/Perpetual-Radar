@@ -38,14 +38,12 @@ test("price log axis gives equal space to equal price ratios and handles narrow 
   }
 })
 
-test("zero-inclusive log axes retain zero and keep cumulative taker volume aligned", () => {
+test("zero-inclusive log axes retain zero for open interest", () => {
   const axis = logarithmicChartAxis(0, 1_000, 6, true)
   const panel: readonly [number, number] = [0, 150]
   assert.equal(logarithmicY(0, axis, panel), panel[1])
   assert.ok(Math.abs((logarithmicY(0, axis, panel) - logarithmicY(1, axis, panel)) - (logarithmicY(1, axis, panel) - logarithmicY(3, axis, panel))) < 1e-9)
-  const zeroY = logarithmicY(0, axis, panel), buyY = logarithmicY(200, axis, panel), totalY = logarithmicY(500, axis, panel)
-  assert.ok(totalY < buyY && buyY < zeroY)
-  assert.equal((zeroY - buyY) + (buyY - totalY), zeroY - totalY)
+  assert.ok(logarithmicY(500, axis, panel) < logarithmicY(200, axis, panel))
   const empty = logarithmicChartAxis(0, 0, 4, true)
   assert.ok(empty.max > 0 && empty.ticks.includes(0))
   assert.ok(logarithmicChartAxis(0, 100, 5, true).ticks.length <= 5)
