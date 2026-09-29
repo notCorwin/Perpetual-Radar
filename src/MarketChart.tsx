@@ -1,10 +1,11 @@
 import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ArrowLeft, Camera, Check, Radio } from "lucide-react"
+import { flushSync } from "react-dom"
+import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { chartAxis, visibleTicks } from "@/chart-axis"
 import { chartHourX, chartLayout, type ChartPanel as Panel } from "@/chart-layout"
-import { scrollChartEnd, visibleChartBars } from "@/chart-viewport"
+import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
 import { wrappedMarket } from "@/market-sort"
 
@@ -14,7 +15,7 @@ type Bar = {
   roc: number | null; maroc: number | null; rsi6: number | null; rsi12: number | null; rsi24: number | null
   oi: number | null; buy: number | null; sell: number | null
 }
-export type ChartResponse = { bars: Bar[]; error: string; revision: number; endHour?: number }
+export type ChartResponse = { bars: Bar[]; error: string; revision: number; endHour?: number; oldestHour?: number | null; historyExhausted?: boolean; candleLoadFailed?: boolean }
 export type ChartPollResponse = ChartResponse | { unchanged: true; error: string; revision: number }
 
 const chartCache = new Map<string, { data: ChartResponse; loadedAt: number }>()
@@ -70,7 +71,7 @@ const priceTagWidth = (priceText: string, countdown: string) => {
   const padding = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chart-price-tag-padding-x"))
   return Math.ceil(Math.max(legendWidth(priceText), legendWidth(countdown)) + padding * 2)
 }
-const chartGutter = (bars: Bar[]) => {
+const chartGutter = (bars: Bar[], liveClose = bars[bars.length - 1].close) => {
   const values = chartPriceValues(bars)
   const priceAxis = chartAxis(Math.min(...values), Math.max(...values), 8)
   const decimals = priceAxis.decimals
@@ -84,16 +85,16 @@ const chartGutter = (bars: Bar[]) => {
     ...(oiValues.length ? chartAxis(Math.min(...oiValues), Math.max(...oiValues)).ticks.map(compact) : []),
     ...takerAxis.ticks.map(compact),
   ]
-  return Math.ceil(Math.max(priceTagWidth(price(bars[bars.length - 1].close), "00:00"), ...labels.map(label => 8 + legendWidth(label))))
+  return Math.ceil(Math.max(priceTagWidth(price(liveClose), "00:00"), ...labels.map(label => 8 + legendWidth(label))))
 }
 
-const Plot = memo(function Plot({ bars, hovered, width, height, now, endHour }: { bars: Bar[]; hovered: number | null; width: number; height: number; now: number; endHour: number }) {
+const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, endHour }: { bars: Bar[]; liveBar: Bar; hovered: number | null; width: number; height: number; now: number; endHour: number }) {
   const n = bars.length
   const active = bars[hovered ?? n - 1]
   const latestHour = endHour
   const firstHour = endHour - 95 * 3_600_000
   const candleHigh = Math.max(...bars.map(bar => bar.high)), candleLow = Math.min(...bars.map(bar => bar.low))
-  const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, chartGutter(bars))
+  const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, chartGutter(bars, liveBar.close))
   const x = (index: number, panel: Panel) => chartHourX(bars[index].hour, latestHour, ...columns[panel])
   const barWidth = Math.max(5, Math.min(13, (right - left) / n * 0.68))
   const takerBarWidth = Math.max(2, Math.min(9, (columns.taker[1] - columns.taker[0]) / n * 0.7))
@@ -111,18 +112,18 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now, endHour }: 
   const scale = (value: number, min: number, max: number, panel: readonly [number, number]) =>
     panel[1] - (value - min) / (max - min || 1) * (panel[1] - panel[0])
   const priceY = (value: number) => scale(value, priceAxis.min, priceAxis.max, panels.price)
-  const latest = bars[n - 1]
-  const latestY = priceY(latest.close)
-  const latestColor = latest.close >= latest.open ? "var(--positive)" : "var(--destructive)"
-  const showCountdown = now > 0 && !latest.confirmed
-  const secondsLeft = showCountdown ? Math.max(0, Math.floor((latest.hour + 3_600_000 - now) / 1000)) : 0
+  const tag = livePriceTag(liveBar, endHour, now)
+  const latestY = priceY(tag.price)
+  const latestColor = tag.rising ? "var(--positive)" : "var(--destructive)"
+  const showCountdown = now > 0
+  const secondsLeft = tag.secondsLeft
   const countdown = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`
-  const latestPrice = price(latest.close), tagWidth = priceTagWidth(latestPrice, countdown)
+  const latestPrice = price(tag.price), tagWidth = priceTagWidth(latestPrice, countdown)
   const tagStyle = getComputedStyle(document.documentElement)
   const tagLineHeight = Number.parseFloat(tagStyle.getPropertyValue("--chart-text-size")) * Number.parseFloat(tagStyle.getPropertyValue("--chart-price-tag-line-height"))
   const tagPaddingY = Number.parseFloat(tagStyle.getPropertyValue("--chart-price-tag-padding-y"))
   const tagHeight = tagLineHeight * (showCountdown ? 2 : 1) + tagPaddingY * 2
-  const priceTagY = Math.max(panels.price[0], Math.min(latestY - tagHeight / 2, panels.price[1] - tagHeight))
+  const priceTagY = tag.inViewport ? Math.max(panels.price[0], Math.min(latestY - tagHeight / 2, panels.price[1] - tagHeight)) : panels.price[0]
   const line = (key: keyof Bar, panelKey: Panel, min: number, max: number) => {
     const segments: string[] = []
     let segment = ""
@@ -153,9 +154,28 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now, endHour }: 
     lower.push(`${pointX} ${priceY(bar.bollLower).toFixed(1)}`)
   })
   finishBand()
-  const lineStroke = (d: string, color: string, width = 1.8, opacity = 1, dash?: string) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={dash} opacity={opacity} />
+  const indicatorWidth = "var(--chart-indicator-line-width)"
+  const lineStroke = (d: string, color: string, width = indicatorWidth, opacity = 1, dash?: string) => <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={dash} opacity={opacity} />
   const lineLabel = (x: number, y: number, label: string, color = "var(--muted-foreground)") =>
     <text x={x} y={y} dominantBaseline="middle" fill={color}>{label}</text>
+  const rectangle = (x: number, y: number, width: number, height: number) => `M${x} ${y}h${width}v${height}h${-width}Z`
+  const upWicks: string[] = [], downWicks: string[] = [], upBodies: string[] = [], downBodies: string[] = []
+  const buys: string[] = [], sells: string[] = []
+  for (let index = 0; index < n; index++) {
+    const bar = bars[index]
+    const rising = bar.close >= bar.open
+    const center = x(index, "price")
+    const wicks = rising ? upWicks : downWicks
+    const bodies = rising ? upBodies : downBodies
+    wicks.push(`M${center} ${priceY(bar.high)}V${priceY(bar.low)}`)
+    const top = priceY(Math.max(bar.open, bar.close))
+    bodies.push(rectangle(center - barWidth / 2, top, barWidth, Math.max(1.5, priceY(Math.min(bar.open, bar.close)) - top)))
+    const volumeX = x(index, "taker") - takerBarWidth / 2
+    const buyHeight = (bar.buy ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
+    const sellHeight = (bar.sell ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
+    if (buyHeight) buys.push(rectangle(volumeX, panels.taker[1] - buyHeight, takerBarWidth, buyHeight))
+    if (sellHeight) sells.push(rectangle(volumeX, panels.taker[1] - buyHeight - sellHeight, takerBarWidth, sellHeight))
+  }
   const panelKeys: Panel[] = ["price", "roc", "rsi", "oi", "taker"]
   const grid = panelKeys.flatMap(key => panels[key].map((y, index) =>
     <line key={`${key}-${index}`} x1={columns[key][0]} x2={columns[key][1]} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" opacity={index ? 0.32 : 0.55} />))
@@ -176,7 +196,7 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now, endHour }: 
         cursor += widths[index] + gap
         const labelStart = dash === undefined ? 0 : 22
         return <g key={label} transform={`translate(${itemStart},0)`}>
-        {dash !== undefined && <line x1="0" x2="16" y1="0" y2="0" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeDasharray={dash} />}
+        {dash !== undefined && <line x1="0" x2="16" y1="0" y2="0" stroke={color} strokeWidth={indicatorWidth} strokeLinecap="round" strokeDasharray={dash} />}
         <text x={labelStart} dominantBaseline="middle" fill="var(--muted-foreground)">{label}</text>
         <text x={labelStart + legendWidth(label) + 10} dominantBaseline="middle" fill={color}>{value}</text>
         </g>
@@ -197,34 +217,27 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now, endHour }: 
     {bars.map((bar, index) => ({ bar, index })).filter(({ bar, index }) => index === n - 1 || (bar.hour - firstHour) % (24 * 3_600_000) === 0).map(({ bar, index }) => <text key={bar.hour} x={x(index, "taker")} y={height - 7} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)">{hourLabel(bar.hour)}</text>)}
     {visibleTicks(priceAxis.ticks, Math.max(2, Math.floor((panels.price[1] - panels.price[0]) / 32) + 1)).map(tick => {
       const tickY = priceY(tick)
-      return <g key={tick}><line x1={columns.price[0]} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.35" />{Math.abs(tickY - latestY) > 14 && lineLabel(axisStarts.price, tickY, axisPrice.format(tick))}</g>
+      return <g key={tick}><line x1={columns.price[0]} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.35" />{(!tag.inViewport || Math.abs(tickY - latestY) > 14) && lineLabel(axisStarts.price, tickY, axisPrice.format(tick))}</g>
     })}
-    <line x1={columns.price[0]} x2={right} y1={latestY} y2={latestY} stroke={latestColor} opacity="0.5" />
-    {bars.map((bar, index) => {
-      const up = bar.close >= bar.open
-      const color = up ? "var(--positive)" : "var(--destructive)"
-      const y1 = priceY(Math.max(bar.open, bar.close)), y2 = priceY(Math.min(bar.open, bar.close))
-      const buyHeight = (bar.buy ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
-      const sellHeight = (bar.sell ?? 0) / takerAxis.max * (panels.taker[1] - panels.taker[0])
-      return <g key={bar.hour}>
-        <line x1={x(index, "price")} x2={x(index, "price")} y1={priceY(bar.high)} y2={priceY(bar.low)} stroke={color} strokeWidth="1.2" />
-        <rect x={x(index, "price") - barWidth / 2} y={y1} width={barWidth} height={Math.max(1.5, y2 - y1)} fill={color} />
-        <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight} width={takerBarWidth} height={buyHeight} fill="var(--positive)" opacity="0.9" />
-        <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight - sellHeight} width={takerBarWidth} height={sellHeight} fill="var(--destructive)" opacity="0.9" />
-        <rect x={x(index, "taker") - takerBarWidth / 2} y={panels.taker[1] - buyHeight - sellHeight} width={takerBarWidth} height={sellHeight} fill="url(#sell-hatch)" opacity="0.7" />
-      </g>
-    })}
-    {lineStroke(priceLine("bollUpper"), "var(--chart-1)", 0.8, 0.62)}
-    {lineStroke(priceLine("bollMiddle"), "var(--chart-1)", 1.4)}
-    {lineStroke(priceLine("bollLower"), "var(--chart-1)", 0.8, 0.62)}
-    {lineStroke(priceLine("vwap"), "var(--chart-2)", 1.8)}
-    {lineStroke(priceLine("ema"), "var(--chart-3)", 1.8, 0.9)}
-    {lineStroke(line("rsi6", "rsi", 0, 100), "var(--chart-1)", 2.4)}
-    {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)", 2.4, 1, "7 4")}
-    {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)", 2.4, 1, "1 4")}
-    {lineStroke(line("roc", "roc", rocAxis.min, rocAxis.max), "var(--chart-1)", 2.4)}
-    {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-2)", 2.4, 1, "7 4")}
-    {oiAxis && lineStroke(line("oi", "oi", oiAxis.min, oiAxis.max), "var(--chart-2)", 2)}
+    {tag.inViewport && <line x1={columns.price[0]} x2={right} y1={latestY} y2={latestY} stroke={latestColor} opacity="0.5" />}
+    <path d={upWicks.join(" ")} fill="none" stroke="var(--positive)" strokeWidth="1.2" />
+    <path d={downWicks.join(" ")} fill="none" stroke="var(--destructive)" strokeWidth="1.2" />
+    <path d={upBodies.join(" ")} fill="var(--positive)" />
+    <path d={downBodies.join(" ")} fill="var(--destructive)" />
+    <path d={buys.join(" ")} fill="var(--positive)" opacity="0.9" />
+    <path d={sells.join(" ")} fill="var(--destructive)" opacity="0.9" />
+    <path d={sells.join(" ")} fill="url(#sell-hatch)" opacity="0.7" />
+    {lineStroke(priceLine("bollUpper"), "var(--chart-1)", indicatorWidth, 0.62)}
+    {lineStroke(priceLine("bollMiddle"), "var(--chart-1)")}
+    {lineStroke(priceLine("bollLower"), "var(--chart-1)", indicatorWidth, 0.62)}
+    {lineStroke(priceLine("vwap"), "var(--chart-2)")}
+    {lineStroke(priceLine("ema"), "var(--chart-3)", indicatorWidth, 0.9)}
+    {lineStroke(line("rsi6", "rsi", 0, 100), "var(--chart-1)")}
+    {lineStroke(line("rsi12", "rsi", 0, 100), "var(--chart-2)", indicatorWidth, 1, "7 4")}
+    {lineStroke(line("rsi24", "rsi", 0, 100), "var(--chart-3)", indicatorWidth, 1, "1 4")}
+    {lineStroke(line("roc", "roc", rocAxis.min, rocAxis.max), "var(--chart-1)")}
+    {lineStroke(line("maroc", "roc", rocAxis.min, rocAxis.max), "var(--chart-2)", indicatorWidth, 1, "7 4")}
+    {oiAxis && lineStroke(line("oi", "oi", oiAxis.min, oiAxis.max), "var(--chart-2)")}
     {hovered !== null && panelKeys.map(key => <line key={key} x1={x(hovered, key)} x2={x(hovered, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeWidth="0.65" strokeDasharray="3 5" opacity="0.3" />)}
     {([[highIndex, candleHigh, "high"], [lowIndex, candleLow, "low"]] as const).map(([index, value, kind]) => {
       const markerX = x(index, "price"), label = price(value)
@@ -255,23 +268,26 @@ const Plot = memo(function Plot({ bars, hovered, width, height, now, endHour }: 
 export function MarketChart({ instId, order, onSelect, onBack }: { instId: string; order: string[]; onSelect: (id: string) => void; onBack: () => void }) {
   const [displayed, setDisplayed] = useState<{ id: string; data: ChartResponse } | null>(null)
   const [historyBars, setHistoryBars] = useState<{ id: string; bars: Bar[] } | null>(null)
+  const [historyBoundary, setHistoryBoundary] = useState<{ id: string; oldestHour: number } | null>(null)
   const [windowEnd, setWindowEnd] = useState<{ id: string; hour: number } | null>(null)
   const [historyLoading, setHistoryLoading] = useState<string | null>(null)
+  const [historyRetry, setHistoryRetry] = useState(0)
   const windowEndRef = useRef<{ id: string; hour: number } | null>(null)
   const wheelPixels = useRef(0)
+  const wheelFrame = useRef<number | null>(null)
   const historyRequests = useRef(new Map<string, Promise<ChartPollResponse>>())
   const loadedHistoryBuckets = useRef(new Set<string>())
   const requestedHistoryEnds = useRef(new Set<string>())
   const [hover, setHover] = useState<{ id: string; index: number } | null>(null)
   const [chartError, setChartError] = useState<{ id: string; message: string } | null>(null)
   const [warmCharts, setWarmCharts] = useState(() => new Map<string, ChartResponse>())
-  const [capture, setCapture] = useState<{ id: string; status: "idle" | "copying" | "copied" | "failed"; error: string }>({ id: instId, status: "idle", error: "" })
+  const [capture, setCapture] = useState<{ id: string; status: "idle" | "copying" | "flashing" | "failed"; error: string }>({ id: instId, status: "idle", error: "" })
   const chartRef = useRef<HTMLElement>(null)
   const plotRef = useRef<HTMLDivElement>(null)
   const navigationId = useRef(instId)
   const navigationFrame = useRef<number | null>(null)
   const [plotSize, setPlotSize] = useState({ width: 0, height: 0 })
-  const [now, setNow] = useState(0)
+  const [now, setNow] = useState(Date.now)
   const position = order.indexOf(instId)
   const previous = wrappedMarket(order, position - 1), next = wrappedMarket(order, position + 1)
   const beforePrevious = wrappedMarket(order, position - 2), afterNext = wrappedMarket(order, position + 2)
@@ -291,8 +307,8 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
   const captureStatus = capture.id === instId ? capture.status : "idle"
   const captureError = capture.id === instId ? capture.error : ""
   useEffect(() => {
-    if (capture.status !== "copied") return
-    const timer = window.setTimeout(() => setCapture(current => current === capture ? { ...current, status: "idle" } : current), 2000)
+    if (capture.status !== "flashing") return
+    const timer = window.setTimeout(() => setCapture(current => current === capture ? { ...current, status: "idle" } : current), 550)
     return () => window.clearTimeout(timer)
   }, [capture])
   const captureChart = async () => {
@@ -301,7 +317,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
     setCapture({ id: instId, status: "copying", error: "" })
     try {
       await window.webkit.messageHandlers.radar.postMessage({ captureChart: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } })
-      setCapture({ id: instId, status: "copied", error: "" })
+      setCapture({ id: instId, status: "flashing", error: "" })
     } catch (cause) {
       setCapture({ id: instId, status: "failed", error: cause instanceof Error ? cause.message : "Could not copy chart screenshot" })
     }
@@ -327,6 +343,13 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
     return () => observer.disconnect()
   }, [])
   useEffect(() => {
+    const element = plotRef.current
+    if (!element) return
+    const preventPageScroll = (event: WheelEvent) => event.preventDefault()
+    element.addEventListener("wheel", preventPageScroll, { passive: false })
+    return () => element.removeEventListener("wheel", preventPageScroll)
+  }, [])
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [])
@@ -347,8 +370,12 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         historyRequests.current.set(instId, request)
         try {
           const result = await request
+        if (!("unchanged" in result) && result.historyExhausted && result.oldestHour !== null && result.oldestHour !== undefined) {
+          const oldestHour = result.oldestHour
+          setHistoryBoundary(current => current?.id === instId && current.oldestHour === oldestHour ? current : { id: instId, oldestHour })
+        }
         if (stopped || windowEndRef.current?.id !== instId || windowEndRef.current.hour !== historicalEnd || "unchanged" in result) return
-        loadedHistoryBuckets.current.add(bucket)
+        if (!result.candleLoadFailed) loadedHistoryBuckets.current.add(bucket)
         setHistoryBars(current => {
           const merged = new Map<number, Bar>(current?.id === instId ? current.bars.map(bar => [bar.hour, bar]) : [])
           for (const bar of result.bars) merged.set(bar.hour, bar)
@@ -376,8 +403,12 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       })()
     }, 80)
     return () => { stopped = true; window.clearTimeout(timer) }
-  }, [instId, historicalEnd, oldestCachedHour])
-  useEffect(() => { wheelPixels.current = 0 }, [instId])
+  }, [instId, historicalEnd, oldestCachedHour, historyRetry])
+  useEffect(() => {
+    wheelPixels.current = 0
+    if (wheelFrame.current !== null) window.cancelAnimationFrame(wheelFrame.current)
+    wheelFrame.current = null
+  }, [instId])
   useEffect(() => {
     let stopped = false
     let timer: number
@@ -452,6 +483,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
     if (latestHour === undefined || steps === 0) return
     const current = windowEndRef.current?.id === instId ? windowEndRef.current.hour : null
     const nextHour = scrollChartEnd(current, latestHour, steps, Number.isFinite(oldestCachedHour) ? oldestCachedHour : 0)
+    if (nextHour === current) { wheelPixels.current = 0; return }
     const next = nextHour === null ? null : { id: instId, hour: nextHour }
     requestedHistoryEnds.current.clear()
     windowEndRef.current = next
@@ -459,6 +491,8 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
     setHover(null)
   }
   const active = bars[hovered ?? bars.length - 1]
+  const atHistoryBoundary = historicalEnd !== null && historyBoundary?.id === instId
+    && historicalEnd === Math.min(chart?.bars.at(-1)?.hour ?? historicalEnd, historyBoundary.oldestHour + 95 * 3_600_000)
   const warmSurfaces = useMemo(() => new Map([...warmCharts].map(([id, data]) => [id, { ...data, bars: visibleChartBars(data.bars, data.bars.at(-1)?.hour ?? 0) }])), [warmCharts])
   const surfaces = new Map(warmSurfaces)
   if (bars.length && chart) surfaces.set(instId, { ...chart, bars, endHour: viewportEnd })
@@ -469,10 +503,15 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
         <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {position + 1}/{order.length} · ↑/← higher · ↓/→ lower</p>
       </div>
-      <Button variant="outline" size="sm" className={captureStatus === "copied" ? "border-ring bg-ring/15 ring-2 ring-ring/50" : ""} disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}>{captureStatus === "copied" ? <Check data-icon="inline-start" aria-hidden="true" /> : <Camera data-icon="inline-start" aria-hidden="true" />}<span role="status" aria-live="polite">{captureStatus === "copied" ? "Copied" : captureStatus === "copying" ? "Copying…" : "Copy chart"}</span></Button>
+      <Button variant="outline" size="sm" disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}><Camera data-icon="inline-start" aria-hidden="true" />{captureStatus === "copying" ? "Copying…" : "Copy chart"}</Button>
+      <span role="status" className="sr-only">{captureStatus === "flashing" ? "Chart copied to clipboard" : ""}</span>
       <Badge variant="secondary"><Radio aria-hidden="true" /><span className="text-[length:var(--chart-text-size)] font-normal">{historicalEnd !== null ? "History" : active && !active.confirmed ? "Live candle" : "Hourly chart"}</span></Badge>
     </header>
-    {error && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{error}</p>}
+    {error && <div role="alert" className="flex shrink-0 items-center gap-3 border-b px-5 py-2 text-destructive">{error}{historicalEnd !== null && <Button variant="outline" size="sm" onClick={() => {
+      requestedHistoryEnds.current.delete(`${instId}:${historicalEnd}`)
+      loadedHistoryBuckets.current.delete(`${instId}:${Math.floor(historicalEnd / (96 * 3_600_000))}`)
+      setHistoryRetry(value => value + 1)
+    }}>Retry</Button>}</div>}
     {captureError && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{captureError}</p>}
     <section ref={chartRef} aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-card">
       {active && <div className="grid shrink-0 grid-cols-[minmax(9rem,1.2fr)_repeat(4,minmax(0,1fr))] items-center border-b px-4 py-1.5" aria-live="off">
@@ -485,10 +524,13 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY)
         const delta = horizontal ? event.deltaX : -event.deltaY
         wheelPixels.current += delta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 240 : 1)
-        const steps = Math.max(-12, Math.min(12, Math.trunc(wheelPixels.current / 12)))
-        if (!steps) return
-        wheelPixels.current -= steps * 12
-        moveHistory(steps)
+        if (wheelFrame.current !== null || Math.abs(wheelPixels.current) < 12) return
+        wheelFrame.current = window.requestAnimationFrame(() => {
+          wheelFrame.current = null
+          const steps = Math.trunc(wheelPixels.current / 12)
+          wheelPixels.current -= steps * 12
+          flushSync(() => moveHistory(steps))
+        })
       }}>
         <div className="relative h-full w-full">
         {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC, MAROC, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
@@ -504,7 +546,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           if (id !== instId) return
           const rect = event.currentTarget.getBoundingClientRect()
           const svgX = event.clientX - rect.left
-          const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars))
+          const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars, chart?.bars.at(-1)?.close))
           const [start, end] = columns.price
           const latestHour = viewportEnd
           let index = 0
@@ -513,12 +555,13 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           }
           setHover(current => current?.id === instId && current.index === index ? current : { id: instId, index })
         }}>
-          <Plot bars={data.bars} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} now={id === instId && historicalEnd === null ? now : 0} endHour={data.endHour ?? data.bars.at(-1)!.hour} />
+          <Plot bars={data.bars} liveBar={id === instId ? chart?.bars.at(-1) ?? data.bars.at(-1)! : data.bars.at(-1)!} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} now={id === instId ? now : 0} endHour={data.endHour ?? data.bars.at(-1)!.hour} />
         </svg>) : <p className="flex h-full items-center justify-center text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
         {historicalEnd !== null && historyLoading === `${instId}:${historicalEnd}` && <span role="status" className="pointer-events-none absolute right-4 top-2 rounded-md bg-card/90 px-2 py-1 text-muted-foreground">Loading history…</span>}
+        {atHistoryBoundary && <span role="status" className="pointer-events-none absolute right-4 top-2 rounded-md bg-card/90 px-2 py-1 text-muted-foreground">Start of available history</span>}
         </div>
       </div>
-      {captureStatus === "copied" && <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 bg-ring/50 motion-safe:animate-[chart-capture-flash_550ms_ease-out_both] motion-reduce:hidden" />}
+      {captureStatus === "flashing" && <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 bg-[var(--chart-capture-flash)] motion-safe:animate-[chart-capture-flash_550ms_ease-out_both] motion-reduce:hidden" />}
     </section>
   </main>
 }

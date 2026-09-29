@@ -109,7 +109,7 @@ final class Store {
     }
 
     func oldestCandleHour(_ id: String) throws -> Int64? {
-        let stmt = try statement("SELECT MIN(hour) FROM candles WHERE inst_id=?")
+        let stmt = try statement("SELECT MIN(hour) FROM candles WHERE inst_id=? AND open IS NOT NULL")
         defer { sqlite3_finalize(stmt) }
         bind([id], to: stmt)
         guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }

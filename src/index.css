@@ -59,6 +59,8 @@
     --chart-price-tag-padding-x: 3px;
     --chart-price-tag-padding-y: 2px;
     --chart-price-tag-line-height: 1.1;
+    --chart-capture-flash: #fff;
+    --chart-indicator-line-width: 1px;
     --background: oklch(0.98 0.004 260);
     --foreground: oklch(0.2 0.012 260);
     --card: oklch(1 0 0);
@@ -138,9 +140,9 @@
     @apply border-border outline-ring/50 tabular-nums;
     }
   body {
-    @apply overflow-x-clip bg-background text-foreground;
+    @apply overflow-x-clip overscroll-none bg-background text-foreground;
     }
   html {
-    @apply overflow-x-clip font-sans;
+    @apply overflow-x-clip overscroll-none font-sans;
     }
 }

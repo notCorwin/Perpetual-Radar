@@ -37,6 +37,11 @@ func passesSpreadFilter(_ spread: Double?, enabled: Bool, maximum: Double) -> Bo
 
 private func millis() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
+func boundedHistoryEnd(_ requested: Int64, oldest: Int64?, exhausted: Bool, latest: Int64) -> Int64 {
+    guard exhausted, let oldest else { return requested }
+    return min(latest, max(requested, oldest + Int64(chartHours - 1) * hourMS))
+}
+
 private struct Market {
     let id: String
     var turnover24hUSDT: Double?
@@ -495,6 +500,7 @@ final class Radar {
             return ["bars": [], "error": "Invalid chart time", "revision": -1]
         }
         var failures: [String] = []
+        var candleLoadFailed = false
         let warmupStart = max(0, requestedEnd - Int64(candleLookback * 2 - 1) * hourMS)
         do {
             var cached = try store.candles(id, since: warmupStart, through: requestedEnd)
@@ -514,10 +520,9 @@ final class Radar {
                 pages += 1
                 if oldest <= warmupStart { break }
             }
-        } catch { failures.append("candles") }
+        } catch { failures.append("candles"); candleLoadFailed = true }
         let oldest = (try? store.oldestCandleHour(id)) ?? nil
-        let end = exhaustedCandleHistory.contains(id) && oldest != nil
-            ? min(hour, max(requestedEnd, oldest! + Int64(chartHours - 1) * hourMS)) : requestedEnd
+        let end = boundedHistoryEnd(requestedEnd, oldest: oldest, exhausted: exhaustedCandleHistory.contains(id), latest: hour)
         let first = end - Int64(candleLookback - 1) * hourMS
         for path in ["/rubik/stat/contracts/open-interest-history", "/rubik/stat/taker-volume-contract"] {
             for pageStart in stride(from: first / (Int64(chartHours) * hourMS) * Int64(chartHours) * hourMS,
@@ -543,6 +548,9 @@ final class Radar {
         }
         var result = chartSnapshot(id, endingAt: end)
         result["endHour"] = end
+        result["oldestHour"] = oldest as Any? ?? NSNull()
+        result["historyExhausted"] = exhaustedCandleHistory.contains(id)
+        result["candleLoadFailed"] = candleLoadFailed
         if !failures.isEmpty { result["error"] = "Some chart data is unavailable: \(Set(failures).sorted().joined(separator: ", "))." }
         return result
     }

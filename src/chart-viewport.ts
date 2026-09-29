@@ -1,5 +1,14 @@
 const hour = 3_600_000
 
+export function livePriceTag(live: { hour: number; open: number; close: number }, endHour: number, now: number) {
+  return {
+    price: live.close,
+    rising: live.close >= live.open,
+    inViewport: live.hour <= endHour,
+    secondsLeft: now > 0 ? Math.max(0, Math.floor((live.hour + hour - now) / 1000)) : 0,
+  }
+}
+
 // null means the right edge follows the latest candle.
 export function scrollChartEnd(endHour: number | null, latestHour: number, steps: number, oldestCachedHour = 0): number | null {
   const earliestEnd = Math.min(latestHour, oldestCachedHour + 95 * hour)

@@ -96,8 +96,10 @@ final class IndicatorsTests: XCTestCase {
         let cached = try store.load(hour: hourMS, ids: ["BTC-USDT-SWAP"])
         XCTAssertEqual(cached.candles["BTC-USDT-SWAP"]?[0]?.close, 100)
         XCTAssertNil(cached.candles["BTC-USDT-SWAP"]?[0]?.open)
+        XCTAssertNil(try store.oldestCandleHour("BTC-USDT-SWAP"))
         try store.save("BTC-USDT-SWAP", Candle(hour: 0, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99))
         XCTAssertEqual(try store.load(hour: hourMS, ids: ["BTC-USDT-SWAP"]).candles["BTC-USDT-SWAP"]?[0]?.open, 99)
+        XCTAssertEqual(try store.oldestCandleHour("BTC-USDT-SWAP"), 0)
     }
 
     func testCandleBatchRollsBackOnWriteFailure() throws {
@@ -123,6 +125,7 @@ final class IndicatorsTests: XCTestCase {
             [String(end + hourMS), "100", "110", "90", "100", "1", "2", "200", "1"],
         ]
         XCTAssertEqual(historicalPage(rows, before: end).map(\.hour), [end - hourMS])
+        XCTAssertTrue(historicalPage([], before: end).isEmpty)
         try store.saveCandles(id, (0...400).map { index in
             Candle(hour: Int64(index) * hourMS, high: 110, low: 90, close: 100 + Double(index % 5), quoteVolume: 200, baseVolume: 2, open: 100)
         })
@@ -132,5 +135,20 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertEqual(try store.oldestCandleHour(id), 0)
         try store.saveChartStat(id, hour: end, oi: 12)
         XCTAssertTrue(try store.chartStats(id, since: 0, through: end - hourMS).isEmpty)
+    }
+
+    func testHistoricalBoundaryUsesOldestSavedCandleOnlyAfterExhaustion() throws {
+        let id = "BTC-USDT-SWAP"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try Store(url: url)
+        let latest = Int64(500) * hourMS
+        let olderLocal = Int64(10) * hourMS
+        try store.save(id, Candle(hour: olderLocal, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99))
+        let oldest = try store.oldestCandleHour(id)
+        XCTAssertEqual(boundedHistoryEnd(0, oldest: oldest, exhausted: true, latest: latest), olderLocal + 95 * hourMS)
+        XCTAssertEqual(boundedHistoryEnd(0, oldest: oldest, exhausted: false, latest: latest), 0)
+        XCTAssertEqual(boundedHistoryEnd(450 * hourMS, oldest: oldest, exhausted: true, latest: latest), 450 * hourMS)
+        XCTAssertEqual(boundedHistoryEnd(0, oldest: nil, exhausted: true, latest: latest), 0)
     }
 }

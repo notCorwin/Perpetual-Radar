@@ -273,9 +273,11 @@ function App() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {visible.length ? visible.map(row => <TableRow key={row.instId} className="hover:bg-accent/50">
+            {visible.length ? visible.map(row => <TableRow key={row.instId} className="cursor-pointer hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2" tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => setSelected(row.instId)} onKeyDown={event => {
+              if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(row.instId) }
+            }}>
               <TableCell className="text-center" title={row.instId}>
-                <Button variant="link" size="sm" className="h-auto p-0 font-medium" onClick={() => setSelected(row.instId)} aria-label={`View ${row.instId} chart`}>{row.instId.replace(/-USDT-SWAP$/, "")}</Button>
+                <span className="font-medium">{row.instId.replace(/-USDT-SWAP$/, "")}</span>
                 <div className="flex justify-center gap-2 text-xs tabular-nums">
                   <span>{formatPrice(row.price)}</span>
                   <span className={directionClass(row.priceChange)}>{formatPercent(row.priceChange)}</span>
