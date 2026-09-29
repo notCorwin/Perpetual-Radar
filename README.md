@@ -30,7 +30,7 @@ open ".build/app/Perpetual Radar.app"
 
 `npm run app` compiles the dashboard and Swift executable, then creates an ad hoc signed `.app` bundle. The first launch loads one-hour history across eligible contracts, so some indicators take time to appear. Click a symbol to open its chart in the app. The app stores its SQLite cache at `~/Library/Application Support/PerpetualRadar/radar.sqlite3`.
 
-Pushes to `main` build and publish `Perpetual.Radar.app.tar` plus `update.json` as the GitHub `autobuild` release. The updater uses the manifest's SHA-256 digest and the bundle's commit revision to verify the package.
+Pushes to `main` update the single GitHub `autobuild` release and tag. It contains `Perpetual.Radar.app.tar`, `update.json`, and revision-specific app archives retained for seven days. The updater uses the manifest's SHA-256 digest and the bundle's commit revision to verify the package.
 
 ## Test
 

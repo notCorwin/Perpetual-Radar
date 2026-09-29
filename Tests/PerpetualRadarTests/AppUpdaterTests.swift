@@ -51,6 +51,28 @@ final class AppUpdaterTests: XCTestCase {
         }
         XCTAssertEqual(immutableUpdate?.assetURL.absoluteString, immutableURL)
 
+        let versionedURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.\(revision).123-1.tar"
+        let versionedManifest = try JSONSerialization.data(withJSONObject: [
+            "revision": revision,
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "versioned_asset_url": versionedURL,
+            "digest": "sha256:\(digest)",
+        ])
+        guard case .success(let versionedUpdate) = AppUpdater.parse(data: versionedManifest, currentRevision: nil) else {
+            return XCTFail("Expected an autobuild versioned asset")
+        }
+        XCTAssertEqual(versionedUpdate?.assetURL.absoluteString, versionedURL)
+
+        let invalidVersionedManifest = try JSONSerialization.data(withJSONObject: [
+            "revision": revision,
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "versioned_asset_url": versionedURL.replacingOccurrences(of: revision, with: String(repeating: "c", count: 40)),
+            "digest": "sha256:\(digest)",
+        ])
+        guard case .failure(.invalidResponse) = AppUpdater.parse(data: invalidVersionedManifest, currentRevision: nil) else {
+            return XCTFail("Expected a mismatched autobuild asset to be rejected")
+        }
+
         let wrongRevisionURL = immutableURL.replacingOccurrences(of: revision, with: String(repeating: "c", count: 40))
         let mismatchedManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
