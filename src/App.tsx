@@ -246,8 +246,12 @@ function App() {
         <Table className="table-auto">
           <TableHeader>
             <TableRow className="bg-muted/30">
-              <TableHead className="text-center" aria-sort={sort === "instId" ? descending ? "descending" : "ascending" : "none"}>{header("Symbol", "instId", String.raw`\operatorname{Symbol}`)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>{header("24h USDT turnover", "turnover24hUSDT", String.raw`\operatorname{24h\ USDT\ Turnover}`)}</TableHead>
+              <TableHead className="py-1.5 text-center" aria-sort={sort === "instId" || sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
+                <div className="flex flex-col items-center">
+                  {header("Symbol", "instId", String.raw`\operatorname{Symbol}`)}
+                  {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
+                </div>
+              </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "high48" || sort === "low48" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {header("48h high", "high48", String.raw`\operatorname{High}_{48}=\max(H_{t-48},\ldots,H_{t-1})`)}
@@ -285,12 +289,14 @@ function App() {
                   <span>{formatPrice(row.price)}</span>
                   <span className={directionClass(row.priceChange)}>{formatPercent(row.priceChange)}</span>
                 </div>
-                <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-2 text-right text-xs tabular-nums">
-                  <span className="text-muted-foreground">Low</span><span>{formatPrice(row.currentLow)}</span>
-                  <span className="text-muted-foreground">High</span><span>{formatPrice(row.currentHigh)}</span>
+                <div className="flex items-center justify-center gap-3 text-xs tabular-nums">
+                  <span className="flex gap-1"><span className="text-muted-foreground">Low</span><span>{formatPrice(row.currentLow)}</span></span>
+                  <span className="flex gap-1"><span className="text-muted-foreground">High</span><span>{formatPrice(row.currentHigh)}</span></span>
+                </div>
+                <div className="flex items-center justify-center gap-1 text-xs tabular-nums" title={`${row.turnover24hUSDT.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`}>
+                  <span className="text-muted-foreground">Turnover</span><span>{turnoverFormatter.format(row.turnover24hUSDT)} USDT</span>
                 </div>
               </TableCell>
-              <TableCell className="text-center tabular-nums" title={`${row.turnover24hUSDT.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`}>{turnoverFormatter.format(row.turnover24hUSDT)}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
                   <span><span className="sr-only">48h high </span>{formatPrice(row.high48)}</span>
@@ -320,7 +326,7 @@ function App() {
                   {LOG_BB_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={logBBClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={9} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>
