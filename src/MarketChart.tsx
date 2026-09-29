@@ -185,12 +185,12 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     const gap = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chart-legend-gap"))
     const widths = items.map(([label, value, , dash]) => legendWidth(label) + 10 + legendWidth(value) + (dash === undefined ? 0 : 22))
     const available = right - start
-    const required = titleWidth + widths.reduce((sum, itemWidth) => sum + itemWidth, 0) + gap * items.length
+    const required = titleWidth + widths.reduce((sum, itemWidth) => sum + itemWidth, 0) + gap * (title ? items.length : items.length - 1)
     const shrink = Math.min(1, available / required)
-    let cursor = titleWidth + gap
-    return <g key={title}>
+    let cursor = title ? titleWidth + gap : 0
+    return <g key={key}>
       <g transform={`translate(${start},${headerY[key]}) scale(${shrink})`}>
-      <text dominantBaseline="middle" fill="var(--foreground)">{title}</text>
+      {title && <text dominantBaseline="middle" fill="var(--foreground)">{title}</text>}
       {items.map(([label, value, color, dash], index) => {
         const itemStart = cursor
         cursor += widths[index] + gap
@@ -254,7 +254,7 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
       {showCountdown && <text x={right + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5} textAnchor="middle" dominantBaseline="middle" fill="var(--signal-foreground)">{countdown}</text>}
     </g>
     {legend("price", "PRICE", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
-    {legend("roc", "ROC", [["ROC9", active.roc?.toFixed(2) ?? "—", "var(--chart-1)", ""], ["MAROC9", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)", "7 4"]])}
+    {legend("roc", "", [["ROC(9)", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC(9)", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
     {legend("rsi", "RSI", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)", ""], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)", "7 4"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)", "1 4"]])}
     {legend("oi", "OPEN INTEREST", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", "TAKER BUY / SELL", [["Buy", compact(active.buy), "var(--positive)"], ["Sell", compact(active.sell), "var(--destructive)"]])}
