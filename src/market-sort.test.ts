@@ -6,11 +6,9 @@ const row = (instId: string, value: number | null): SortableRow => ({
   instId, turnover24hUSDT: value ?? 0, high48: value, low48: value, takerRatio: value, volumeLog: value, oiLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBUpper: value, logBBMiddle: value, logBBLower: value,
 })
 
-test("every column sorts both ways and keeps missing data last", () => {
+test("indicator columns sort both ways and keep missing data last", () => {
   const rows = [row("Middle", 0), row("High", 2), row("Missing", null), row("Low", -2)]
   const sorted = (key: SortKey, descending: boolean) => [...rows].sort((a, b) => compareMarketRows(a, b, key, descending)).map(item => item.instId)
-  assert.deepEqual(sorted("instId", false), ["High", "Low", "Middle", "Missing"])
-  assert.deepEqual(sorted("instId", true), ["Missing", "Middle", "Low", "High"])
   for (const key of ["high48", "low48", "takerRatio", "volumeLog", "oiLog", "roc", "maroc", "rsi6", "rsi12", "rsi24", "logBBUpper", "logBBMiddle", "logBBLower"] as const) {
     assert.deepEqual(sorted(key, true), ["High", "Middle", "Low", "Missing"])
     assert.deepEqual(sorted(key, false), ["Low", "Middle", "High", "Missing"])

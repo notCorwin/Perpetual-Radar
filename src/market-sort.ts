@@ -1,4 +1,4 @@
-export type SortKey = "instId" | "turnover24hUSDT" | "high48" | "low48" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBUpper" | "logBBMiddle" | "logBBLower"
+export type SortKey = "turnover24hUSDT" | "high48" | "low48" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBUpper" | "logBBMiddle" | "logBBLower"
 
 export type SortableRow = {
   instId: string
@@ -35,8 +35,6 @@ export function chartNavigationTarget(listOrder: string[], turnoverOrder: string
 }
 
 export function compareMarketRows(a: SortableRow, b: SortableRow, key: SortKey, descending: boolean): number {
-  if (key === "instId") return (descending ? -1 : 1) * a.instId.localeCompare(b.instId)
-
   const left = a[key]
   const right = b[key]
   if (left === null || right === null) {

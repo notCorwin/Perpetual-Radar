@@ -157,7 +157,7 @@ function App() {
 
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
-    else { setSort(key); setDescending(key !== "instId") }
+    else { setSort(key); setDescending(true) }
   }
 
   const saveSetting = (request: SettingRequest) => {
@@ -246,9 +246,9 @@ function App() {
         <Table className="table-auto">
           <TableHeader>
             <TableRow className="bg-muted/30">
-              <TableHead className="py-1.5 text-center" aria-sort={sort === "instId" || sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
+              <TableHead className="py-1.5 text-center" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header("Symbol", "instId", String.raw`\operatorname{Symbol}`)}
+                  <span className="flex min-h-6 items-center px-3">{math(String.raw`\operatorname{Symbol}`)}</span>
                   {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
                 </div>
               </TableHead>

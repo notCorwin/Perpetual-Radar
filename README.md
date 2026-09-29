@@ -5,7 +5,7 @@ Perpetual Radar is a native macOS app for OKX's live, non-TradFi USDT perpetual 
 ## Features
 
 - Covers live USDT-settled perpetual swaps, excluding TradFi instruments and `USDC-USDT-SWAP`. **Settings** lets you choose a minimum 24-hour turnover of 10 million (default), 30 million, or 100 million USDT, plus an optional maximum bid-ask spread (enabled by default at 0.15%). Settings persist across restarts; ticker data refreshes every 30 seconds.
-- Ranks markets by 24-hour USDT turnover. Search markets and sort by column headings.
+- Ranks markets by 24-hour USDT turnover. Search markets and sort by numeric column headings.
 - Displays price and previous-hour change, 48-hour high and low, taker metrics, ROC/MAROC, RSI (6/12/24), and Log BB (20-hour bands calculated in log-price space).
 - Click a symbol for an in-app chart showing 96 one-hour candles at a time, VWAP14, EMA200, Log BB, RSI, ROC/MAROC, open interest, and taker buy/sell volume. Price uses a logarithmic vertical axis; RSI, open interest, and taker volume use zero-inclusive logarithmic axes; ROC/MAROC remains linear. Scroll the chart to review older OKX history; returning to the newest candle resumes automatic following when the next candle appears. Older candles are cached in SQLite as needed, and unavailable open-interest or taker data appears as a gap. Up/Down cycles through charts in the current visible market list order, wrapping between the first and last. Left jumps to the highest-turnover market, Right jumps to the lowest-turnover market, and Shift+Left/Right inspects candles. Nearby charts load and render in the background.
 - Uses nine one-hour periods for ROC and MAROC.
