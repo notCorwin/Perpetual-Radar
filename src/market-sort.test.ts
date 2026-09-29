@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { compareMarketRows, compareMarketTurnover, wrappedMarket, type SortableRow, type SortKey } from "./market-sort.ts"
+import { chartNavigationTarget, compareMarketRows, compareMarketTurnover, wrappedMarket, type SortableRow, type SortKey } from "./market-sort.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
   instId, turnover24hUSDT: value ?? 0, high48: value, low48: value, takerRatio: value, volumeLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, bollUpper: value, bollMiddle: value, bollLower: value,
@@ -35,4 +35,16 @@ test("chart navigation wraps at both ends", () => {
   assert.equal(wrappedMarket(order, -2), "B")
   assert.equal(wrappedMarket(["A"], -2), "A")
   assert.equal(wrappedMarket([], 0), undefined)
+})
+
+test("chart left and right arrows jump to turnover ranking endpoints", () => {
+  const order = ["A", "B", "C"]
+  assert.equal(chartNavigationTarget(order, "B", "ArrowLeft"), "A")
+  assert.equal(chartNavigationTarget(order, "A", "ArrowLeft"), "A")
+  assert.equal(chartNavigationTarget(order, "B", "ArrowRight"), "C")
+  assert.equal(chartNavigationTarget(order, "C", "ArrowRight"), "C")
+  assert.equal(chartNavigationTarget(order, "A", "ArrowUp"), "C")
+  assert.equal(chartNavigationTarget(order, "C", "ArrowDown"), "A")
+  assert.equal(chartNavigationTarget(order, "Missing", "ArrowLeft"), undefined)
+  assert.equal(chartNavigationTarget([], "A", "ArrowRight"), undefined)
 })

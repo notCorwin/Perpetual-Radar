@@ -7,7 +7,7 @@ import { chartAxis, chartAxisForLabels } from "@/chart-axis"
 import { chartCandleWidth, chartHourX, chartLayout, fitPriceTag, type ChartPanel as Panel } from "@/chart-layout"
 import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
-import { wrappedMarket } from "@/market-sort"
+import { chartNavigationTarget, wrappedMarket } from "@/market-sort"
 
 type Bar = {
   hour: number; open: number; high: number; low: number; close: number; confirmed: boolean
@@ -515,8 +515,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.defaultPrevented) return
       if (!(event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight")) return
       event.preventDefault()
-      const index = order.indexOf(navigationId.current)
-      const id = index < 0 ? undefined : wrappedMarket(order, index + (event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1))
+      const id = chartNavigationTarget(order, navigationId.current, event.key)
       if (id && id !== navigationId.current) {
         navigationId.current = id
         if (navigationFrame.current === null) navigationFrame.current = window.requestAnimationFrame(() => {
@@ -557,7 +556,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
-        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {position + 1}/{order.length} · ↑/← higher · ↓/→ lower</p>
+        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {position + 1}/{order.length} · ↑ higher · ↓ lower · ← first · → last</p>
       </div>
       <Button variant="outline" size="sm" disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}><Camera data-icon="inline-start" aria-hidden="true" />{captureStatus === "copying" ? "Copying…" : "Copy chart"}</Button>
       <span role="status" className="sr-only">{captureStatus === "flashing" ? "Chart copied to clipboard" : ""}</span>
@@ -589,7 +588,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
         })
       }}>
         <div className="relative h-full w-full">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC and MAROC with positive and negative areas shaded, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Arrow keys switch markets by 24 hour turnover. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200, shaded Bollinger bands and middle line, RSI with a shaded 30 to 70 range, ROC and MAROC with positive and negative areas shaded, open interest and taker buy and sell volume. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows switch to the next market by 24 hour turnover; left jumps to first and right jumps to last. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()
