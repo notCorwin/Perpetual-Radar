@@ -25,6 +25,7 @@ type MarketRow = {
   sell: number | null
   takerRatio: number | null
   volumeLog: number | null
+  oiLog: number | null
   high48: number | null
   high48Diff: number | null
   low48: number | null
@@ -254,6 +255,7 @@ function App() {
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
               <TableHead className="text-center" aria-sort={sort === "volumeLog" ? descending ? "descending" : "ascending" : "none"}>{header("Volume Log Change", "volumeLog", String.raw`\ln\left(\frac{V_t}{V_{t-1}}\right)`)}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "oiLog" ? descending ? "descending" : "ascending" : "none"}>{header("OI Log Change", "oiLog", String.raw`\ln\left(\frac{\mathrm{OI}_t}{\mathrm{OI}_{t-1}}\right)`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {header(`ROC ${ROC_PERIOD}`, "roc", String.raw`\operatorname{ROC}_{${ROC_PERIOD}}`)}
@@ -298,6 +300,7 @@ function App() {
               </TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.volumeLog))}>{formatLog(row.volumeLog)}</TableCell>
+              <TableCell className={cn("text-center tabular-nums", directionClass(row.oiLog))}>{formatLog(row.oiLog)}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
                   <span className={directionClass(row.roc)}><span className="sr-only">ROC </span>{formatIndicator(row.roc)}</span>
@@ -316,7 +319,7 @@ function App() {
                   {BOLL_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={bollClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={9} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>

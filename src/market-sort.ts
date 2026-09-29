@@ -1,4 +1,4 @@
-export type SortKey = "instId" | "turnover24hUSDT" | "high48" | "low48" | "takerRatio" | "volumeLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "bollUpper" | "bollMiddle" | "bollLower"
+export type SortKey = "instId" | "turnover24hUSDT" | "high48" | "low48" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "bollUpper" | "bollMiddle" | "bollLower"
 
 export type SortableRow = {
   instId: string
@@ -7,6 +7,7 @@ export type SortableRow = {
   low48: number | null
   takerRatio: number | null
   volumeLog: number | null
+  oiLog: number | null
   roc: number | null
   maroc: number | null
   rsi6: number | null

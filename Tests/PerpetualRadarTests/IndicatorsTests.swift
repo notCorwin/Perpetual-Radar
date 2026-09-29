@@ -2,6 +2,15 @@ import XCTest
 @testable import PerpetualRadar
 
 final class IndicatorsTests: XCTestCase {
+    func testOpenInterestLogChangeRequiresPositiveHourlyValues() {
+        XCTAssertEqual(logChange(120, 100)!, log(1.2), accuracy: 0.000001)
+        XCTAssertEqual(logChange(80, 100)!, log(0.8), accuracy: 0.000001)
+        XCTAssertNil(logChange(nil, 100))
+        XCTAssertNil(logChange(100, nil))
+        XCTAssertNil(logChange(0, 100))
+        XCTAssertNil(logChange(100, 0))
+    }
+
     func testSwap24hTurnoverUsesBaseVolumeAndLastUSDTPrice() {
         XCTAssertEqual(usdtTurnover24h(["volCcy24h": "1000000", "last": "10"]), 10_000_000)
         XCTAssertEqual(usdtTurnover24h(["volCcy24h": "999999", "last": "10"]), 9_999_990)
@@ -69,6 +78,8 @@ final class IndicatorsTests: XCTestCase {
         try store.save("BTC-USDT-SWAP", Candle(hour: olderHour, high: 110, low: 90, close: 100, quoteVolume: 200, baseVolume: 2, open: 99))
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, oi: 1_000)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour, sell: 20, buy: 30)
+        try store.saveChartStat("BTC-USDT-SWAP", hour: hour - hourMS, oi: 800)
+        try store.saveChartStat("ETH-USDT-SWAP", hour: hour - hourMS, oi: 600)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 94 * hourMS, oi: 500)
         try store.saveChartStat("BTC-USDT-SWAP", hour: hour - 95 * hourMS, oi: 400)
         let loaded = try store.load(hour: hour + hourMS, ids: ["BTC-USDT-SWAP"])
@@ -78,6 +89,7 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertEqual(stat[hour]?.oi, 1_000)
         XCTAssertEqual(stat[hour]?.sell, 20)
         XCTAssertEqual(stat[hour]?.buy, 30)
+        XCTAssertEqual(try store.openInterest(hour: hour - hourMS), ["BTC-USDT-SWAP": 800, "ETH-USDT-SWAP": 600])
         let reopened = try Store(url: url)
         let history = try reopened.chartStats("BTC-USDT-SWAP", since: 0)
         XCTAssertEqual(history[hour - 94 * hourMS]?.oi, 500)

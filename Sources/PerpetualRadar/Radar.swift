@@ -323,6 +323,10 @@ final class Radar {
                             try store.saveChartStat(id, hour: ts, oi: oiUSD)
                             if ts == hour - hourMS { hasPreviousHour = true }
                         }
+                        if hasPreviousHour {
+                            cachedRows.removeValue(forKey: id)
+                            touch(id)
+                        }
                         if !hasPreviousHour { failed.insert(id) }
                     default:
                         if takerHistorySavedAt[id] != hour {
@@ -469,6 +473,7 @@ final class Radar {
         catch { failures.append("OI") }
         do { statistics.append(("taker volume", try decodeRows(await takerData, path: takerPath))) }
         catch { failures.append("taker volume") }
+        var updatedOI = false
         for (label, result) in statistics {
             do {
                 for case let values as [String] in result {
@@ -479,6 +484,7 @@ final class Radar {
                             var live = chartLiveStats[id] ?? (oi: nil, sell: nil, buy: nil)
                             live.oi = value; chartLiveStats[id] = live
                         } else { try store.saveChartStat(id, hour: ts, oi: value) }
+                        if ts >= hour - hourMS { updatedOI = true }
                     } else if label == "taker volume", values.count >= 3,
                               let sell = Double(values[1]), let buy = Double(values[2]),
                               sell.isFinite, buy.isFinite, sell >= 0, buy >= 0 {
@@ -489,6 +495,10 @@ final class Radar {
                     }
                 }
             } catch { failures.append(label) }
+        }
+        if updatedOI {
+            cachedRows.removeValue(forKey: id)
+            touch(id)
         }
         var result = chartSnapshot(id)
         if !failures.isEmpty { result["error"] = "Some chart data is unavailable: \(failures.joined(separator: ", "))." }
@@ -630,6 +640,12 @@ final class Radar {
             return ["unchanged": true, "revision": revision, "error": error]
         }
         let null = NSNull()
+        let previousOI: [String: Double]
+        do { previousOI = try store.openInterest(hour: hour - hourMS) }
+        catch {
+            startupError = "Cache error: \(error.localizedDescription)"
+            previousOI = [:]
+        }
         var output: [[String: Any]] = []
         for id in rows.keys.sorted() {
             guard let row = rows[id], let turnover = row.turnover24hUSDT,
@@ -644,6 +660,7 @@ final class Radar {
             let live = current?.confirmed == false ? current : nil
             let (oldRoc, oldMaroc) = previous?.confirmed == true ? rocMaroc(bars, hour - hourMS, rocPeriod, marocPeriod) : (nil, nil)
             let price = current?.close
+            let currentOI = (row.oiTimestamp >= Double(hour) ? row.oiUsd : nil) ?? chartLiveStats[id]?.oi
             let result: [String: Any] = [
                 "instId": id, "turnover24hUSDT": turnover, "price": price as Any? ?? null,
                 "priceChange": percentChange(price, previous?.confirmed == true ? previous?.close : nil) as Any? ?? null,
@@ -651,6 +668,7 @@ final class Radar {
                 "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
                 "takerRatio": row.takerRatio as Any? ?? null,
                 "volumeLog": logChange(current?.quoteVolume, previous?.confirmed == true ? previous?.quoteVolume : nil) as Any? ?? null,
+                "oiLog": logChange(currentOI, previousOI[id]) as Any? ?? null,
                 "high48": high as Any? ?? null, "high48Diff": percentChange(price, high) as Any? ?? null,
                 "low48": low as Any? ?? null, "low48Diff": percentChange(price, low) as Any? ?? null,
                 "roc": roc as Any? ?? null, "maroc": maroc as Any? ?? null,

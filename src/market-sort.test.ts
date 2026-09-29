@@ -3,7 +3,7 @@ import test from "node:test"
 import { chartNavigationTarget, compareMarketRows, compareMarketTurnover, wrappedMarket, type SortableRow, type SortKey } from "./market-sort.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
-  instId, turnover24hUSDT: value ?? 0, high48: value, low48: value, takerRatio: value, volumeLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, bollUpper: value, bollMiddle: value, bollLower: value,
+  instId, turnover24hUSDT: value ?? 0, high48: value, low48: value, takerRatio: value, volumeLog: value, oiLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, bollUpper: value, bollMiddle: value, bollLower: value,
 })
 
 test("every column sorts both ways and keeps missing data last", () => {
@@ -11,7 +11,7 @@ test("every column sorts both ways and keeps missing data last", () => {
   const sorted = (key: SortKey, descending: boolean) => [...rows].sort((a, b) => compareMarketRows(a, b, key, descending)).map(item => item.instId)
   assert.deepEqual(sorted("instId", false), ["High", "Low", "Middle", "Missing"])
   assert.deepEqual(sorted("instId", true), ["Missing", "Middle", "Low", "High"])
-  for (const key of ["high48", "low48", "takerRatio", "volumeLog", "roc", "maroc", "rsi6", "rsi12", "rsi24", "bollUpper", "bollMiddle", "bollLower"] as const) {
+  for (const key of ["high48", "low48", "takerRatio", "volumeLog", "oiLog", "roc", "maroc", "rsi6", "rsi12", "rsi24", "bollUpper", "bollMiddle", "bollLower"] as const) {
     assert.deepEqual(sorted(key, true), ["High", "Middle", "Low", "Missing"])
     assert.deepEqual(sorted(key, false), ["Low", "Middle", "High", "Missing"])
   }

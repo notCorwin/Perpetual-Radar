@@ -120,6 +120,20 @@ final class Store {
         try execute("INSERT INTO chart_stats (inst_id,hour,oi,sell,buy) VALUES (?,?,?,?,?) ON CONFLICT(inst_id,hour) DO UPDATE SET oi=COALESCE(excluded.oi,chart_stats.oi),sell=COALESCE(excluded.sell,chart_stats.sell),buy=COALESCE(excluded.buy,chart_stats.buy)", [id, hour, oi, sell, buy])
     }
 
+    func openInterest(hour: Int64) throws -> [String: Double] {
+        let stmt = try statement("SELECT inst_id,oi FROM chart_stats WHERE hour=? AND oi IS NOT NULL")
+        defer { sqlite3_finalize(stmt) }
+        bind([hour], to: stmt)
+        var result: [String: Double] = [:]
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            result[String(cString: sqlite3_column_text(stmt, 0))] = sqlite3_column_double(stmt, 1)
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        return result
+    }
+
     func chartStats(_ id: String, since: Int64, through: Int64 = .max) throws -> [Int64: (oi: Double?, sell: Double?, buy: Double?)] {
         let stmt = try statement("SELECT hour,oi,sell,buy FROM chart_stats WHERE inst_id=? AND hour>=? AND hour<=?")
         defer { sqlite3_finalize(stmt) }
