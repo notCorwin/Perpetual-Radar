@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { chartHourX, chartLayout, type ChartPanel } from "./chart-layout.ts"
+import { chartHourX, chartLayout, fitPriceTag, type ChartPanel } from "./chart-layout.ts"
 
 test("stacked chart layout stays aligned and bounded", () => {
   const order: ChartPanel[] = ["price", "roc", "rsi", "oi", "taker"]
@@ -25,4 +25,21 @@ test("chart hours retain their position when candles are missing", () => {
   assert.equal(chartHourX(0, 95 * hour, 0, 960), 5)
   assert.equal(chartHourX(10 * hour, 95 * hour, 0, 960), 105)
   assert.equal(chartHourX(95 * hour, 95 * hour, 0, 960), 955)
+})
+
+test("price tag scales to the axis gutter without clipping or shrinking below axis text", () => {
+  const gap = 7, stroke = 1.5, intrinsicWidth = 90, minimumScale = 10 / 12
+  const narrow = fitPriceTag(42, intrinsicWidth, gap, stroke, minimumScale)
+  assert.ok(narrow.scale >= minimumScale)
+  assert.ok(narrow.gutter < gap + intrinsicWidth + stroke)
+  assert.ok(gap + (intrinsicWidth + stroke) * narrow.scale <= narrow.gutter)
+
+  const medium = fitPriceTag(85, intrinsicWidth, gap, stroke, minimumScale)
+  assert.equal(medium.gutter, 85)
+  assert.ok(medium.scale > narrow.scale && medium.scale < 1)
+  assert.ok(gap + (intrinsicWidth + stroke) * medium.scale <= medium.gutter)
+
+  const wide = fitPriceTag(120, intrinsicWidth, gap, stroke, minimumScale)
+  assert.equal(wide.gutter, 120)
+  assert.equal(wide.scale, 1)
 })

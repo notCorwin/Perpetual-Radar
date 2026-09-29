@@ -4,7 +4,7 @@ import { ArrowLeft, Camera, Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { chartAxis, visibleTicks } from "@/chart-axis"
-import { chartHourX, chartLayout, type ChartPanel as Panel } from "@/chart-layout"
+import { chartHourX, chartLayout, fitPriceTag, type ChartPanel as Panel } from "@/chart-layout"
 import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
 import { wrappedMarket } from "@/market-sort"
@@ -91,7 +91,11 @@ const chartGutter = (bars: Bar[], liveClose = bars[bars.length - 1].close) => {
   const style = getComputedStyle(document.documentElement)
   const tagGap = Number.parseFloat(style.getPropertyValue("--chart-price-tag-gap"))
   const tagStrokeWidth = Number.parseFloat(style.getPropertyValue("--chart-price-tag-stroke-width"))
-  return Math.ceil(Math.max(tagGap + tagStrokeWidth + priceTagWidth(price(liveClose), "00:00"), ...labels.map(label => 8 + legendWidth(label))))
+  const tagTextSize = Number.parseFloat(style.getPropertyValue("--chart-price-tag-text-size"))
+  const axisTextSize = Number.parseFloat(style.getPropertyValue("--chart-text-size"))
+  const minimumScale = Math.min(1, axisTextSize / tagTextSize)
+  const axisGutter = Math.max(...labels.map(label => 8 + legendWidth(label)))
+  return fitPriceTag(axisGutter, priceTagWidth(price(liveClose), "00:00"), tagGap, tagStrokeWidth, minimumScale)
 }
 
 const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, endHour }: { bars: Bar[]; liveBar: Bar; hovered: number | null; width: number; height: number; now: number; endHour: number }) {
@@ -101,7 +105,8 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const firstHour = endHour - 95 * 3_600_000
   const firstAtLeft = bars[0].hour === firstHour
   const candleHigh = Math.max(...bars.map(bar => bar.high)), candleLow = Math.min(...bars.map(bar => bar.low))
-  const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, chartGutter(bars, liveBar.close))
+  const { gutter, scale: tagScale } = chartGutter(bars, liveBar.close)
+  const { panels, columns, axisStarts, headerY, left, right } = chartLayout(width, height, gutter)
   const x = (index: number, panel: Panel) => chartHourX(bars[index].hour, latestHour, ...columns[panel])
   const barWidth = Math.max(5, Math.min(13, (right - left) / n * 0.68))
   const takerBarWidth = Math.max(2, Math.min(9, (columns.taker[1] - columns.taker[0]) / n * 0.7))
@@ -136,8 +141,9 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
   const tagRadius = Number.parseFloat(tagStyle.getPropertyValue("--chart-price-tag-radius"))
   const tickHalfHeight = Number.parseFloat(tagStyle.getPropertyValue("--chart-text-size")) / 2
   const tagHeight = tagLineHeight * (showCountdown ? 2 : 1) + (showCountdown ? tagRowGap : 0) + tagPaddingY * 2
-  const priceTagY = tag.inViewport ? Math.max(panels.price[0], Math.min(latestY - tagHeight / 2, panels.price[1] - tagHeight)) : panels.price[0]
-  const tagX = right + tagGap + tagStrokeWidth / 2
+  const scaledTagHeight = tagHeight * tagScale
+  const priceTagY = tag.inViewport ? Math.max(panels.price[0], Math.min(latestY - scaledTagHeight / 2, panels.price[1] - scaledTagHeight)) : panels.price[0]
+  const tagX = right + tagGap + tagStrokeWidth * tagScale / 2
   const line = (key: keyof Bar, panelKey: Panel, min: number, max: number) => {
     const segments: string[] = []
     let segment = ""
@@ -236,7 +242,7 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     {bars.map((bar, index) => ({ bar, index })).filter(({ bar, index }) => index === n - 1 || (bar.hour - firstHour) % (24 * 3_600_000) === 0).map(({ bar, index }) => <text key={bar.hour} x={x(index, "taker")} y={height - 7} textAnchor={index === 0 ? "start" : index === n - 1 ? "end" : "middle"} fill="var(--muted-foreground)">{hourLabel(bar.hour)}</text>)}
     {visibleTicks(priceAxis.ticks, Math.max(2, Math.floor((panels.price[1] - panels.price[0]) / 32) + 1)).map(tick => {
       const tickY = priceY(tick)
-      return <g key={tick}><line x1={columns.price[0]} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.35" />{(tickY + tickHalfHeight < priceTagY || tickY - tickHalfHeight > priceTagY + tagHeight) && lineLabel(axisStarts.price, tickY, axisPrice.format(tick))}</g>
+      return <g key={tick}><line x1={columns.price[0]} x2={right} y1={tickY} y2={tickY} stroke="var(--border)" strokeOpacity="0.35" />{(tickY + tickHalfHeight < priceTagY || tickY - tickHalfHeight > priceTagY + scaledTagHeight) && lineLabel(axisStarts.price, tickY, axisPrice.format(tick))}</g>
     })}
     {tag.inViewport && <line x1={columns.price[0]} x2={right} y1={latestY} y2={latestY} stroke={latestColor} opacity="0.5" />}
     <path d={upWicks.join(" ")} fill="none" stroke="var(--positive)" strokeWidth="1.2" />
@@ -267,10 +273,10 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
         {lineLabel(start, priceY(value), label, "var(--foreground)")}
       </g>
     })}
-    <g>
-      <rect x={tagX} y={priceTagY} width={tagWidth} height={tagHeight} rx={tagRadius} fill="var(--card)" stroke={latestColor} strokeWidth="var(--chart-price-tag-stroke-width)" />
-      <text x={tagX + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{latestPrice}</text>
-      {showCountdown && <text x={tagX + tagWidth / 2} y={priceTagY + tagPaddingY + tagLineHeight * 1.5 + tagRowGap} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{countdown}</text>}
+    <g transform={`translate(${tagX},${priceTagY}) scale(${tagScale})`}>
+      <rect width={tagWidth} height={tagHeight} rx={tagRadius} fill="var(--card)" stroke={latestColor} strokeWidth="var(--chart-price-tag-stroke-width)" />
+      <text x={tagWidth / 2} y={tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{latestPrice}</text>
+      {showCountdown && <text x={tagWidth / 2} y={tagPaddingY + tagLineHeight * 1.5 + tagRowGap} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{countdown}</text>}
     </g>
     {legend("price", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["BOLL20", `U ${price(active.bollUpper)}\u00a0·\u00a0M ${price(active.bollMiddle)}\u00a0·\u00a0L ${price(active.bollLower)}`, "var(--chart-1)"]])}
     {legend("roc", [["ROC(9)", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC(9)", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
@@ -565,7 +571,7 @@ export function MarketChart({ instId, order, onSelect, onBack }: { instId: strin
           if (id !== instId) return
           const rect = event.currentTarget.getBoundingClientRect()
           const svgX = event.clientX - rect.left
-          const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars, chart?.bars.at(-1)?.close))
+          const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars, chart?.bars.at(-1)?.close).gutter)
           const [start, end] = columns.price
           const latestHour = viewportEnd
           let index = 0

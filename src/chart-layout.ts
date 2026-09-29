@@ -6,6 +6,12 @@ export function chartHourX(hour: number, latestHour: number, start: number, end:
   return start + (hour - (latestHour - 95 * 3_600_000) + 1_800_000) * (end - start) / (96 * 3_600_000)
 }
 
+export function fitPriceTag(axisGutter: number, tagWidth: number, gap: number, strokeWidth: number, minimumScale: number) {
+  const fullTagWidth = tagWidth + strokeWidth
+  const gutter = Math.ceil(Math.max(axisGutter, gap + fullTagWidth * minimumScale))
+  return { gutter, scale: Math.min(1, (gutter - gap) / fullTagWidth) }
+}
+
 export function chartLayout(width: number, height: number, labelGutter = 64) {
   const rightMargin = 4, top = 4, headerHeight = 24, rowGap = 3, bottomAxis = 22
   const right = width - rightMargin - labelGutter, column: Range = [0, right]
