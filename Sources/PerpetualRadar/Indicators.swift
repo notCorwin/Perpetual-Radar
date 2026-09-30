@@ -47,18 +47,21 @@ func percentChange(_ current: Double?, _ previous: Double?) -> Double? {
     return (current - previous) / abs(previous) * 100
 }
 
-func extremes(_ bars: [Int64: Candle], _ hour: Int64) -> (high: Double?, low: Double?, highHoursAgo: Int?) {
+func extremes(_ bars: [Int64: Candle], _ hour: Int64) -> (high: Double?, low: Double?, highHoursAgo: Int?, lowHoursAgo: Int?) {
     var high = -Double.infinity, low = Double.infinity
-    var highHoursAgo: Int?
+    var highHoursAgo: Int?, lowHoursAgo: Int?
     for age in 1...extremesHours {
-        guard let bar = bars[hour - Int64(age) * hourMS], bar.confirmed else { return (nil, nil, nil) }
+        guard let bar = bars[hour - Int64(age) * hourMS], bar.confirmed else { return (nil, nil, nil, nil) }
         if bar.high > high {
             high = bar.high
             highHoursAgo = age
         }
-        low = min(low, bar.low)
+        if bar.low < low {
+            low = bar.low
+            lowHoursAgo = age
+        }
     }
-    return (high, low, highHoursAgo)
+    return (high, low, highHoursAgo, lowHoursAgo)
 }
 
 func rocMaroc(_ bars: [Int64: Candle], _ hour: Int64, _ rocPeriod: Int, _ marocPeriod: Int) -> (Double?, Double?) {
