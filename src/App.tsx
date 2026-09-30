@@ -250,7 +250,6 @@ function App() {
             <TableRow className="bg-muted/30">
               <TableHead className="py-1.5 text-center" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  <span className="flex min-h-6 items-center px-3">{math(String.raw`\operatorname{Symbol}`)}</span>
                   {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
                 </div>
               </TableHead>
