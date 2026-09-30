@@ -653,7 +653,7 @@ final class Radar {
                   passesSpreadFilter(row.spreadPercent, enabled: spreadFilterEnabled, maximum: maximumSpreadPercent) else { continue }
             if let cached = cachedRows[id] { output.append(cached); continue }
             let bars = candles[id] ?? [:]
-            let (high, low) = extremes(bars, hour)
+            let (high, low, highHoursAgo) = extremes(bars, hour)
             let (upper, middle, lower) = logBB(bars, hour)
             let (roc, maroc) = rocMaroc(bars, hour, rocPeriod, marocPeriod)
             let current = bars[hour], previous = bars[hour - hourMS]
@@ -669,8 +669,9 @@ final class Radar {
                 "takerRatio": row.takerRatio as Any? ?? null,
                 "volumeLog": logChange(current?.quoteVolume, previous?.confirmed == true ? previous?.quoteVolume : nil) as Any? ?? null,
                 "oiLog": logChange(currentOI, previousOI[id]) as Any? ?? null,
-                "high48": high as Any? ?? null, "high48Diff": percentChange(price, high) as Any? ?? null,
-                "low48": low as Any? ?? null, "low48Diff": percentChange(price, low) as Any? ?? null,
+                "high96": high as Any? ?? null, "high96Log": logChange(price, high) as Any? ?? null,
+                "high96HoursAgo": highHoursAgo as Any? ?? null,
+                "low96": low as Any? ?? null, "low96Log": logChange(price, low) as Any? ?? null,
                 "roc": roc as Any? ?? null, "maroc": maroc as Any? ?? null,
                 "rocChange": percentChange(roc, oldRoc) as Any? ?? null,
                 "marocChange": percentChange(maroc, oldMaroc) as Any? ?? null,

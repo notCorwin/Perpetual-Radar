@@ -26,10 +26,11 @@ type MarketRow = {
   takerRatio: number | null
   volumeLog: number | null
   oiLog: number | null
-  high48: number | null
-  high48Diff: number | null
-  low48: number | null
-  low48Diff: number | null
+  high96: number | null
+  high96Log: number | null
+  high96HoursAgo: number | null
+  low96: number | null
+  low96Log: number | null
   roc: number | null
   maroc: number | null
   rsi6: number | null
@@ -252,10 +253,11 @@ function App() {
                   {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
                 </div>
               </TableHead>
-              <TableHead className="py-1.5 text-center" aria-sort={sort === "high48" || sort === "low48" ? descending ? "descending" : "ascending" : "none"}>
+              <TableHead className="py-1.5 text-center" aria-sort={sort === "high96" || sort === "low96" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header("48h high", "high48", String.raw`\operatorname{High}_{48}=\max(H_{t-48},\ldots,H_{t-1})`)}
-                  {header("48h low", "low48", String.raw`\operatorname{Low}_{48}=\min(L_{t-48},\ldots,L_{t-1})`)}
+                  {header("96h high", "high96", String.raw`\operatorname{High}_{96}=\max(H_{t-96},\ldots,H_{t-1})`)}
+                  {header("96h low", "low96", String.raw`\operatorname{Low}_{96}=\min(L_{t-96},\ldots,L_{t-1})`)}
+                  <span className="text-xs text-muted-foreground">Log Change = ln(Price / High or Low)</span>
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
@@ -298,11 +300,13 @@ function App() {
                 </div>
               </TableCell>
               <TableCell className="text-center tabular-nums">
-                <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
-                  <span><span className="sr-only">48h high </span>{formatPrice(row.high48)}</span>
-                  <span className={directionClass(row.high48Diff)}><span className="sr-only">current price versus high </span>{formatPercent(row.high48Diff)}</span>
-                  <span><span className="sr-only">48h low </span>{formatPrice(row.low48)}</span>
-                  <span className={directionClass(row.low48Diff)}><span className="sr-only">current price versus low </span>{formatPercent(row.low48Diff)}</span>
+                <div className="mx-auto grid w-max grid-cols-[max-content_max-content_max-content] items-baseline gap-x-3 text-right">
+                  <span><span className="sr-only">96h high </span>{formatPrice(row.high96)}</span>
+                  <span className={directionClass(row.high96Log)}><span className="sr-only">current price versus high Log Change </span>{formatLog(row.high96Log)}</span>
+                  <span className="text-xs text-muted-foreground" title="Age of the most recent completed hourly candle with the 96h high"><span className="sr-only">High candle age </span>{row.high96HoursAgo === null ? "—" : `${row.high96HoursAgo}h ago`}</span>
+                  <span><span className="sr-only">96h low </span>{formatPrice(row.low96)}</span>
+                  <span className={directionClass(row.low96Log)}><span className="sr-only">current price versus low Log Change </span>{formatLog(row.low96Log)}</span>
+                  <span aria-hidden="true" />
                 </div>
               </TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>

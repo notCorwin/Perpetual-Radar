@@ -3,6 +3,7 @@ import Foundation
 let hourMS: Int64 = 3_600_000
 let candleLookback = 250
 let chartHours = 96
+let extremesHours = 96
 
 struct Candle {
     let hour: Int64
@@ -46,13 +47,18 @@ func percentChange(_ current: Double?, _ previous: Double?) -> Double? {
     return (current - previous) / abs(previous) * 100
 }
 
-func extremes(_ bars: [Int64: Candle], _ hour: Int64) -> (Double?, Double?) {
+func extremes(_ bars: [Int64: Candle], _ hour: Int64) -> (high: Double?, low: Double?, highHoursAgo: Int?) {
     var high = -Double.infinity, low = Double.infinity
-    for age in 1...48 {
-        guard let bar = bars[hour - Int64(age) * hourMS], bar.confirmed else { return (nil, nil) }
-        high = max(high, bar.high); low = min(low, bar.low)
+    var highHoursAgo: Int?
+    for age in 1...extremesHours {
+        guard let bar = bars[hour - Int64(age) * hourMS], bar.confirmed else { return (nil, nil, nil) }
+        if bar.high > high {
+            high = bar.high
+            highHoursAgo = age
+        }
+        low = min(low, bar.low)
     }
-    return (high, low)
+    return (high, low, highHoursAgo)
 }
 
 func rocMaroc(_ bars: [Int64: Candle], _ hour: Int64, _ rocPeriod: Int, _ marocPeriod: Int) -> (Double?, Double?) {

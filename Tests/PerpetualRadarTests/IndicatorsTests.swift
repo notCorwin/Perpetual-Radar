@@ -2,6 +2,51 @@ import XCTest
 @testable import PerpetualRadar
 
 final class IndicatorsTests: XCTestCase {
+    func test96HourExtremesIncludeOldestHourAndExcludeCurrentAndOlderCandles() {
+        let hour = Int64(200) * hourMS
+        var bars: [Int64: Candle] = [:]
+        for age in 0...97 {
+            let ts = hour - Int64(age) * hourMS
+            let outsideWindow = age == 0 || age == 97
+            bars[ts] = Candle(hour: ts, high: outsideWindow ? 1_000 : age == 96 ? 300 : 200,
+                              low: outsideWindow ? 1 : age == 96 ? 50 : 90,
+                              close: 100, quoteVolume: 100, baseVolume: 1)
+        }
+        let result = extremes(bars, hour)
+        XCTAssertEqual(result.high, 300)
+        XCTAssertEqual(result.low, 50)
+        XCTAssertEqual(result.highHoursAgo, 96)
+        XCTAssertEqual(logChange(100, result.high)!, log(100.0 / 300), accuracy: 0.000001)
+        XCTAssertEqual(logChange(100, result.low)!, log(2), accuracy: 0.000001)
+
+        let recentHour = hour - 5 * hourMS
+        bars[recentHour] = Candle(hour: recentHour, high: 300, low: 90, close: 100, quoteVolume: 100, baseVolume: 1)
+        XCTAssertEqual(extremes(bars, hour).highHoursAgo, 5)
+        let nextHour = hour + hourMS
+        bars[nextHour] = Candle(hour: nextHour, high: 2_000, low: 1, close: 100, quoteVolume: 100, baseVolume: 1)
+        XCTAssertEqual(extremes(bars, nextHour).high, 1_000)
+        XCTAssertEqual(extremes(bars, nextHour).highHoursAgo, 1)
+    }
+
+    func test96HourExtremesRequireEveryCompletedCandle() throws {
+        let hour = Int64(200) * hourMS
+        var bars: [Int64: Candle] = [:]
+        for age in 1...96 {
+            let ts = hour - Int64(age) * hourMS
+            bars[ts] = Candle(hour: ts, high: 210, low: 90, close: 100, quoteVolume: 100, baseVolume: 1)
+        }
+        XCTAssertEqual(extremes(bars, hour).highHoursAgo, 1)
+        let oldest = hour - 96 * hourMS
+        bars.removeValue(forKey: oldest)
+        XCTAssertNil(extremes(bars, hour).high)
+        XCTAssertNil(extremes(bars, hour).low)
+        XCTAssertNil(extremes(bars, hour).highHoursAgo)
+        bars[oldest] = try XCTUnwrap(Candle([String(oldest), "100", "210", "90", "100", "1", "1", "100", "0"]))
+        XCTAssertNil(extremes(bars, hour).high)
+        XCTAssertNil(extremes(bars, hour).low)
+        XCTAssertNil(extremes(bars, hour).highHoursAgo)
+    }
+
     func testOpenInterestLogChangeRequiresPositiveHourlyValues() {
         XCTAssertEqual(logChange(120, 100)!, log(1.2), accuracy: 0.000001)
         XCTAssertEqual(logChange(80, 100)!, log(0.8), accuracy: 0.000001)
