@@ -56,6 +56,139 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertNil(extremes(bars, hour).lowHoursAgo)
     }
 
+    func testCompletedHistoryHoursUsesListingHourAndCapsLookback() {
+        let hour = Int64(200) * hourMS
+        XCTAssertEqual(completedHistoryHours(at: hour, since: hour - 36 * hourMS - hourMS / 2, limit: 96), 37)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: hour - hourMS + hourMS / 2, limit: 96), 1)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: hour + hourMS / 2, limit: 96), 0)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: hour + hourMS, limit: 96), 0)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: hour - 96 * hourMS, limit: 96), 96)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: hour - 150 * hourMS, limit: 96), 96)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: nil, limit: 96), 96)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: -1, limit: 96), 96)
+        XCTAssertEqual(completedHistoryHours(at: 10 * hourMS, since: 0, limit: 96), 10)
+        XCTAssertEqual(completedHistoryHours(at: hour, since: hour - 36 * hourMS - hourMS / 2, limit: 14), 14)
+    }
+
+    func testNewlyListedExtremesIncludeAllCompletedListingHours() throws {
+        let hour = Int64(200) * hourMS
+        let listedAt = hour - 36 * hourMS - hourMS / 2
+        var bars: [Int64: Candle] = [:]
+        for age in 0...38 {
+            let ts = hour - Int64(age) * hourMS
+            let outsideLifetime = age == 0 || age == 38
+            bars[ts] = Candle(hour: ts, high: outsideLifetime ? 1_000 : age == 37 ? 300 : 200,
+                              low: outsideLifetime ? 1 : age == 37 ? 50 : 90,
+                              close: 100, quoteVolume: 100, baseVolume: 1)
+        }
+        let result = extremes(bars, hour, listedAt: listedAt)
+        XCTAssertEqual(result.high, 300)
+        XCTAssertEqual(result.low, 50)
+        XCTAssertEqual(result.highHoursAgo, 37)
+        XCTAssertEqual(result.lowHoursAgo, 37)
+        XCTAssertEqual(try XCTUnwrap(logChange(100, result.high)), log(100.0 / 300), accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(logChange(100, result.low)), log(2), accuracy: 0.000001)
+        XCTAssertNil(extremes(bars, hour).high)
+    }
+
+    func testNewlyListedExtremesShowFirstCompletedHourAndWaitForOneToComplete() {
+        let hour = Int64(200) * hourMS
+        let previous = hour - hourMS
+        let bars = [
+            previous: Candle(hour: previous, high: 120, low: 80, close: 100, quoteVolume: 100, baseVolume: 1),
+            hour: Candle(hour: hour, high: 1_000, low: 1, close: 100, quoteVolume: 100, baseVolume: 1),
+        ]
+        let result = extremes(bars, hour, listedAt: previous + hourMS / 2)
+        XCTAssertEqual(result.high, 120)
+        XCTAssertEqual(result.low, 80)
+        XCTAssertEqual(result.highHoursAgo, 1)
+        XCTAssertEqual(result.lowHoursAgo, 1)
+        for listedAt in [hour, hour + hourMS / 2, hour + hourMS] {
+            let unavailable = extremes(bars, hour, listedAt: listedAt)
+            XCTAssertNil(unavailable.high)
+            XCTAssertNil(unavailable.low)
+            XCTAssertNil(unavailable.highHoursAgo)
+            XCTAssertNil(unavailable.lowHoursAgo)
+        }
+    }
+
+    func testNewlyListedExtremesStillRequireEveryCompletedListingCandle() throws {
+        let hour = Int64(200) * hourMS
+        let listedAt = hour - 36 * hourMS - hourMS / 2
+        var complete: [Int64: Candle] = [:]
+        for age in 1...37 {
+            let ts = hour - Int64(age) * hourMS
+            complete[ts] = Candle(hour: ts, high: 210, low: 90, close: 100, quoteVolume: 100, baseVolume: 1)
+        }
+        for age in [1, 7, 37] {
+            let ts = hour - Int64(age) * hourMS
+            var bars = complete
+            bars.removeValue(forKey: ts)
+            let missing = extremes(bars, hour, listedAt: listedAt)
+            XCTAssertNil(missing.high)
+            XCTAssertNil(missing.low)
+            XCTAssertNil(missing.highHoursAgo)
+            XCTAssertNil(missing.lowHoursAgo)
+            bars[ts] = try XCTUnwrap(Candle([String(ts), "100", "210", "90", "100", "1", "1", "100", "0"]))
+            let unconfirmed = extremes(bars, hour, listedAt: listedAt)
+            XCTAssertNil(unconfirmed.high)
+            XCTAssertNil(unconfirmed.low)
+            XCTAssertNil(unconfirmed.highHoursAgo)
+            XCTAssertNil(unconfirmed.lowHoursAgo)
+        }
+    }
+
+    func testMatureListingExtremesKeepThe96HourWindow() {
+        let hour = Int64(200) * hourMS
+        var bars: [Int64: Candle] = [:]
+        for age in 0...97 {
+            let ts = hour - Int64(age) * hourMS
+            let outsideWindow = age == 0 || age == 97
+            bars[ts] = Candle(hour: ts, high: outsideWindow ? 1_000 : age == 96 ? 300 : 200,
+                              low: outsideWindow ? 1 : age == 96 ? 50 : 90,
+                              close: 100, quoteVolume: 100, baseVolume: 1)
+        }
+        for listedAt in [hour - 96 * hourMS, hour - 150 * hourMS] {
+            let result = extremes(bars, hour, listedAt: listedAt)
+            XCTAssertEqual(result.high, 300)
+            XCTAssertEqual(result.low, 50)
+            XCTAssertEqual(result.highHoursAgo, 96)
+            XCTAssertEqual(result.lowHoursAgo, 96)
+        }
+    }
+
+    func testStandardIndicatorsUseTheirOwnMinimumHistoryBelow96Hours() throws {
+        let hour = Int64(200) * hourMS
+        func bars(count: Int) -> [Int64: Candle] {
+            Dictionary(uniqueKeysWithValues: (0..<count).map { age in
+                let ts = hour - Int64(age) * hourMS
+                return (ts, Candle(hour: ts, high: 200, low: 1, close: Double(100 - age), quoteVolume: 100, baseVolume: 1))
+            })
+        }
+        let youngMarket = bars(count: 38)
+        XCTAssertNotNil(rocMaroc(youngMarket, hour, 9, 9).0)
+        XCTAssertNotNil(rocMaroc(youngMarket, hour, 9, 9).1)
+        XCTAssertEqual(vwap14(youngMarket, hour), 100)
+        for period in [6, 12, 24] {
+            XCTAssertEqual(rsi(youngMarket, hour, period), 100)
+            XCTAssertEqual(rsi(bars(count: period + 1), hour, period), 100)
+            XCTAssertNil(rsi(bars(count: period), hour, period))
+        }
+        let (upper, middle, lower) = logBB(youngMarket, hour)
+        XCTAssertNotNil(upper)
+        XCTAssertNotNil(middle)
+        XCTAssertNotNil(lower)
+        XCTAssertNotNil(logBBBandWidth(upper, middle, lower))
+        XCTAssertEqual(try XCTUnwrap(rocMaroc(bars(count: 10), hour, 9, 9).0), (100.0 / 91 - 1) * 100, accuracy: 0.000001)
+        XCTAssertNil(rocMaroc(bars(count: 9), hour, 9, 9).0)
+        XCTAssertNotNil(rocMaroc(bars(count: 18), hour, 9, 9).1)
+        XCTAssertNil(rocMaroc(bars(count: 17), hour, 9, 9).1)
+        XCTAssertEqual(vwap14(bars(count: 14), hour), 100)
+        XCTAssertNil(vwap14(bars(count: 13), hour))
+        XCTAssertNotNil(logBB(bars(count: 20), hour).0)
+        XCTAssertNil(logBB(bars(count: 19), hour).0)
+    }
+
     func testOpenInterestLogChangeRequiresPositiveHourlyValues() {
         XCTAssertEqual(logChange(120, 100)!, log(1.2), accuracy: 0.000001)
         XCTAssertEqual(logChange(80, 100)!, log(0.8), accuracy: 0.000001)

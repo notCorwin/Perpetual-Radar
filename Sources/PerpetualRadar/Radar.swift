@@ -44,6 +44,7 @@ func boundedHistoryEnd(_ requested: Int64, oldest: Int64?, exhausted: Bool, late
 
 private struct Market {
     let id: String
+    let listedAt: Int64?
     var turnover24hUSDT: Double?
     var spreadPercent: Double?
     var oiTimestamp = 0.0
@@ -173,7 +174,8 @@ final class Radar {
                     guard item["state"] as? String == "live", item["instCategory"] as? String == "1",
                           item["settleCcy"] as? String == "USDT", let id = item["instId"] as? String,
                           id.hasSuffix("-USDT-SWAP"), id != "USDC-USDT-SWAP" else { continue }
-                    rows[id] = Market(id: id)
+                    let listedAt = (item["listTime"] as? String).flatMap(Int64.init).flatMap { $0 > 0 ? $0 : nil }
+                    rows[id] = Market(id: id, listedAt: listedAt)
                 }
                 guard !rows.isEmpty else { throw NSError(domain: "OKX", code: 2, userInfo: [NSLocalizedDescriptionKey: "No live USDT perpetual swaps found"]) }
                 try updateTickers(tickers)
@@ -295,8 +297,9 @@ final class Radar {
 
     private func historyReady(_ id: String) -> Bool {
         let series = candles[id] ?? [:]
-        return (1...candleLookback).allSatisfy { series[hour - Int64($0) * hourMS]?.confirmed == true && series[hour - Int64($0) * hourMS]?.open != nil } &&
-            (1..<14).allSatisfy { series[hour - Int64($0) * hourMS]?.baseVolume != nil }
+        let hours = completedHistoryHours(at: hour, since: rows[id]?.listedAt, limit: candleLookback)
+        return (1..<(hours + 1)).allSatisfy { series[hour - Int64($0) * hourMS]?.confirmed == true && series[hour - Int64($0) * hourMS]?.open != nil } &&
+            (1..<(min(hours, 13) + 1)).allSatisfy { series[hour - Int64($0) * hourMS]?.baseVolume != nil }
     }
 
     private func scan(_ path: String, delay: UInt64, repeatScan: Bool = false, shard: Int = 0) async {
@@ -653,7 +656,7 @@ final class Radar {
                   passesSpreadFilter(row.spreadPercent, enabled: spreadFilterEnabled, maximum: maximumSpreadPercent) else { continue }
             if let cached = cachedRows[id] { output.append(cached); continue }
             let bars = candles[id] ?? [:]
-            let (high, low, highHoursAgo, lowHoursAgo) = extremes(bars, hour)
+            let (high, low, highHoursAgo, lowHoursAgo) = extremes(bars, hour, listedAt: row.listedAt)
             let (upper, middle, lower) = logBB(bars, hour)
             let (roc, maroc) = rocMaroc(bars, hour, rocPeriod, marocPeriod)
             let current = bars[hour], previous = bars[hour - hourMS]
@@ -670,6 +673,7 @@ final class Radar {
                 "volumeLog": logChange(current?.quoteVolume, previous?.confirmed == true ? previous?.quoteVolume : nil) as Any? ?? null,
                 "oiLog": logChange(currentOI, previousOI[id]) as Any? ?? null,
                 "high96": high as Any? ?? null, "high96Log": logChange(price, high) as Any? ?? null,
+                "extremesWindowHours": completedHistoryHours(at: hour, since: row.listedAt, limit: extremesHours),
                 "high96HoursAgo": highHoursAgo as Any? ?? null,
                 "low96": low as Any? ?? null, "low96Log": logChange(price, low) as Any? ?? null,
                 "low96HoursAgo": lowHoursAgo as Any? ?? null,

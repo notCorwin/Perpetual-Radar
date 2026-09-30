@@ -29,6 +29,7 @@ type MarketRow = {
   high96: number | null
   high96Log: number | null
   high96HoursAgo: number | null
+  extremesWindowHours: number
   low96: number | null
   low96Log: number | null
   low96HoursAgo: number | null
@@ -59,6 +60,7 @@ declare global {
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
+const EXTREMES_DESCRIPTION = "Uses up to 96 completed hourly candles. For new contracts, the window starts at the listing hour."
 const formatLog = (value: number | null) => value === null ? "—" : value === 0
   ? "0.000000"
   : `${value > 0 ? "+" : ""}${Math.abs(value) < 0.000001 ? value.toExponential(2) : value.toFixed(6)}`
@@ -194,9 +196,9 @@ function App() {
     else setSpreadDraft(String(value))
   }
 
-  const header = (label: string, key: SortKey, formula: string) => {
+  const header = (label: string, key: SortKey, formula: string, description?: string) => {
     const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
-    return <Button variant="ghost" size="sm" className="h-auto min-h-6 gap-1" onClick={() => changeSort(key)} aria-label={`Sort by ${label}`}>
+    return <Button variant="ghost" size="sm" className="h-auto min-h-6 gap-1" onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} title={description}>
       {math(formula)}<SortIcon data-icon="inline-end" aria-hidden="true" />
     </Button>
   }
@@ -256,8 +258,8 @@ function App() {
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "high96" || sort === "low96" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header("96h high", "high96", String.raw`\operatorname{High}_{96}=\max(H_{t-96},\ldots,H_{t-1})`)}
-                  {header("96h low", "low96", String.raw`\operatorname{Low}_{96}=\min(L_{t-96},\ldots,L_{t-1})`)}
+                  {header("up to 96h high", "high96", String.raw`\operatorname{High}_{96}=\max(H_{t-n},\ldots,H_{t-1})`, `${EXTREMES_DESCRIPTION} n is the number of completed candles in that window.`)}
+                  {header("up to 96h low", "low96", String.raw`\operatorname{Low}_{96}=\min(L_{t-n},\ldots,L_{t-1})`, `${EXTREMES_DESCRIPTION} n is the number of completed candles in that window.`)}
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
@@ -300,14 +302,14 @@ function App() {
                   <span className="text-muted-foreground">Turnover</span><span>{turnoverFormatter.format(row.turnover24hUSDT)} USDT</span>
                 </div>
               </TableCell>
-              <TableCell className="text-center tabular-nums">
+              <TableCell className="text-center tabular-nums" title={`${row.extremesWindowHours} completed hourly candles in the high/low window. ${EXTREMES_DESCRIPTION}`}>
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content_max-content] items-baseline gap-x-3 text-right">
-                  <span><span className="sr-only">96h high </span>{formatPrice(row.high96)}</span>
+                  <span><span className="sr-only">High over {row.extremesWindowHours} completed hours </span>{formatPrice(row.high96)}</span>
                   <span className={directionClass(row.high96Log)}><span className="sr-only">current price versus high Log Change </span>{formatLog(row.high96Log)}</span>
-                  <span className="text-xs text-muted-foreground" title="Age of the most recent completed hourly candle with the 96h high"><span className="sr-only">High candle age </span>{row.high96HoursAgo === null ? "—" : `${row.high96HoursAgo}h ago`}</span>
-                  <span><span className="sr-only">96h low </span>{formatPrice(row.low96)}</span>
+                  <span className="text-xs text-muted-foreground" title="Age of the most recent completed hourly candle with the window high"><span className="sr-only">High candle age </span>{row.high96HoursAgo === null ? "—" : `${row.high96HoursAgo}h ago`}</span>
+                  <span><span className="sr-only">Low over {row.extremesWindowHours} completed hours </span>{formatPrice(row.low96)}</span>
                   <span className={directionClass(row.low96Log)}><span className="sr-only">current price versus low Log Change </span>{formatLog(row.low96Log)}</span>
-                  <span className="text-xs text-muted-foreground" title="Age of the most recent completed hourly candle with the 96h low"><span className="sr-only">Low candle age </span>{row.low96HoursAgo === null ? "—" : `${row.low96HoursAgo}h ago`}</span>
+                  <span className="text-xs text-muted-foreground" title="Age of the most recent completed hourly candle with the window low"><span className="sr-only">Low candle age </span>{row.low96HoursAgo === null ? "—" : `${row.low96HoursAgo}h ago`}</span>
                 </div>
               </TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>

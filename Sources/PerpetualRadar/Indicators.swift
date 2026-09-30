@@ -47,10 +47,21 @@ func percentChange(_ current: Double?, _ previous: Double?) -> Double? {
     return (current - previous) / abs(previous) * 100
 }
 
-func extremes(_ bars: [Int64: Candle], _ hour: Int64) -> (high: Double?, low: Double?, highHoursAgo: Int?, lowHoursAgo: Int?) {
+func completedHistoryHours(at hour: Int64, since listedAt: Int64?, limit: Int) -> Int {
+    guard limit > 0 else { return 0 }
+    guard let listedAt, listedAt >= 0 else { return limit }
+    // A contract listed mid-hour has a partial first candle at that hour's start.
+    let firstHour = listedAt / hourMS * hourMS
+    guard firstHour < hour else { return 0 }
+    return Int(min(Int64(limit), (hour - firstHour) / hourMS))
+}
+
+func extremes(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int64? = nil) -> (high: Double?, low: Double?, highHoursAgo: Int?, lowHoursAgo: Int?) {
+    let hours = completedHistoryHours(at: hour, since: listedAt, limit: extremesHours)
+    guard hours > 0 else { return (nil, nil, nil, nil) }
     var high = -Double.infinity, low = Double.infinity
     var highHoursAgo: Int?, lowHoursAgo: Int?
-    for age in 1...extremesHours {
+    for age in 1...hours {
         guard let bar = bars[hour - Int64(age) * hourMS], bar.confirmed else { return (nil, nil, nil, nil) }
         if bar.high > high {
             high = bar.high
