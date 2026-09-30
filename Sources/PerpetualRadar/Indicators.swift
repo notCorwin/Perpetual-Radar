@@ -120,3 +120,11 @@ func logBB(_ bars: [Int64: Candle], _ hour: Int64) -> (Double?, Double?, Double?
           upper > 0, center > 0, lower > 0 else { return (nil, nil, nil) }
     return (upper, center, lower)
 }
+
+func logBBBandWidth(_ upper: Double?, _ middle: Double?, _ lower: Double?) -> Double? {
+    guard let upper, let middle, let lower,
+          upper.isFinite, middle.isFinite, lower.isFinite,
+          middle > 0, lower > 0, upper >= lower else { return nil }
+    let width = (upper - lower) / middle * 100
+    return width.isFinite ? width : nil
+}

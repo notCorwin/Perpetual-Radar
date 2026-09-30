@@ -40,6 +40,7 @@ type MarketRow = {
   logBBUpper: number | null
   logBBMiddle: number | null
   logBBLower: number | null
+  logBBBandWidth: number | null
   rocChange: number | null
   marocChange: number | null
 }
@@ -276,6 +277,7 @@ function App() {
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("logBB") ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {LOG_BB_LINES.map(({ label, key }) => <Fragment key={key}>{header(`Log BB ${label}`, key, String.raw`\operatorname{LogBB}_{\mathrm{${label}}}`)}</Fragment>)}
+                  {header("Band Width", "logBBBandWidth", String.raw`\operatorname{Band\ Width}`)}
                 </div>
               </TableHead>
             </TableRow>
@@ -327,6 +329,7 @@ function App() {
               <TableCell className="text-center tabular-nums">
                 <div className="flex flex-col items-center text-xs">
                   {LOG_BB_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={logBBClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
+                  <div className="flex gap-1" title="(Upper − Lower) / Middle × 100%"><span className="text-muted-foreground">Band Width</span><span className={cn(row.logBBBandWidth === null && "text-muted-foreground")}>{row.logBBBandWidth === null ? "—" : `${formatIndicator(row.logBBBandWidth)}%`}</span></div>
                 </div>
               </TableCell>
             </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}

@@ -131,11 +131,38 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(upper), 1_000, accuracy: 0.000001)
         XCTAssertEqual(try XCTUnwrap(middle), 10, accuracy: 0.000001)
         XCTAssertEqual(try XCTUnwrap(lower), 0.1, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(logBBBandWidth(upper, middle, lower)), 9_999, accuracy: 0.000001)
         bars.removeValue(forKey: hour - 19 * hourMS)
         XCTAssertNil(logBB(bars, hour).0)
+        let missing = logBB(bars, hour)
+        XCTAssertNil(logBBBandWidth(missing.0, missing.1, missing.2))
         bars[hour - 19 * hourMS] = Candle(hour: hour - 19 * hourMS, high: 100, low: 0,
                                          close: 0, quoteVolume: 100, baseVolume: 1)
         XCTAssertNil(logBB(bars, hour).0)
+    }
+
+    func testLogBBBandWidthIsScaleIndependentAndZeroForFlatPrices() throws {
+        let hour = Int64(20) * hourMS
+        func width(scale: Double, flat: Bool = false) throws -> Double {
+            var bars: [Int64: Candle] = [:]
+            for age in 0..<20 {
+                let ts = hour - Int64(age) * hourMS
+                let price = (flat ? 10 : age.isMultiple(of: 2) ? 1 : 100) * scale
+                bars[ts] = Candle(hour: ts, high: price, low: price, close: price,
+                                  quoteVolume: 100, baseVolume: 1)
+            }
+            let (upper, middle, lower) = logBB(bars, hour)
+            return try XCTUnwrap(logBBBandWidth(upper, middle, lower))
+        }
+        XCTAssertEqual(try width(scale: 0.001), try width(scale: 1_000), accuracy: 0.000001)
+        XCTAssertEqual(try width(scale: 1, flat: true), 0, accuracy: 0.000001)
+        XCTAssertNil(logBBBandWidth(nil, 10, 5))
+        XCTAssertNil(logBBBandWidth(15, nil, 5))
+        XCTAssertNil(logBBBandWidth(15, 10, nil))
+        XCTAssertNil(logBBBandWidth(15, 0, 5))
+        XCTAssertNil(logBBBandWidth(.infinity, 10, 5))
+        XCTAssertNil(logBBBandWidth(15, .nan, 5))
+        XCTAssertNil(logBBBandWidth(1e308, 1e-308, 1))
     }
 
     func testCandleValidationAndPermanentHistory() throws {
