@@ -506,7 +506,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
 
   useEffect(() => {
     let stopped = false
-    for (const id of new Set([beforePrevious, previous, next, afterNext, turnoverOrder[0], turnoverOrder[turnoverOrder.length - 1]])) {
+    for (const id of new Set([beforePrevious, previous, next, afterNext, listOrder[0], turnoverOrder[0]])) {
       if (!id || id === instId) continue
       void previewChart(id).then(data => { if (!stopped) warmChart(id, data) }).catch(() => {})
       if ((id === previous || id === next) && !chartCache.get(id)?.loadedAt) {
@@ -514,7 +514,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
       }
     }
     return () => { stopped = true }
-  }, [instId, beforePrevious, previous, next, afterNext, turnoverOrder, warmChart])
+  }, [instId, beforePrevious, previous, next, afterNext, listOrder, turnoverOrder, warmChart])
 
   useEffect(() => {
     const navigate = (event: KeyboardEvent) => {
@@ -562,7 +562,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
-        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {turnoverPosition + 1}/{turnoverOrder.length} · ↑/↓ list order · ← turnover first · → turnover last</p>
+        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {turnoverPosition + 1}/{turnoverOrder.length} · ↑/↓ list order · ← list first · → turnover first</p>
       </div>
       <Button variant="outline" size="sm" disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}><Camera data-icon="inline-start" aria-hidden="true" />{captureStatus === "copying" ? "Copying…" : "Copy chart"}</Button>
       <span role="status" className="sr-only">{captureStatus === "flashing" ? "Chart copied to clipboard" : ""}</span>
@@ -594,7 +594,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
         })
       }}>
         <div className="relative h-full w-full">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200 and Log BB on a logarithmic price scale; open interest uses a zero-inclusive logarithmic scale, while RSI, ROC, MAROC, and taker volume use linear scales. RSI has a shaded 30 to 70 range and ROC and MAROC have shaded positive and negative areas. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the highest turnover market and right jumps to the lowest. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200 and Log BB on a logarithmic price scale; open interest uses a zero-inclusive logarithmic scale, while RSI, ROC, MAROC, and taker volume use linear scales. RSI has a shaded 30 to 70 range and ROC and MAROC have shaded positive and negative areas. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the first market in the current sorted search results and right jumps to the highest 24-hour turnover market among eligible contracts, regardless of search. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
           if (id !== instId) return
           if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             event.preventDefault()

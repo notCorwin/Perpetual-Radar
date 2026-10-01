@@ -91,7 +91,7 @@ function App() {
   const [spreadFilterEnabled, setSpreadFilterEnabled] = useState(true)
   const [maximumSpreadPercent, setMaximumSpreadPercent] = useState(0.15)
   const [spreadDraft, setSpreadDraft] = useState("0.15")
-  const [sort, setSort] = useState<SortKey>("turnover24hUSDT")
+  const [sort, setSort] = useState<SortKey>("oiLog")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => {
