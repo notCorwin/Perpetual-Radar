@@ -25,6 +25,7 @@ final class AppUpdaterTests: XCTestCase {
             return XCTFail("Expected an available update")
         }
         XCTAssertEqual(available?.revision, revision)
+        XCTAssertEqual(available?.assetURL.absoluteString, "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar")
         XCTAssertEqual(available?.expectedSHA256, digest)
         XCTAssertEqual(available?.publishedAt, Date(timeIntervalSince1970: 1_790_467_200))
         guard case .success(let latest) = AppUpdater.parse(data: data, currentRevision: revision) else {
