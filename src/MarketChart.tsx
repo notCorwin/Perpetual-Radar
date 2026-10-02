@@ -102,10 +102,10 @@ const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length -
   return fitPriceTag(axisGutter, priceTagWidth(price(liveClose), "00:00"), tagGap, tagStrokeWidth, minimumScale)
 }
 
-const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, endHour }: { bars: Bar[]; liveBar: Bar; hovered: number | null; width: number; height: number; now: number; endHour: number }) {
+const Plot = memo(function Plot({ bars, liveBar, inspected, width, height, now, endHour }: { bars: Bar[]; liveBar: Bar; inspected: number | null; width: number; height: number; now: number; endHour: number }) {
   const areaClipId = useId().replaceAll(":", "")
   const n = bars.length
-  const active = bars[hovered ?? n - 1]
+  const active = bars[inspected ?? n - 1]
   const latestHour = endHour
   const firstHour = endHour - 95 * 3_600_000
   const firstAtLeft = bars[0].hour === firstHour
@@ -297,7 +297,7 @@ const Plot = memo(function Plot({ bars, liveBar, hovered, width, height, now, en
     {lineStroke(line("roc", "roc", value => scale(value, rocAxis.min, rocAxis.max, panels.roc)), "var(--chart-1)")}
     {lineStroke(line("maroc", "roc", value => scale(value, rocAxis.min, rocAxis.max, panels.roc)), "var(--chart-2)", indicatorWidth, 1, "7 4")}
     {oiAxis && lineStroke(line("oi", "oi", oiY), "var(--chart-2)")}
-    {hovered !== null && panelKeys.map(key => <line key={key} x1={x(hovered, key)} x2={x(hovered, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeWidth="0.65" strokeDasharray="3 5" opacity="0.3" />)}
+    {inspected !== null && panelKeys.map(key => <line key={key} x1={x(inspected, key)} x2={x(inspected, key)} y1={panels[key][0]} y2={panels[key][1]} stroke="var(--foreground)" strokeWidth="0.65" strokeDasharray="3 5" opacity="0.3" />)}
     {([[highIndex, candleHigh, "high"], [lowIndex, candleLow, "low"]] as const).map(([index, value, kind]) => {
       const markerX = x(index, "price"), label = price(value)
       const labelWidth = label.length * 6.5 + 8
@@ -337,7 +337,14 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
   const historyRequests = useRef(new Map<string, Promise<ChartPollResponse>>())
   const loadedHistoryBuckets = useRef(new Set<string>())
   const requestedHistoryEnds = useRef(new Set<string>())
-  const [hover, setHover] = useState<{ id: string; index: number } | null>(null)
+  const [inspection, setInspection] = useState<{ id: string; hour: number } | null>(null)
+  const heldPointer = useRef<{ id: string; pointerId: number; target: SVGSVGElement } | null>(null)
+  const endInspection = useCallback(() => {
+    const held = heldPointer.current
+    heldPointer.current = null
+    if (held?.target.hasPointerCapture(held.pointerId)) held.target.releasePointerCapture(held.pointerId)
+    setInspection(null)
+  }, [])
   const [chartError, setChartError] = useState<{ id: string; message: string } | null>(null)
   const [warmCharts, setWarmCharts] = useState(() => new Map<string, ChartResponse>())
   const [capture, setCapture] = useState<{ id: string; status: "idle" | "copying" | "flashing" | "failed"; error: string }>({ id: instId, status: "idle", error: "" })
@@ -364,7 +371,6 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
     return [...merged.values()].sort((a, b) => a.hour - b.hour)
   }, [chart, historyBars, instId])
   const oldestCachedHour = cachedBars[0]?.hour ?? Infinity
-  const hovered = hover?.id === instId ? hover.index : null
   const error = chartError?.id === instId ? chartError.message : chart?.error ?? ""
   const captureStatus = capture.id === instId ? capture.status : "idle"
   const captureError = capture.id === instId ? capture.error : ""
@@ -416,6 +422,16 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
     return () => window.clearInterval(timer)
   }, [])
   useEffect(() => {
+    const endWhenHidden = () => { if (document.hidden) endInspection() }
+    window.addEventListener("blur", endInspection)
+    document.addEventListener("visibilitychange", endWhenHidden)
+    return () => {
+      window.removeEventListener("blur", endInspection)
+      document.removeEventListener("visibilitychange", endWhenHidden)
+      endInspection()
+    }
+  }, [instId, endInspection])
+  useEffect(() => {
     if (historicalEnd === null) return
     const bucket = `${instId}:${Math.floor(historicalEnd / (96 * 3_600_000))}`
     const needsCandles = historicalEnd - 95 * 3_600_000 <= oldestCachedHour + 48 * 3_600_000
@@ -445,7 +461,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
           const last = historicalEnd + 249 * 3_600_000
           return { id: instId, bars: [...merged.values()].filter(bar => bar.hour >= first && bar.hour <= last).sort((a, b) => a.hour - b.hour) }
         })
-        setHover(null)
+        endInspection()
         if (result.endHour !== undefined && result.endHour !== historicalEnd) {
           const latestHour = chartCache.get(instId)?.data.bars.at(-1)?.hour ?? result.bars.at(-1)?.hour ?? result.endHour
           const next = result.endHour >= latestHour ? null : { id: instId, hour: result.endHour }
@@ -465,7 +481,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
       })()
     }, 80)
     return () => { stopped = true; window.clearTimeout(timer) }
-  }, [instId, historicalEnd, oldestCachedHour, historyRetry])
+  }, [instId, historicalEnd, oldestCachedHour, historyRetry, endInspection])
   useEffect(() => {
     wheelPixels.current = 0
     if (wheelFrame.current !== null) window.cancelAnimationFrame(wheelFrame.current)
@@ -539,6 +555,21 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
 
   const viewportEnd = historicalEnd ?? chart?.bars.at(-1)?.hour ?? 0
   const bars = useMemo(() => visibleChartBars(cachedBars, viewportEnd), [cachedBars, viewportEnd])
+  const inspectedIndex = inspection?.id === instId ? bars.findIndex(bar => bar.hour === inspection.hour) : -1
+  const inspected = inspectedIndex < 0 ? null : inspectedIndex
+  const inspectAt = (target: SVGSVGElement, clientX: number) => {
+    const rect = target.getBoundingClientRect()
+    if (!bars.length || rect.width <= 0) return
+    const svgX = (clientX - rect.left) * plotSize.width / rect.width
+    const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars, plotSize.height, chart?.bars.at(-1)?.close).gutter)
+    const [start, end] = columns.price
+    let index = 0
+    for (let i = 1; i < bars.length; i++) {
+      if (Math.abs(chartHourX(bars[i].hour, viewportEnd, start, end) - svgX) < Math.abs(chartHourX(bars[index].hour, viewportEnd, start, end) - svgX)) index = i
+    }
+    const hour = bars[index].hour
+    setInspection(current => current?.id === instId && current.hour === hour ? current : { id: instId, hour })
+  }
   const moveHistory = (steps: number) => {
     const latestHour = chartCache.get(instId)?.data.bars.at(-1)?.hour ?? bars.at(-1)?.hour
     if (latestHour === undefined || steps === 0) return
@@ -549,9 +580,9 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
     requestedHistoryEnds.current.clear()
     windowEndRef.current = next
     setWindowEnd(next)
-    setHover(null)
+    endInspection()
   }
-  const active = bars[hovered ?? bars.length - 1]
+  const active = bars[inspected ?? bars.length - 1]
   const atHistoryBoundary = historicalEnd !== null && historyBoundary?.id === instId
     && historicalEnd === Math.min(chart?.bars.at(-1)?.hour ?? historicalEnd, historyBoundary.oldestHour + 95 * 3_600_000)
   const warmSurfaces = useMemo(() => new Map([...warmCharts].map(([id, data]) => [id, { ...data, bars: visibleChartBars(data.bars, data.bars.at(-1)?.hour ?? 0) }])), [warmCharts])
@@ -562,7 +593,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold tracking-tight normal-nums">{instId.replace(/-SWAP$/, "")}</h1>
-        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Scroll chart for history · 24h turnover rank {turnoverPosition + 1}/{turnoverOrder.length} · ↑/↓ list order · ← list first · → turnover first</p>
+        <p className="text-muted-foreground">OKX perpetual · 1h · {historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Hold to inspect · Scroll chart for history · 24h turnover rank {turnoverPosition + 1}/{turnoverOrder.length} · ↑/↓ list order · ← list first · → turnover first</p>
       </div>
       <Button variant="outline" size="sm" disabled={!bars.length || plotSize.width <= 0 || captureStatus === "copying"} onClick={() => { void captureChart() }}><Camera data-icon="inline-start" aria-hidden="true" />{captureStatus === "copying" ? "Copying…" : "Copy chart"}</Button>
       <span role="status" className="sr-only">{captureStatus === "flashing" ? "Chart copied to clipboard" : ""}</span>
@@ -576,7 +607,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
     {captureError && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{captureError}</p>}
     <section ref={chartRef} aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-card">
       {active && <div className="grid shrink-0 grid-cols-[minmax(9rem,1.2fr)_repeat(4,minmax(0,1fr))] items-center border-b px-4 py-1.5" aria-live="off">
-        <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{hovered === null ? historicalEnd === null ? "Latest" : "Window end" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
+        <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{inspected === null ? historicalEnd === null ? "Latest" : "Window end" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
         {([ ["Open", active.open], ["High", active.high], ["Low", active.low], ["Close", active.close] ] as const).map(([label, value]) => <div key={label} className="min-w-0 px-3">
           <span className="text-muted-foreground">{label} </span><span title={price(value)}>{price(value)}</span>
         </div>)}
@@ -594,29 +625,24 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
         })
       }}>
         <div className="relative h-full w-full">
-        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200 and Log BB on a logarithmic price scale; open interest uses a zero-inclusive logarithmic scale, while RSI, ROC, MAROC, and taker volume use linear scales. RSI has a shaded 30 to 70 range and ROC and MAROC have shaded positive and negative areas. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the first market in the current sorted search results and right jumps to the highest 24-hour turnover market among eligible contracts, regardless of search. Shift plus left or right arrow inspects candles.`} onPointerLeave={() => { if (id === instId) setHover(null) }} onKeyDown={event => {
-          if (id !== instId) return
-          if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
-            event.preventDefault()
-            setHover(current => ({ id: instId, index: Math.max(0, Math.min(bars.length - 1, (current?.id === instId ? current.index : bars.length - 1) + (event.key === "ArrowLeft" ? -1 : 1))) }))
-          } else if (event.key === "Home" || event.key === "End") {
-            event.preventDefault()
-            setHover({ id: instId, index: event.key === "Home" ? 0 : bars.length - 1 })
-          }
+        {bars.length && plotSize.width > 0 ? [...surfaces].map(([id, data]) => <svg key={id} viewBox={`0 0 ${plotSize.width} ${plotSize.height}`} className={cn("absolute inset-0 h-full w-full select-none focus-visible:outline-2 focus-visible:outline-ring", id !== instId && "hidden")} role="img" tabIndex={id === instId ? 0 : -1} aria-hidden={id !== instId} aria-label={`${id} 96 hour candlestick chart with VWAP14, EMA200 and Log BB on a logarithmic price scale; open interest uses a zero-inclusive logarithmic scale, while RSI, ROC, MAROC, and taker volume use linear scales. RSI has a shaded 30 to 70 range and ROC and MAROC have shaded positive and negative areas. Hold the primary mouse button to inspect a candle, drag while holding to inspect others, and release to return to the window end. Scroll to review history; returning to the latest candle resumes automatic following. Up and down arrows follow the visible market list order; left jumps to the first market in the current sorted search results and right jumps to the highest 24-hour turnover market among eligible contracts, regardless of search.`} onPointerDown={event => {
+          if (id !== instId || event.button !== 0 || heldPointer.current) return
+          event.preventDefault()
+          event.currentTarget.setPointerCapture(event.pointerId)
+          heldPointer.current = { id, pointerId: event.pointerId, target: event.currentTarget }
+          inspectAt(event.currentTarget, event.clientX)
+        }} onPointerUp={event => {
+          if (heldPointer.current?.pointerId === event.pointerId) endInspection()
+        }} onPointerCancel={event => {
+          if (heldPointer.current?.pointerId === event.pointerId) endInspection()
+        }} onLostPointerCapture={event => {
+          if (heldPointer.current?.pointerId === event.pointerId) endInspection()
         }} onPointerMove={event => {
-          if (id !== instId) return
-          const rect = event.currentTarget.getBoundingClientRect()
-          const svgX = event.clientX - rect.left
-          const { columns } = chartLayout(plotSize.width, plotSize.height, chartGutter(bars, plotSize.height, chart?.bars.at(-1)?.close).gutter)
-          const [start, end] = columns.price
-          const latestHour = viewportEnd
-          let index = 0
-          for (let i = 1; i < bars.length; i++) {
-            if (Math.abs(chartHourX(bars[i].hour, latestHour, start, end) - svgX) < Math.abs(chartHourX(bars[index].hour, latestHour, start, end) - svgX)) index = i
-          }
-          setHover(current => current?.id === instId && current.index === index ? current : { id: instId, index })
+          if (id !== instId || heldPointer.current?.id !== id || heldPointer.current.pointerId !== event.pointerId) return
+          if (!(event.buttons & 1)) { endInspection(); return }
+          inspectAt(event.currentTarget, event.clientX)
         }}>
-          <Plot bars={data.bars} liveBar={id === instId ? chart?.bars.at(-1) ?? data.bars.at(-1)! : data.bars.at(-1)!} hovered={hover?.id === id ? hover.index : null} width={plotSize.width} height={plotSize.height} now={id === instId ? now : 0} endHour={data.endHour ?? data.bars.at(-1)!.hour} />
+          <Plot bars={data.bars} liveBar={id === instId ? chart?.bars.at(-1) ?? data.bars.at(-1)! : data.bars.at(-1)!} inspected={id === instId ? inspected : null} width={plotSize.width} height={plotSize.height} now={id === instId ? now : 0} endHour={data.endHour ?? data.bars.at(-1)!.hour} />
         </svg>) : <p className="flex h-full items-center justify-center text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
         {historicalEnd !== null && historyLoading === `${instId}:${historicalEnd}` && <span role="status" className="pointer-events-none absolute right-4 top-2 rounded-md bg-card/90 px-2 py-1 text-muted-foreground">Loading history…</span>}
         {atHistoryBoundary && <span role="status" className="pointer-events-none absolute right-4 top-2 rounded-md bg-card/90 px-2 py-1 text-muted-foreground">Start of available history</span>}
