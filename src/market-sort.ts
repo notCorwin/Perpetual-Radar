@@ -1,9 +1,10 @@
 import type { BreakResult } from "./market-breaks.ts"
 import { logBBBandRank, type BandWidthExpansion, type LogBBAboveBand } from "./market-logbb.ts"
 import { percentageNumber, type PercentageValue } from "./market-percent.ts"
+import { opportunityStatusRank, type OpportunityResult } from "./market-opportunity.ts"
 
 export type EMA200Signal = "Long" | "Short" | "Unsure"
-export type SortKey = "turnover24hUSDT" | "ema200Signal" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "oiChange" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
+export type SortKey = "opportunity" | "turnover24hUSDT" | "ema200Signal" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "oiChange" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
 
 export type SortableRow = {
   instId: string
@@ -20,6 +21,7 @@ export type SortableRow = {
   rsi24: number | null
   logBBAboveBand: LogBBAboveBand | null
   logBBExpansion: BandWidthExpansion | null
+  opportunity?: OpportunityResult
 }
 
 export function compareMarketTurnover(a: { instId: string; turnover24hUSDT: number }, b: { instId: string; turnover24hUSDT: number }): number {
@@ -42,7 +44,7 @@ export function defaultSortDescending(key: SortKey): boolean {
   return key !== "highBreakout" && key !== "lowBreakdown"
 }
 
-function sortValue(row: SortableRow, key: SortKey): number | null {
+function sortValue(row: SortableRow, key: Exclude<SortKey, "opportunity">): number | null {
   switch (key) {
     case "ema200Signal": return row.ema200Signal === null ? null : row.ema200Signal === "Long" ? 1 : row.ema200Signal === "Short" ? -1 : 0
     case "highBreakout": return row.highBreakout.status === "event" ? row.highBreakout.hoursAgo : null
@@ -59,6 +61,19 @@ function sortValue(row: SortableRow, key: SortKey): number | null {
 }
 
 export function compareMarketRows(a: SortableRow, b: SortableRow, key: SortKey, descending: boolean): number {
+  if (key === "opportunity") {
+    const left = a.opportunity, right = b.opportunity
+    const leftScore = left?.score ?? null, rightScore = right?.score ?? null
+    const leftMissing = left == null || left.status === "Incomplete" || leftScore === null
+    const rightMissing = right == null || right.status === "Incomplete" || rightScore === null
+    if (leftMissing || rightMissing) {
+      if (leftMissing !== rightMissing) return leftMissing ? 1 : -1
+    } else {
+      const difference = opportunityStatusRank[right.status] - opportunityStatusRank[left.status] || rightScore - leftScore
+      if (difference) return descending ? difference : -difference
+    }
+    return compareMarketTurnover(a, b)
+  }
   const left = sortValue(a, key)
   const right = sortValue(b, key)
   if (left === null || right === null) {

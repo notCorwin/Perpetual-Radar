@@ -16,6 +16,8 @@ import { PERCENT_CHANGE_DESCRIPTION, formatPercent, percentageNumber, type Perce
 import { BREAK_DESCRIPTION, describeBreak, formatBreakPriorAge, formatBreakTime, type BreakDirection, type BreakResult } from "@/market-breaks"
 import { BANDWIDTH_EXPANSION_DESCRIPTION, LOG_BB_DESCRIPTION, formatBandWidthExpansion, formatLiveBand, type BandWidthExpansion, type LogBBAboveBand } from "@/market-logbb"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
+import { evaluateMarketOpportunity, OPPORTUNITY_DESCRIPTION } from "@/market-opportunity"
+import { MarketOpportunity } from "@/MarketOpportunity"
 
 type MarketRow = {
   instId: string
@@ -100,7 +102,7 @@ function App() {
   const [spreadFilterEnabled, setSpreadFilterEnabled] = useState(true)
   const [maximumSpreadPercent, setMaximumSpreadPercent] = useState(0.15)
   const [spreadDraft, setSpreadDraft] = useState("0.15")
-  const [sort, setSort] = useState<SortKey>("oiChange")
+  const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => {
@@ -161,11 +163,12 @@ function App() {
     return () => window.removeEventListener("resize", fit)
   }, [selected, rows, query, sort, descending])
 
+  const rankedRows = useMemo(() => rows.map(row => ({ ...row, opportunity: evaluateMarketOpportunity(row) })), [rows])
   const visible = useMemo(() => {
-    return rows
+    return rankedRows
       .filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase()))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
-  }, [rows, query, sort, descending])
+  }, [rankedRows, query, sort, descending])
   const listOrder = useMemo(() => visible.map(row => row.instId), [visible])
   const turnoverOrder = useMemo(() => [...rows].sort(compareMarketTurnover).map(row => row.instId), [rows])
 
@@ -265,6 +268,7 @@ function App() {
                   {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
                 </div>
               </TableHead>
+              <TableHead className="text-center" aria-sort={sort === "opportunity" ? descending ? "descending" : "ascending" : "none"}>{header("Opportunity", "opportunity", String.raw`\operatorname{Opportunity}`, OPPORTUNITY_DESCRIPTION)}</TableHead>
               <TableHead className="text-center" aria-sort={sort === "ema200Signal" ? descending ? "descending" : "ascending" : "none"}>{header("EMA200", "ema200Signal", String.raw`\operatorname{EMA}_{200}`, EMA200_DESCRIPTION)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={["highBreakout", "highBreakoutPriorAge", "lowBreakdown", "lowBreakdownPriorAge"].includes(sort) ? descending ? "descending" : "ascending" : "none"}>
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-center gap-x-3">
@@ -313,6 +317,7 @@ function App() {
                   <span className="text-muted-foreground">Turnover</span><span>{turnoverFormatter.format(row.turnover24hUSDT)} USDT</span>
                 </div>
               </TableCell>
+              <TableCell className="text-center tabular-nums"><MarketOpportunity instId={row.instId} opportunity={row.opportunity} /></TableCell>
               <TableCell className={cn("text-center tabular-nums", row.ema200Signal === "Long" ? "text-positive" : row.ema200Signal === "Short" ? "text-destructive" : "text-muted-foreground")} title={EMA200_DESCRIPTION}>{row.ema200Signal ?? "—"}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-baseline gap-x-3 text-right">
@@ -341,7 +346,7 @@ function App() {
                   <div className="flex gap-1" title={BANDWIDTH_EXPANSION_DESCRIPTION}><span className="text-muted-foreground">Expansion</span><span className={cn(row.logBBExpansion && row.logBBExpansion.hours > 0 ? "text-positive" : "text-muted-foreground")}>{formatBandWidthExpansion(row.logBBExpansion)}</span></div>
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={9} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>

@@ -2,9 +2,50 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { chartNavigationTarget, compareMarketRows, compareMarketTurnover, defaultSortDescending, wrappedMarket, type SortableRow, type SortKey } from "./market-sort.ts"
 import type { BreakEvent, BreakResult } from "./market-breaks.ts"
+import type { OpportunityResult, OpportunityStatus } from "./market-opportunity.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
   instId, turnover24hUSDT: value ?? 0, ema200Signal: null, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, oiChange: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBAboveBand: null, logBBExpansion: null,
+})
+
+const opportunityRow = (instId: string, status: OpportunityStatus, score: number | null, turnover = 100): SortableRow => ({
+  ...row(instId, turnover),
+  opportunity: { direction: "Long", setup: "Startup", status, score, components: null, reasons: [] } satisfies OpportunityResult,
+})
+
+test("opportunity sorts by status then score, reversing valid results while keeping incomplete data last", () => {
+  const rows = [
+    opportunityRow("Hot", "Overheated", 100), opportunityRow("Watch", "Watch", 99),
+    opportunityRow("CandidateLow", "Candidate", 65), opportunityRow("CandidateHigh", "Candidate", 90),
+    opportunityRow("Incomplete", "Incomplete", null, 10000), { ...row("NotEvaluated", 1000) },
+  ]
+  assert.equal(defaultSortDescending("opportunity"), true)
+  assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, "opportunity", true)).map(row => row.instId),
+    ["CandidateHigh", "CandidateLow", "Watch", "Hot", "Incomplete", "NotEvaluated"])
+  assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, "opportunity", false)).map(row => row.instId),
+    ["Hot", "Watch", "CandidateLow", "CandidateHigh", "Incomplete", "NotEvaluated"])
+})
+
+test("opportunity ties preserve descending turnover and stable instrument IDs in both sort directions", () => {
+  const rows = [opportunityRow("B", "Candidate", 90, 100), opportunityRow("C", "Candidate", 90, 200), opportunityRow("A", "Candidate", 90, 100)]
+  for (const descending of [true, false]) {
+    assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, "opportunity", descending)).map(row => row.instId), ["C", "A", "B"])
+  }
+  assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, "turnover24hUSDT", false)).map(row => row.instId), ["A", "B", "C"])
+})
+
+test("search and chart navigation use the visible opportunity order without changing precomputed scores", () => {
+  const rows = [opportunityRow("C-USDT-SWAP", "Overheated", 90, 300), opportunityRow("B-USDT-SWAP", "Candidate", 65), opportunityRow("A-USDT-SWAP", "Candidate", 90)]
+  const before = structuredClone(rows)
+  const order = [...rows].sort((a, b) => compareMarketRows(a, b, "opportunity", true)).map(row => row.instId)
+  const filtered = rows.filter(row => !row.instId.startsWith("A")).sort((a, b) => compareMarketRows(a, b, "opportunity", true)).map(row => row.instId)
+  const turnover = [...rows].sort(compareMarketTurnover).map(row => row.instId)
+  assert.deepEqual(order, ["A-USDT-SWAP", "B-USDT-SWAP", "C-USDT-SWAP"])
+  assert.deepEqual(filtered, ["B-USDT-SWAP", "C-USDT-SWAP"])
+  assert.equal(chartNavigationTarget(filtered, turnover, "C-USDT-SWAP", "ArrowDown"), "B-USDT-SWAP")
+  assert.equal(chartNavigationTarget(filtered, turnover, "C-USDT-SWAP", "ArrowLeft"), "B-USDT-SWAP")
+  assert.equal(chartNavigationTarget(filtered, turnover, "B-USDT-SWAP", "ArrowRight"), "C-USDT-SWAP")
+  assert.deepEqual(rows, before)
 })
 
 test("EMA200 sorts Long, Unsure, Short in both directions, with missing data last and stable turnover ties", () => {
