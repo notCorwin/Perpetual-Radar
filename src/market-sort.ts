@@ -1,7 +1,7 @@
 import type { BreakResult } from "./market-breaks.ts"
 import { logBBBandRank, type BandWidthExpansion, type LogBBAboveBand } from "./market-logbb.ts"
 
-export type SortKey = "turnover24hUSDT" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
+export type SortKey = "turnover24hUSDT" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
 
 export type SortableRow = {
   instId: string
@@ -9,7 +9,6 @@ export type SortableRow = {
   highBreakout: BreakResult
   lowBreakdown: BreakResult
   takerRatio: number | null
-  volumeLog: number | null
   oiLog: number | null
   roc: number | null
   maroc: number | null

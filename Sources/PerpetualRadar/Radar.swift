@@ -670,7 +670,6 @@ final class Radar {
                 "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
                 "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
                 "takerRatio": row.takerRatio as Any? ?? null,
-                "volumeLog": logChange(current?.quoteVolume, previous?.confirmed == true ? previous?.quoteVolume : nil) as Any? ?? null,
                 "oiLog": logChange(currentOI, previousOI[id]) as Any? ?? null,
                 "highBreakout": breaks.highBreakout.snapshot,
                 "lowBreakdown": breaks.lowBreakdown.snapshot,
