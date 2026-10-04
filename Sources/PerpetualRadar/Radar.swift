@@ -680,8 +680,8 @@ final class Radar {
                 "rsi6": rsi(bars, hour, 6) as Any? ?? null,
                 "rsi12": rsi(bars, hour, 12) as Any? ?? null,
                 "rsi24": rsi(bars, hour, 24) as Any? ?? null,
-                "logBBUpper": upper as Any? ?? null, "logBBMiddle": middle as Any? ?? null, "logBBLower": lower as Any? ?? null,
-                "logBBBandWidth": logBBBandWidth(upper, middle, lower) as Any? ?? null,
+                "logBBAboveBand": logBBAboveBand(price, upper, middle, lower)?.rawValue as Any? ?? null,
+                "logBBExpansion": logBBExpansion(bars, hour, listedAt: row.listedAt)?.snapshot as Any? ?? null,
             ]
             cachedRows[id] = result
             output.append(result)

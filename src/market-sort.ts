@@ -1,6 +1,7 @@
 import type { BreakResult } from "./market-breaks.ts"
+import { logBBBandRank, type BandWidthExpansion, type LogBBAboveBand } from "./market-logbb.ts"
 
-export type SortKey = "turnover24hUSDT" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBUpper" | "logBBMiddle" | "logBBLower" | "logBBBandWidth"
+export type SortKey = "turnover24hUSDT" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
 
 export type SortableRow = {
   instId: string
@@ -15,10 +16,8 @@ export type SortableRow = {
   rsi6: number | null
   rsi12: number | null
   rsi24: number | null
-  logBBUpper: number | null
-  logBBMiddle: number | null
-  logBBLower: number | null
-  logBBBandWidth: number | null
+  logBBAboveBand: LogBBAboveBand | null
+  logBBExpansion: BandWidthExpansion | null
 }
 
 export function compareMarketTurnover(a: { instId: string; turnover24hUSDT: number }, b: { instId: string; turnover24hUSDT: number }): number {
@@ -47,6 +46,8 @@ function sortValue(row: SortableRow, key: SortKey): number | null {
     case "lowBreakdown": return row.lowBreakdown.status === "event" ? row.lowBreakdown.hoursAgo : null
     case "highBreakoutPriorAge": return row.highBreakout.status === "event" ? row.highBreakout.priorAgeHours : null
     case "lowBreakdownPriorAge": return row.lowBreakdown.status === "event" ? row.lowBreakdown.priorAgeHours : null
+    case "logBBAboveBand": return row.logBBAboveBand === null ? null : logBBBandRank[row.logBBAboveBand]
+    case "logBBExpansion": return row.logBBExpansion?.hours ?? null
     default: return row[key]
   }
 }

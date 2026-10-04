@@ -4,15 +4,43 @@ import { chartNavigationTarget, compareMarketRows, compareMarketTurnover, defaul
 import type { BreakEvent, BreakResult } from "./market-breaks.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
-  instId, turnover24hUSDT: value ?? 0, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, volumeLog: value, oiLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBUpper: value, logBBMiddle: value, logBBLower: value, logBBBandWidth: value,
+  instId, turnover24hUSDT: value ?? 0, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, volumeLog: value, oiLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBAboveBand: null, logBBExpansion: null,
 })
 
 test("indicator columns sort both ways and keep missing data last", () => {
   const rows = [row("Middle", 0), row("High", 2), row("Missing", null), row("Low", -2)]
   const sorted = (key: SortKey, descending: boolean) => [...rows].sort((a, b) => compareMarketRows(a, b, key, descending)).map(item => item.instId)
-  for (const key of ["takerRatio", "volumeLog", "oiLog", "roc", "maroc", "rsi6", "rsi12", "rsi24", "logBBUpper", "logBBMiddle", "logBBLower", "logBBBandWidth"] as const) {
+  for (const key of ["takerRatio", "volumeLog", "oiLog", "roc", "maroc", "rsi6", "rsi12", "rsi24"] as const) {
     assert.deepEqual(sorted(key, true), ["High", "Middle", "Low", "Missing"])
     assert.deepEqual(sorted(key, false), ["Low", "Middle", "High", "Missing"])
+  }
+})
+
+test("live band sorting ranks Upper, Middle, Lower, and below, keeping missing values last", () => {
+  const rows: SortableRow[] = [
+    { ...row("Lower", 100), logBBAboveBand: "lower" },
+    { ...row("Missing", 100), logBBAboveBand: null },
+    { ...row("Upper", 100), logBBAboveBand: "upper" },
+    { ...row("Below", 100), logBBAboveBand: "below" },
+    { ...row("Middle", 100), logBBAboveBand: "middle" },
+  ]
+  assert.equal(defaultSortDescending("logBBAboveBand"), true)
+  for (const [descending, expected] of [[true, ["Upper", "Middle", "Lower", "Below", "Missing"]], [false, ["Below", "Lower", "Middle", "Upper", "Missing"]]] as const) {
+    assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, "logBBAboveBand", descending)).map(item => item.instId), expected)
+  }
+})
+
+test("expansion sorting uses hours, including zero and lower bounds, and stable turnover ties", () => {
+  const rows: SortableRow[] = [
+    { ...row("Short", 100), logBBExpansion: { hours: 2, complete: true } },
+    { ...row("Missing", 100), logBBExpansion: null },
+    { ...row("Stopped", 100), logBBExpansion: { hours: 0, complete: true } },
+    { ...row("Long", 200), logBBExpansion: { hours: 6, complete: true } },
+    { ...row("AtLeast", 100), logBBExpansion: { hours: 6, complete: false } },
+  ]
+  assert.equal(defaultSortDescending("logBBExpansion"), true)
+  for (const [descending, expected] of [[true, ["Long", "AtLeast", "Short", "Stopped", "Missing"]], [false, ["Stopped", "Short", "Long", "AtLeast", "Missing"]]] as const) {
+    assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, "logBBExpansion", descending)).map(item => item.instId), expected)
   }
 })
 

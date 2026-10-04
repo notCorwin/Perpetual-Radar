@@ -13,6 +13,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import { compareMarketRows, compareMarketTurnover, defaultSortDescending, type SortKey } from "@/market-sort"
 import { BREAK_DESCRIPTION, describeBreak, formatBreakPriorAge, formatBreakTime, type BreakDirection, type BreakResult } from "@/market-breaks"
+import { BANDWIDTH_EXPANSION_DESCRIPTION, LOG_BB_DESCRIPTION, formatBandWidthExpansion, formatLiveBand, type BandWidthExpansion, type LogBBAboveBand } from "@/market-logbb"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 
 type MarketRow = {
@@ -34,10 +35,8 @@ type MarketRow = {
   rsi6: number | null
   rsi12: number | null
   rsi24: number | null
-  logBBUpper: number | null
-  logBBMiddle: number | null
-  logBBLower: number | null
-  logBBBandWidth: number | null
+  logBBAboveBand: LogBBAboveBand | null
+  logBBExpansion: BandWidthExpansion | null
   rocChange: number | null
   marocChange: number | null
 }
@@ -66,9 +65,7 @@ const turnoverFormatter = new Intl.NumberFormat("en-US", { notation: "compact", 
 const formatPrice = (value: number | null) => value === null ? "—" : priceFormatter.format(value)
 const directionClass = (value: number | null) => value === null ? "text-muted-foreground" : value > 0 ? "text-positive" : value < 0 ? "text-destructive" : ""
 const rsiClass = (value: number | null) => value === null ? "text-muted-foreground" : value > 70 ? "text-positive" : value < 30 ? "text-destructive" : ""
-const logBBClass = (price: number | null, level: number | null) => price === null || level === null ? "text-muted-foreground" : price > level ? "text-positive" : "text-destructive"
 const RSI_PERIODS = [6, 12, 24] as const
-const LOG_BB_LINES = [{ label: "Upper", key: "logBBUpper" }, { label: "Middle", key: "logBBMiddle" }, { label: "Lower", key: "logBBLower" }] as const
 const mathCache = new Map<string, string>()
 const math = (formula: string) => {
   if (!mathCache.has(formula)) mathCache.set(formula, katex.renderToString(formula))
@@ -291,8 +288,8 @@ function App() {
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("logBB") ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {LOG_BB_LINES.map(({ label, key }) => <Fragment key={key}>{header(`Log BB ${label}`, key, String.raw`\operatorname{LogBB}_{\mathrm{${label}}}`)}</Fragment>)}
-                  {header("Band Width", "logBBBandWidth", String.raw`\operatorname{Band\ Width}`)}
+                  {header("Log BB · Live", "logBBAboveBand", String.raw`\operatorname{LogBB}_{\mathrm{Live}}`, LOG_BB_DESCRIPTION)}
+                  {header("Bandwidth expansion", "logBBExpansion", undefined, BANDWIDTH_EXPANSION_DESCRIPTION)}
                 </div>
               </TableHead>
             </TableRow>
@@ -339,8 +336,8 @@ function App() {
               </TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="flex flex-col items-center text-xs">
-                  {LOG_BB_LINES.map(({ label, key }) => <div key={key} className="flex gap-1"><span className="text-muted-foreground">{label}</span><span className={logBBClass(row.price, row[key])}>{formatPrice(row[key])}</span></div>)}
-                  <div className="flex gap-1" title="(Upper − Lower) / Middle × 100%"><span className="text-muted-foreground">Band Width</span><span className={cn(row.logBBBandWidth === null && "text-muted-foreground")}>{row.logBBBandWidth === null ? "—" : `${formatIndicator(row.logBBBandWidth)}%`}</span></div>
+                  <div className="flex gap-1" title={LOG_BB_DESCRIPTION}><span className="text-muted-foreground">Live</span><span className={cn(row.logBBAboveBand === null ? "text-muted-foreground" : row.logBBAboveBand === "below" ? "text-destructive" : "text-positive")}>{formatLiveBand(row.logBBAboveBand)}</span></div>
+                  <div className="flex gap-1" title={BANDWIDTH_EXPANSION_DESCRIPTION}><span className="text-muted-foreground">Expansion</span><span className={cn(row.logBBExpansion && row.logBBExpansion.hours > 0 ? "text-positive" : "text-muted-foreground")}>{formatBandWidthExpansion(row.logBBExpansion)}</span></div>
                 </div>
               </TableCell>
             </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}

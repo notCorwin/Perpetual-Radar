@@ -185,3 +185,53 @@ func logBBBandWidth(_ upper: Double?, _ middle: Double?, _ lower: Double?) -> Do
     let width = (upper - lower) / middle * 100
     return width.isFinite ? width : nil
 }
+
+enum LogBBAboveBand: String {
+    case upper, middle, lower, below
+}
+
+func logBBAboveBand(_ price: Double?, _ upper: Double?, _ middle: Double?, _ lower: Double?) -> LogBBAboveBand? {
+    guard let price, let upper, let middle, let lower,
+          price.isFinite, upper.isFinite, middle.isFinite, lower.isFinite,
+          price > 0, lower > 0, upper >= middle, middle >= lower else { return nil }
+    if price > upper { return .upper }
+    if price > middle { return .middle }
+    if price > lower { return .lower }
+    return .below
+}
+
+struct BandWidthExpansion: Equatable {
+    let hours: Int
+    let complete: Bool
+
+    var snapshot: [String: Any] { ["hours": hours, "complete": complete] }
+}
+
+func logBBExpansion(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int64? = nil) -> BandWidthExpansion? {
+    func width(at time: Int64) -> Double? {
+        let (upper, middle, lower) = logBB(bars, time)
+        return logBBBandWidth(upper, middle, lower)
+    }
+    guard var current = width(at: hour) else { return nil }
+    var time = hour, hours = 0
+    while true {
+        // The first valid 20-candle band has no earlier Band Width to compare.
+        if let listedAt, listedAt >= 0,
+           completedHistoryHours(at: time, since: listedAt, limit: 20) < 20 {
+            return BandWidthExpansion(hours: hours, complete: true)
+        }
+        let previousHour = time - hourMS
+        guard bars[previousHour]?.confirmed == true, let previous = width(at: previousHour) else {
+            // Missing history cannot establish the start of an ongoing expansion.
+            return hours > 0 ? BandWidthExpansion(hours: hours, complete: false) : nil
+        }
+        // Equal rolling windows can differ slightly due to floating-point summation.
+        let tolerance = max(1, current, previous) * 1e-12
+        guard current - previous > tolerance else {
+            return BandWidthExpansion(hours: hours, complete: true)
+        }
+        hours += 1
+        current = previous
+        time = previousHour
+    }
+}
