@@ -5,7 +5,7 @@ import type { BreakEvent, BreakResult } from "./market-breaks.ts"
 import type { OpportunityResult, OpportunityStatus } from "./market-opportunity.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
-  instId, turnover24hUSDT: value ?? 0, ema200Signal: null, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, oiChange: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBAboveBand: null, logBBExpansion: null,
+  instId, turnover24hUSDT: value ?? 0, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, oiChange: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBAboveBand: null, logBBExpansion: null,
 })
 
 const opportunityRow = (instId: string, status: OpportunityStatus, score: number | null, turnover = 100): SortableRow => ({
@@ -46,21 +46,6 @@ test("search and chart navigation use the visible opportunity order without chan
   assert.equal(chartNavigationTarget(filtered, turnover, "C-USDT-SWAP", "ArrowLeft"), "B-USDT-SWAP")
   assert.equal(chartNavigationTarget(filtered, turnover, "B-USDT-SWAP", "ArrowRight"), "C-USDT-SWAP")
   assert.deepEqual(rows, before)
-})
-
-test("EMA200 sorts Long, Unsure, Short in both directions, with missing data last and stable turnover ties", () => {
-  const rows: SortableRow[] = [
-    { ...row("Short", 100), ema200Signal: "Short" },
-    { ...row("Missing", 1000), ema200Signal: null },
-    { ...row("LongB", 100), ema200Signal: "Long" },
-    { ...row("Unsure", 100), ema200Signal: "Unsure" },
-    { ...row("LongC", 200), ema200Signal: "Long" },
-    { ...row("LongA", 100), ema200Signal: "Long" },
-  ]
-  assert.equal(defaultSortDescending("ema200Signal"), true)
-  for (const [descending, expected] of [[true, ["LongC", "LongA", "LongB", "Unsure", "Short", "Missing"]], [false, ["Short", "Unsure", "LongC", "LongA", "LongB", "Missing"]]] as const) {
-    assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, "ema200Signal", descending)).map(item => item.instId), expected)
-  }
 })
 
 test("indicator columns sort both ways and keep missing data last", () => {

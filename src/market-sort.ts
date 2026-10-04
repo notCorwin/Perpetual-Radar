@@ -4,12 +4,11 @@ import { percentageNumber, type PercentageValue } from "./market-percent.ts"
 import { opportunityStatusRank, type OpportunityResult } from "./market-opportunity.ts"
 
 export type EMA200Signal = "Long" | "Short" | "Unsure"
-export type SortKey = "opportunity" | "turnover24hUSDT" | "ema200Signal" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "oiChange" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
+export type SortKey = "opportunity" | "turnover24hUSDT" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "oiChange" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
 
 export type SortableRow = {
   instId: string
   turnover24hUSDT: number
-  ema200Signal: EMA200Signal | null
   highBreakout: BreakResult
   lowBreakdown: BreakResult
   takerRatio: number | null
@@ -46,7 +45,6 @@ export function defaultSortDescending(key: SortKey): boolean {
 
 function sortValue(row: SortableRow, key: Exclude<SortKey, "opportunity">): number | null {
   switch (key) {
-    case "ema200Signal": return row.ema200Signal === null ? null : row.ema200Signal === "Long" ? 1 : row.ema200Signal === "Short" ? -1 : 0
     case "highBreakout": return row.highBreakout.status === "event" ? row.highBreakout.hoursAgo : null
     case "lowBreakdown": return row.lowBreakdown.status === "event" ? row.lowBreakdown.hoursAgo : null
     case "highBreakoutPriorAge": return row.highBreakout.status === "event" ? row.highBreakout.priorAgeHours : null

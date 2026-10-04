@@ -58,7 +58,6 @@ declare global {
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
-const EMA200_DESCRIPTION = "Live 1h candle body versus the current EMA200. Long: open and close are both above the line. Short: both are below. Unsure: the body crosses or touches the line. Wicks do not affect the signal. — means the live candle or EMA200 history is unavailable. Sort Long, Unsure, Short on the first click."
 const formatIndicator = (value: number | null) => value === null ? "—" : value.toFixed(2)
 const priceFormatter = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 })
 const turnoverFormatter = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 })
@@ -269,7 +268,6 @@ function App() {
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "opportunity" ? descending ? "descending" : "ascending" : "none"}>{header("Opportunity", "opportunity", String.raw`\operatorname{Opportunity}`, OPPORTUNITY_DESCRIPTION)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "ema200Signal" ? descending ? "descending" : "ascending" : "none"}>{header("EMA200", "ema200Signal", String.raw`\operatorname{EMA}_{200}`, EMA200_DESCRIPTION)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={["highBreakout", "highBreakoutPriorAge", "lowBreakdown", "lowBreakdownPriorAge"].includes(sort) ? descending ? "descending" : "ascending" : "none"}>
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-center gap-x-3">
                   {header("High breakout · 48h", "highBreakout", String.raw`\text{High breakout}\cdot48\,\mathrm{h}`, BREAK_DESCRIPTION)}
@@ -318,7 +316,6 @@ function App() {
                 </div>
               </TableCell>
               <TableCell className="text-center tabular-nums"><MarketOpportunity instId={row.instId} opportunity={row.opportunity} /></TableCell>
-              <TableCell className={cn("text-center tabular-nums", row.ema200Signal === "Long" ? "text-positive" : row.ema200Signal === "Short" ? "text-destructive" : "text-muted-foreground")} title={EMA200_DESCRIPTION}>{row.ema200Signal ?? "—"}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-baseline gap-x-3 text-right">
                   <BreakReadings result={row.highBreakout} direction="high" />
@@ -346,7 +343,7 @@ function App() {
                   <div className="flex gap-1" title={BANDWIDTH_EXPANSION_DESCRIPTION}><span className="text-muted-foreground">Expansion</span><span className={cn(row.logBBExpansion && row.logBBExpansion.hours > 0 ? "text-positive" : "text-muted-foreground")}>{formatBandWidthExpansion(row.logBBExpansion)}</span></div>
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={9} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>
