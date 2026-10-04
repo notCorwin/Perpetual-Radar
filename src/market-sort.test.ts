@@ -1,17 +1,62 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { chartNavigationTarget, compareMarketRows, compareMarketTurnover, wrappedMarket, type SortableRow, type SortKey } from "./market-sort.ts"
+import { chartNavigationTarget, compareMarketRows, compareMarketTurnover, defaultSortDescending, wrappedMarket, type SortableRow, type SortKey } from "./market-sort.ts"
+import type { BreakEvent, BreakResult } from "./market-breaks.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
-  instId, turnover24hUSDT: value ?? 0, high96: value, low96: value, takerRatio: value, volumeLog: value, oiLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBUpper: value, logBBMiddle: value, logBBLower: value, logBBBandWidth: value,
+  instId, turnover24hUSDT: value ?? 0, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, volumeLog: value, oiLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBUpper: value, logBBMiddle: value, logBBLower: value, logBBBandWidth: value,
 })
 
 test("indicator columns sort both ways and keep missing data last", () => {
   const rows = [row("Middle", 0), row("High", 2), row("Missing", null), row("Low", -2)]
   const sorted = (key: SortKey, descending: boolean) => [...rows].sort((a, b) => compareMarketRows(a, b, key, descending)).map(item => item.instId)
-  for (const key of ["high96", "low96", "takerRatio", "volumeLog", "oiLog", "roc", "maroc", "rsi6", "rsi12", "rsi24", "logBBUpper", "logBBMiddle", "logBBLower", "logBBBandWidth"] as const) {
+  for (const key of ["takerRatio", "volumeLog", "oiLog", "roc", "maroc", "rsi6", "rsi12", "rsi24", "logBBUpper", "logBBMiddle", "logBBLower", "logBBBandWidth"] as const) {
     assert.deepEqual(sorted(key, true), ["High", "Middle", "Low", "Missing"])
     assert.deepEqual(sorted(key, false), ["Low", "Middle", "High", "Missing"])
+  }
+})
+
+const breakEvent = (hoursAgo: number, priorAgeHours: number, live = false): BreakEvent => ({
+  status: "event", hour: (100 - hoursAgo) * 3_600_000, hoursAgo, priorHour: (100 - hoursAgo - priorAgeHours) * 3_600_000, priorAgeHours, priorPrice: 200, live,
+})
+const breakRow = (instId: string, result: BreakResult, turnover = 50): SortableRow => ({ ...row(instId, turnover), highBreakout: result, lowBreakdown: result })
+
+test("break time sorts newest first, prior age sorts longest first, and all missing states stay last", () => {
+  const rows = [
+    breakRow("Oldest", breakEvent(47, 48)),
+    breakRow("Missing", { status: "none" }),
+    breakRow("Recent", breakEvent(3, 37)),
+    breakRow("Live", breakEvent(0, 12, true)),
+    breakRow("Young", { status: "insufficient-history" }),
+    breakRow("Loading", { status: "loading" }),
+  ]
+  const sorted = (key: SortKey, descending: boolean) => [...rows].sort((a, b) => compareMarketRows(a, b, key, descending)).map(item => item.instId)
+  for (const key of ["highBreakout", "lowBreakdown"] as const) {
+    assert.equal(defaultSortDescending(key), false)
+    assert.deepEqual(sorted(key, false), ["Live", "Recent", "Oldest", "Loading", "Missing", "Young"])
+    assert.deepEqual(sorted(key, true), ["Oldest", "Recent", "Live", "Loading", "Missing", "Young"])
+  }
+  for (const key of ["highBreakoutPriorAge", "lowBreakdownPriorAge"] as const) {
+    assert.equal(defaultSortDescending(key), true)
+    assert.deepEqual(sorted(key, true), ["Oldest", "Recent", "Live", "Loading", "Missing", "Young"])
+    assert.deepEqual(sorted(key, false), ["Live", "Recent", "Oldest", "Loading", "Missing", "Young"])
+  }
+  assert.equal(defaultSortDescending("oiLog"), true)
+})
+
+test("break sorting uses the selected direction and stable turnover and instrument ties", () => {
+  const rows = [
+    { ...breakRow("High", breakEvent(1, 48)), lowBreakdown: breakEvent(10, 2) },
+    { ...breakRow("Low", breakEvent(10, 2)), lowBreakdown: breakEvent(1, 48) },
+  ]
+  for (const [key, expected] of [["highBreakout", "High"], ["lowBreakdown", "Low"], ["highBreakoutPriorAge", "High"], ["lowBreakdownPriorAge", "Low"]] as const) {
+    assert.equal([...rows].sort((a, b) => compareMarketRows(a, b, key, defaultSortDescending(key)))[0].instId, expected)
+  }
+  const ties = [breakRow("B", breakEvent(3, 37), 30), breakRow("C", breakEvent(3, 37), 10), breakRow("A", breakEvent(3, 37), 30)]
+  for (const key of ["highBreakout", "lowBreakdown", "highBreakoutPriorAge", "lowBreakdownPriorAge"] as const) {
+    for (const descending of [true, false]) {
+      assert.deepEqual([...ties].sort((a, b) => compareMarketRows(a, b, key, descending)).map(item => item.instId), ["A", "B", "C"])
+    }
   }
 })
 

@@ -11,7 +11,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
-import { compareMarketRows, compareMarketTurnover, type SortKey } from "@/market-sort"
+import { compareMarketRows, compareMarketTurnover, defaultSortDescending, type SortKey } from "@/market-sort"
+import { BREAK_DESCRIPTION, describeBreak, formatBreakPriorAge, formatBreakTime, type BreakDirection, type BreakResult } from "@/market-breaks"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 
 type MarketRow = {
@@ -26,13 +27,8 @@ type MarketRow = {
   takerRatio: number | null
   volumeLog: number | null
   oiLog: number | null
-  high96: number | null
-  high96Log: number | null
-  high96HoursAgo: number | null
-  extremesWindowHours: number
-  low96: number | null
-  low96Log: number | null
-  low96HoursAgo: number | null
+  highBreakout: BreakResult
+  lowBreakdown: BreakResult
   roc: number | null
   maroc: number | null
   rsi6: number | null
@@ -60,7 +56,6 @@ declare global {
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
-const EXTREMES_DESCRIPTION = "Uses up to 96 completed hourly candles. For new contracts, the window starts at the listing hour."
 const formatLog = (value: number | null) => value === null ? "—" : value === 0
   ? "0.000000"
   : `${value > 0 ? "+" : ""}${Math.abs(value) < 0.000001 ? value.toExponential(2) : value.toFixed(6)}`
@@ -79,6 +74,22 @@ const math = (formula: string) => {
   if (!mathCache.has(formula)) mathCache.set(formula, katex.renderToString(formula))
   return <span className="text-xs font-medium text-foreground" dangerouslySetInnerHTML={{ __html: mathCache.get(formula)! }} />
 }
+
+function BreakReadings({ result, direction }: { result: BreakResult; direction: BreakDirection }) {
+  const description = describeBreak(result, direction)
+  const hasEvent = result.status === "event"
+  return <Fragment>
+    <span className={cn("inline-flex items-baseline justify-end gap-1", hasEvent ? direction === "high" ? "text-positive" : "text-destructive" : "text-muted-foreground")} title={description}>
+      <span className="sr-only">{direction === "high" ? "High breakout" : "Low breakdown"} </span>
+      {hasEvent && <span aria-hidden="true">{direction === "high" ? "↑" : "↓"}</span>}
+      {(hasEvent && result.live) || result.status === "loading" ? <Badge variant={result.status === "loading" ? "outline" : "secondary"}>{formatBreakTime(result)}</Badge> : formatBreakTime(result)}
+    </span>
+    <span className="text-xs text-muted-foreground" title={description}>
+      <span className="sr-only">Previous {direction === "high" ? "high" : "low"} age at the break </span>{formatBreakPriorAge(result)}
+    </span>
+  </Fragment>
+}
+
 function App() {
   const revision = useRef(-1)
   const requestedFitWidth = useRef(0)
@@ -162,7 +173,7 @@ function App() {
 
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
-    else { setSort(key); setDescending(true) }
+    else { setSort(key); setDescending(defaultSortDescending(key)) }
   }
 
   const saveSetting = (request: SettingRequest) => {
@@ -196,10 +207,10 @@ function App() {
     else setSpreadDraft(String(value))
   }
 
-  const header = (label: string, key: SortKey, formula: string, description?: string) => {
+  const header = (label: string, key: SortKey, formula?: string, description?: string) => {
     const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
-    return <Button variant="ghost" size="sm" className={cn("h-auto min-h-6 gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} title={description}>
-      {math(formula)}<SortIcon data-icon="inline-end" aria-hidden="true" />
+    return <Button variant="ghost" size="sm" className={cn("h-auto min-h-6 gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} aria-pressed={sort === key} title={description}>
+      {formula ? math(formula) : label}<SortIcon data-icon="inline-end" aria-hidden="true" />
     </Button>
   }
 
@@ -256,10 +267,12 @@ function App() {
                   {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
                 </div>
               </TableHead>
-              <TableHead className="py-1.5 text-center" aria-sort={sort === "high96" || sort === "low96" ? descending ? "descending" : "ascending" : "none"}>
-                <div className="flex flex-col items-center">
-                  {header("up to 96h high", "high96", String.raw`\operatorname{High}_{96}=\max(H_{t-n},\ldots,H_{t-1})`, `${EXTREMES_DESCRIPTION} n is the number of completed candles in that window.`)}
-                  {header("up to 96h low", "low96", String.raw`\operatorname{Low}_{96}=\min(L_{t-n},\ldots,L_{t-1})`, `${EXTREMES_DESCRIPTION} n is the number of completed candles in that window.`)}
+              <TableHead className="py-1.5 text-center" aria-sort={["highBreakout", "highBreakoutPriorAge", "lowBreakdown", "lowBreakdownPriorAge"].includes(sort) ? descending ? "descending" : "ascending" : "none"}>
+                <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-center gap-x-3">
+                  {header("High breakout · 48h", "highBreakout", undefined, BREAK_DESCRIPTION)}
+                  {header("High age", "highBreakoutPriorAge", undefined, "Sort by the previous high's age at the breakout, longest first. Tied highs use the most recent occurrence.")}
+                  {header("Low breakdown · 48h", "lowBreakdown", undefined, BREAK_DESCRIPTION)}
+                  {header("Low age", "lowBreakdownPriorAge", undefined, "Sort by the previous low's age at the breakdown, longest first. Tied lows use the most recent occurrence.")}
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
@@ -302,14 +315,10 @@ function App() {
                   <span className="text-muted-foreground">Turnover</span><span>{turnoverFormatter.format(row.turnover24hUSDT)} USDT</span>
                 </div>
               </TableCell>
-              <TableCell className="text-center tabular-nums" title={`${row.extremesWindowHours} completed hourly candles in the high/low window. ${EXTREMES_DESCRIPTION}`}>
-                <div className="mx-auto grid w-max grid-cols-[max-content_max-content_max-content] items-baseline gap-x-3 text-right">
-                  <span><span className="sr-only">High over {row.extremesWindowHours} completed hours </span>{formatPrice(row.high96)}</span>
-                  <span className={directionClass(row.high96Log)}><span className="sr-only">current price versus high Log Change </span>{formatLog(row.high96Log)}</span>
-                  <span className="text-xs text-muted-foreground" title="Age of the most recent completed hourly candle with the window high"><span className="sr-only">High candle age </span>{row.high96HoursAgo === null ? "—" : `${row.high96HoursAgo}h ago`}</span>
-                  <span><span className="sr-only">Low over {row.extremesWindowHours} completed hours </span>{formatPrice(row.low96)}</span>
-                  <span className={directionClass(row.low96Log)}><span className="sr-only">current price versus low Log Change </span>{formatLog(row.low96Log)}</span>
-                  <span className="text-xs text-muted-foreground" title="Age of the most recent completed hourly candle with the window low"><span className="sr-only">Low candle age </span>{row.low96HoursAgo === null ? "—" : `${row.low96HoursAgo}h ago`}</span>
+              <TableCell className="text-center tabular-nums">
+                <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-baseline gap-x-3 text-right">
+                  <BreakReadings result={row.highBreakout} direction="high" />
+                  <BreakReadings result={row.lowBreakdown} direction="low" />
                 </div>
               </TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>

@@ -1,10 +1,12 @@
-export type SortKey = "turnover24hUSDT" | "high96" | "low96" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBUpper" | "logBBMiddle" | "logBBLower" | "logBBBandWidth"
+import type { BreakResult } from "./market-breaks.ts"
+
+export type SortKey = "turnover24hUSDT" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "volumeLog" | "oiLog" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBUpper" | "logBBMiddle" | "logBBLower" | "logBBBandWidth"
 
 export type SortableRow = {
   instId: string
   turnover24hUSDT: number
-  high96: number | null
-  low96: number | null
+  highBreakout: BreakResult
+  lowBreakdown: BreakResult
   takerRatio: number | null
   volumeLog: number | null
   oiLog: number | null
@@ -35,9 +37,23 @@ export function chartNavigationTarget(listOrder: string[], turnoverOrder: string
   return wrappedMarket(listOrder, index + (key === "ArrowUp" ? -1 : 1))
 }
 
+export function defaultSortDescending(key: SortKey): boolean {
+  return key !== "highBreakout" && key !== "lowBreakdown"
+}
+
+function sortValue(row: SortableRow, key: SortKey): number | null {
+  switch (key) {
+    case "highBreakout": return row.highBreakout.status === "event" ? row.highBreakout.hoursAgo : null
+    case "lowBreakdown": return row.lowBreakdown.status === "event" ? row.lowBreakdown.hoursAgo : null
+    case "highBreakoutPriorAge": return row.highBreakout.status === "event" ? row.highBreakout.priorAgeHours : null
+    case "lowBreakdownPriorAge": return row.lowBreakdown.status === "event" ? row.lowBreakdown.priorAgeHours : null
+    default: return row[key]
+  }
+}
+
 export function compareMarketRows(a: SortableRow, b: SortableRow, key: SortKey, descending: boolean): number {
-  const left = a[key]
-  const right = b[key]
+  const left = sortValue(a, key)
+  const right = sortValue(b, key)
   if (left === null || right === null) {
     if (left !== right) return left === null ? 1 : -1
   } else {

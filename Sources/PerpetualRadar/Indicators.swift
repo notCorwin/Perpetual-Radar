@@ -3,7 +3,8 @@ import Foundation
 let hourMS: Int64 = 3_600_000
 let candleLookback = 250
 let chartHours = 96
-let extremesHours = 96
+let breakoutLookbackHours = 48
+let breakoutSearchHours = 48
 
 struct Candle {
     let hour: Int64
@@ -56,23 +57,68 @@ func completedHistoryHours(at hour: Int64, since listedAt: Int64?, limit: Int) -
     return Int(min(Int64(limit), (hour - firstHour) / hourMS))
 }
 
-func extremes(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int64? = nil) -> (high: Double?, low: Double?, highHoursAgo: Int?, lowHoursAgo: Int?) {
-    let hours = completedHistoryHours(at: hour, since: listedAt, limit: extremesHours)
-    guard hours > 0 else { return (nil, nil, nil, nil) }
-    var high = -Double.infinity, low = Double.infinity
-    var highHoursAgo: Int?, lowHoursAgo: Int?
-    for age in 1...hours {
-        guard let bar = bars[hour - Int64(age) * hourMS], bar.confirmed else { return (nil, nil, nil, nil) }
-        if bar.high > high {
-            high = bar.high
-            highHoursAgo = age
-        }
-        if bar.low < low {
-            low = bar.low
-            lowHoursAgo = age
+struct BreakEvent: Equatable {
+    let hour: Int64
+    let hoursAgo: Int
+    let priorHour: Int64
+    let priorAgeHours: Int
+    let priorPrice: Double
+    let live: Bool
+}
+
+enum BreakResult: Equatable {
+    case event(BreakEvent)
+    case none
+    case insufficientHistory
+    case loading
+
+    var snapshot: [String: Any] {
+        switch self {
+        case .event(let event):
+            return ["status": "event", "hour": event.hour, "hoursAgo": event.hoursAgo,
+                    "priorHour": event.priorHour, "priorAgeHours": event.priorAgeHours,
+                    "priorPrice": event.priorPrice, "live": event.live]
+        case .none: return ["status": "none"]
+        case .insufficientHistory: return ["status": "insufficient-history"]
+        case .loading: return ["status": "loading"]
         }
     }
-    return (high, low, highHoursAgo, lowHoursAgo)
+}
+
+func recentExtremesBreaks(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int64? = nil) -> (highBreakout: BreakResult, lowBreakdown: BreakResult) {
+    guard completedHistoryHours(at: hour, since: listedAt, limit: breakoutLookbackHours) == breakoutLookbackHours else {
+        return (.insufficientHistory, .insufficientHistory)
+    }
+    var highBreakout: BreakResult?, lowBreakdown: BreakResult?
+    for age in 0..<breakoutSearchHours {
+        let candidateHour = hour - Int64(age) * hourMS
+        // Before this point in a new contract's life, a full 48h break was impossible.
+        guard completedHistoryHours(at: candidateHour, since: listedAt, limit: breakoutLookbackHours) == breakoutLookbackHours else { break }
+        guard let candidate = bars[candidateHour], age == 0 || candidate.confirmed else {
+            return (highBreakout ?? .loading, lowBreakdown ?? .loading)
+        }
+        var high = -Double.infinity, low = Double.infinity
+        var highHour = candidateHour, lowHour = candidateHour
+        for offset in 1...breakoutLookbackHours {
+            let priorHour = candidateHour - Int64(offset) * hourMS
+            guard let prior = bars[priorHour], prior.confirmed else {
+                // An unknown newer candidate could supersede any older event.
+                return (highBreakout ?? .loading, lowBreakdown ?? .loading)
+            }
+            if prior.high > high { high = prior.high; highHour = priorHour }
+            if prior.low < low { low = prior.low; lowHour = priorHour }
+        }
+        if highBreakout == nil, candidate.high > high {
+            highBreakout = .event(BreakEvent(hour: candidateHour, hoursAgo: age, priorHour: highHour,
+                                           priorAgeHours: Int((candidateHour - highHour) / hourMS), priorPrice: high, live: !candidate.confirmed))
+        }
+        if lowBreakdown == nil, candidate.low < low {
+            lowBreakdown = .event(BreakEvent(hour: candidateHour, hoursAgo: age, priorHour: lowHour,
+                                           priorAgeHours: Int((candidateHour - lowHour) / hourMS), priorPrice: low, live: !candidate.confirmed))
+        }
+        if highBreakout != nil, lowBreakdown != nil { break }
+    }
+    return (highBreakout ?? .none, lowBreakdown ?? .none)
 }
 
 func rocMaroc(_ bars: [Int64: Candle], _ hour: Int64, _ rocPeriod: Int, _ marocPeriod: Int) -> (Double?, Double?) {
