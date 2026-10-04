@@ -6,6 +6,8 @@ private let businessWS = "wss://ws.okx.com:8443/ws/v5/business"
 private let turnoverThresholdKey = "minimum24hTurnoverUSDT"
 private let spreadFilterEnabledKey = "spreadFilterEnabled"
 private let maximumSpreadPercentKey = "maximumSpreadPercent"
+private let contractAgeFilterEnabledKey = "contractAgeFilterEnabled"
+private let minimumContractAgeMonthsKey = "minimumContractAgeMonths"
 
 func supportedTurnoverThreshold(_ value: Int) -> Bool {
     value == 10_000_000 || value == 30_000_000 || value == 100_000_000
@@ -57,9 +59,12 @@ private struct Market {
 @MainActor
 final class Radar {
     private let store: Store
+    private let defaults: UserDefaults
     private(set) var minimum24hTurnoverUSDT: Int
     private(set) var spreadFilterEnabled: Bool
     private(set) var maximumSpreadPercent: Double
+    private(set) var contractAgeFilterEnabled: Bool
+    private(set) var minimumContractAgeMonths: Int
     private var rows: [String: Market] = [:]
     private var cachedRows: [String: [String: Any]] = [:]
     private var cachedPeriods: (roc: Int, maroc: Int)?
@@ -81,15 +86,23 @@ final class Radar {
     private var running = false
     private var startupError = ""
 
-    init() throws {
-        let savedThreshold = UserDefaults.standard.integer(forKey: turnoverThresholdKey)
+    init(defaults: UserDefaults = .standard, storeURL: URL? = nil) throws {
+        self.defaults = defaults
+        let savedThreshold = defaults.integer(forKey: turnoverThresholdKey)
         minimum24hTurnoverUSDT = supportedTurnoverThreshold(savedThreshold) ? savedThreshold : 10_000_000
-        spreadFilterEnabled = UserDefaults.standard.object(forKey: spreadFilterEnabledKey) as? Bool ?? true
-        let savedSpread = UserDefaults.standard.object(forKey: maximumSpreadPercentKey) as? Double ?? 0.15
+        spreadFilterEnabled = defaults.object(forKey: spreadFilterEnabledKey) as? Bool ?? true
+        let savedSpread = defaults.object(forKey: maximumSpreadPercentKey) as? Double ?? 0.15
         maximumSpreadPercent = savedSpread.isFinite && (0...100).contains(savedSpread) ? savedSpread : 0.15
-        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("PerpetualRadar", isDirectory: true)
-        store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
+        contractAgeFilterEnabled = defaults.object(forKey: contractAgeFilterEnabledKey) as? Bool ?? true
+        let savedAge = defaults.integer(forKey: minimumContractAgeMonthsKey)
+        minimumContractAgeMonths = contractAgeMonthRange.contains(savedAge) ? savedAge : defaultMinimumContractAgeMonths
+        if let storeURL {
+            store = try Store(url: storeURL)
+        } else {
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appendingPathComponent("PerpetualRadar", isDirectory: true)
+            store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
+        }
     }
 
     deinit {
@@ -106,21 +119,35 @@ final class Radar {
     func setMinimum24hTurnoverUSDT(_ value: Int) -> Bool {
         guard supportedTurnoverThreshold(value) else { return false }
         minimum24hTurnoverUSDT = value
-        UserDefaults.standard.set(value, forKey: turnoverThresholdKey)
+        defaults.set(value, forKey: turnoverThresholdKey)
         touch()
         return true
     }
 
     func setSpreadFilterEnabled(_ value: Bool) {
         spreadFilterEnabled = value
-        UserDefaults.standard.set(value, forKey: spreadFilterEnabledKey)
+        defaults.set(value, forKey: spreadFilterEnabledKey)
         touch()
     }
 
     func setMaximumSpreadPercent(_ value: Double) -> Bool {
         guard value.isFinite, (0...100).contains(value) else { return false }
         maximumSpreadPercent = value
-        UserDefaults.standard.set(value, forKey: maximumSpreadPercentKey)
+        defaults.set(value, forKey: maximumSpreadPercentKey)
+        touch()
+        return true
+    }
+
+    func setContractAgeFilterEnabled(_ value: Bool) {
+        contractAgeFilterEnabled = value
+        defaults.set(value, forKey: contractAgeFilterEnabledKey)
+        touch()
+    }
+
+    func setMinimumContractAgeMonths(_ value: Int) -> Bool {
+        guard contractAgeMonthRange.contains(value) else { return false }
+        minimumContractAgeMonths = value
+        defaults.set(value, forKey: minimumContractAgeMonthsKey)
         touch()
         return true
     }
@@ -634,7 +661,8 @@ final class Radar {
             return ["rows": [], "updatedAt": NSNull(), "error": "Periods must be from 1 to 100.",
                     "revision": revision,
                     "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
-                    "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent]
+                    "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
+                    "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths]
         }
         if cachedPeriods?.roc != rocPeriod || cachedPeriods?.maroc != marocPeriod {
             cachedRows.removeAll()
@@ -650,10 +678,13 @@ final class Radar {
             previousOI = [:]
         }
         var output: [[String: Any]] = []
+        let now = Date()
         for id in rows.keys.sorted() {
             guard let row = rows[id], let turnover = row.turnover24hUSDT,
                   turnover >= Double(minimum24hTurnoverUSDT),
-                  passesSpreadFilter(row.spreadPercent, enabled: spreadFilterEnabled, maximum: maximumSpreadPercent) else { continue }
+                  passesSpreadFilter(row.spreadPercent, enabled: spreadFilterEnabled, maximum: maximumSpreadPercent),
+                  passesContractAgeFilter(row.listedAt, enabled: contractAgeFilterEnabled,
+                                          minimumMonths: minimumContractAgeMonths, now: now) else { continue }
             if let cached = cachedRows[id] { output.append(cached); continue }
             let bars = candles[id] ?? [:]
             let breaks = recentExtremesBreaks(bars, hour, listedAt: row.listedAt)
@@ -689,6 +720,7 @@ final class Radar {
         }
         return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error, "revision": revision,
                 "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
-                "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent]
+                "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
+                "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths]
     }
 }

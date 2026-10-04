@@ -314,11 +314,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 replyHandler(nil, "Maximum spread must be between 0 and 100%"); return
             }
         }
+        if let requested = parameters["contractAgeFilterEnabled"] {
+            guard let enabled = requested as? Bool, let radar else {
+                replyHandler(nil, "Invalid contract age filter setting"); return
+            }
+            radar.setContractAgeFilterEnabled(enabled)
+        }
+        if let requested = parameters["minimumContractAgeMonths"] {
+            guard let minimum = requested as? Int, radar?.setMinimumContractAgeMonths(minimum) == true else {
+                replyHandler(nil, "Minimum contract age must be a whole number from 1 to 1200 months"); return
+            }
+        }
         if !startupError.isEmpty {
             replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
                           "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
                           "spreadFilterEnabled": radar?.spreadFilterEnabled ?? true,
-                          "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15], nil)
+                          "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15,
+                          "contractAgeFilterEnabled": radar?.contractAgeFilterEnabled ?? true,
+                          "minimumContractAgeMonths": radar?.minimumContractAgeMonths ?? defaultMinimumContractAgeMonths], nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9

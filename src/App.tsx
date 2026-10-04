@@ -4,7 +4,7 @@ import katex from "katex"
 import "katex/dist/katex.min.css"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Field, FieldGroup, FieldTitle } from "@/components/ui/field"
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -43,9 +43,9 @@ type MarketRow = {
   rocChange: PercentageValue
   marocChange: PercentageValue
 }
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number }
+type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number }
+type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
@@ -92,6 +92,7 @@ function BreakReadings({ result, direction }: { result: BreakResult; direction: 
 function App() {
   const revision = useRef(-1)
   const requestedFitWidth = useRef(0)
+  const contractAgeDraftDirty = useRef(false)
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
@@ -101,6 +102,10 @@ function App() {
   const [spreadFilterEnabled, setSpreadFilterEnabled] = useState(true)
   const [maximumSpreadPercent, setMaximumSpreadPercent] = useState(0.15)
   const [spreadDraft, setSpreadDraft] = useState("0.15")
+  const [contractAgeFilterEnabled, setContractAgeFilterEnabled] = useState(true)
+  const [minimumContractAgeMonths, setMinimumContractAgeMonths] = useState(6)
+  const [contractAgeDraft, setContractAgeDraft] = useState("6")
+  const [contractAgeError, setContractAgeError] = useState("")
   const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
@@ -119,6 +124,9 @@ function App() {
           setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
           setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
           if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
+          setContractAgeFilterEnabled(snapshot.contractAgeFilterEnabled)
+          setMinimumContractAgeMonths(snapshot.minimumContractAgeMonths)
+          if (!contractAgeDraftDirty.current && document.activeElement?.id !== "minimum-contract-age") setContractAgeDraft(String(snapshot.minimumContractAgeMonths))
           setUpdatedAt(snapshot.updatedAt)
         }
         setStatus("Live")
@@ -185,6 +193,9 @@ function App() {
         setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
         setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
         if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
+        setContractAgeFilterEnabled(snapshot.contractAgeFilterEnabled)
+        setMinimumContractAgeMonths(snapshot.minimumContractAgeMonths)
+        if (!contractAgeDraftDirty.current && document.activeElement?.id !== "minimum-contract-age") setContractAgeDraft(String(snapshot.minimumContractAgeMonths))
         setRows(snapshot.rows)
         setUpdatedAt(snapshot.updatedAt)
         setError(snapshot.error)
@@ -207,6 +218,18 @@ function App() {
     else setSpreadDraft(String(value))
   }
 
+  const saveContractAge = () => {
+    const value = Number(contractAgeDraft)
+    if (!contractAgeDraft.trim() || !Number.isInteger(value) || value < 1 || value > 1200) {
+      setContractAgeError("Enter a whole number from 1 to 1200 months.")
+      return
+    }
+    contractAgeDraftDirty.current = false
+    setContractAgeError("")
+    setContractAgeDraft(String(value))
+    if (value !== minimumContractAgeMonths) saveSetting({ minimumContractAgeMonths: value })
+  }
+
   const header = (label: string, key: SortKey, formula: string, description?: string) => {
     const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
     return <Button variant="ghost" size="sm" className={cn("h-auto min-h-6 gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} aria-pressed={sort === key} title={description}>
@@ -220,14 +243,14 @@ function App() {
     <main className="flex min-h-svh flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
-        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT{spreadFilterEnabled ? ` · spread ≤ ${maximumSpreadPercent}%` : ""}</span>
+        <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT{spreadFilterEnabled ? ` · spread ≤ ${maximumSpreadPercent}%` : ""}{contractAgeFilterEnabled ? ` · age ≥ ${minimumContractAgeMonths} ${minimumContractAgeMonths === 1 ? "month" : "months"}` : ""}</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
-        <Popover>
+        <Popover onOpenChange={open => { if (!open && contractAgeDraftDirty.current) saveContractAge() }}>
           <PopoverTrigger asChild><Button variant="outline" size="sm"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
           <PopoverContent align="end">
             <PopoverHeader>
               <PopoverTitle>Settings</PopoverTitle>
-              <PopoverDescription>Filter swaps by 24h USDT turnover and bid-ask spread.</PopoverDescription>
+              <PopoverDescription>Filter swaps by turnover, spread, and listing age.</PopoverDescription>
             </PopoverHeader>
             <FieldGroup>
               <Field>
@@ -244,6 +267,15 @@ function App() {
                   <Toggle variant="outline" size="sm" pressed={spreadFilterEnabled} onPressedChange={enabled => saveSetting({ spreadFilterEnabled: enabled })} aria-label="Enable maximum spread filter">{spreadFilterEnabled ? "On" : "Off"}</Toggle>
                   <Input id="maximum-spread" type="number" min="0" max="100" step="any" inputMode="decimal" aria-labelledby="spread-limit-label" value={spreadDraft} onChange={event => setSpreadDraft(event.target.value)} onBlur={saveSpread} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur() }} />
                 </div>
+              </Field>
+              <Field data-invalid={Boolean(contractAgeError)}>
+                <FieldLabel htmlFor="minimum-contract-age">Minimum contract age (months)</FieldLabel>
+                <div className="flex items-center gap-2">
+                  <Toggle variant="outline" size="sm" pressed={contractAgeFilterEnabled} onPressedChange={enabled => saveSetting({ contractAgeFilterEnabled: enabled })} aria-label="Enable minimum contract age filter">{contractAgeFilterEnabled ? "On" : "Off"}</Toggle>
+                  <Input id="minimum-contract-age" name="minimumContractAgeMonths" type="number" min="1" max="1200" step="1" inputMode="numeric" autoComplete="off" aria-describedby={contractAgeError ? "contract-age-description contract-age-error" : "contract-age-description"} aria-invalid={Boolean(contractAgeError)} value={contractAgeDraft} onChange={event => { contractAgeDraftDirty.current = true; setContractAgeDraft(event.target.value); setContractAgeError("") }} onBlur={saveContractAge} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur() }} />
+                </div>
+                <FieldDescription id="contract-age-description">Calendar months since OKX listing. Unknown dates are hidden while enabled.</FieldDescription>
+                {contractAgeError && <FieldError id="contract-age-error" role="alert">{contractAgeError}</FieldError>}
               </Field>
             </FieldGroup>
           </PopoverContent>
