@@ -8,11 +8,12 @@ import { chartCandleWidth, chartHourX, chartLayout, fitPriceTag, type ChartPanel
 import { livePriceTag, scrollChartEnd, visibleChartBars } from "@/chart-viewport"
 import { cn } from "@/lib/utils"
 import { chartNavigationTarget, wrappedMarket } from "@/market-sort"
+import { finitePercentage, formatPercent, type PercentageValue } from "@/market-percent"
 
 type Bar = {
   hour: number; open: number; high: number; low: number; close: number; confirmed: boolean
   vwap: number | null; ema: number | null; logBBUpper: number | null; logBBMiddle: number | null; logBBLower: number | null
-  roc: number | null; maroc: number | null; rsi6: number | null; rsi12: number | null; rsi24: number | null
+  roc: PercentageValue; maroc: PercentageValue; rsi6: number | null; rsi12: number | null; rsi24: number | null
   oi: number | null; buy: number | null; sell: number | null
 }
 export type ChartResponse = { bars: Bar[]; error: string; revision: number; endHour?: number; oldestHour?: number | null; historyExhausted?: boolean; candleLoadFailed?: boolean }
@@ -57,7 +58,7 @@ const time = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "
 const hourLabel = (hour: number) => new Date(hour).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", hour12: false })
 const chartPriceValues = (bars: Bar[]) => bars.flatMap(bar => [bar.low, bar.high, bar.vwap, bar.ema, bar.logBBUpper, bar.logBBMiddle, bar.logBBLower].filter((value): value is number => value !== null && value > 0))
 const rocAxisFor = (bars: Bar[]) => {
-  const values = bars.flatMap(bar => [bar.roc, bar.maroc].filter((value): value is number => value !== null))
+  const values = bars.flatMap(bar => [finitePercentage(bar.roc), finitePercentage(bar.maroc)].filter((value): value is number => value !== null))
   const extent = values.length ? Math.max(...values.map(Math.abs)) || 1 : 1
   return chartAxis(-extent, extent, 8)
 }
@@ -88,7 +89,7 @@ const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length -
   const takerAxis = chartAxisForLabels(0, Math.max(1, ...bars.map(bar => (bar.buy ?? 0) + (bar.sell ?? 0))), axisLabelLimit(panels.taker, 7))
   const labels = [
     ...priceAxis.ticks.map(tick => priceFormatter.format(tick)),
-    `+${rocAxis.max.toFixed(rocAxis.decimals)}`, rocAxis.min.toFixed(rocAxis.decimals), "100", "0",
+    formatPercent(rocAxis.max, rocAxis.decimals), formatPercent(rocAxis.min, rocAxis.decimals), "100", "0",
     ...(oiValues.length ? logarithmicChartAxis(Math.min(...oiValues), Math.max(...oiValues), axisLabelLimit(panels.oi, 7), true).ticks.map(compact) : []),
     ...takerAxis.ticks.map(compact),
   ]
@@ -181,9 +182,10 @@ const Plot = memo(function Plot({ bars, liveBar, inspected, width, height, now, 
       points = []
     }
     bars.forEach((bar, index) => {
-      if (bar[key] === null || (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000)) finish()
-      if (bar[key] === null) return
-      const pointY = Number(scale(bar[key], rocAxis.min, rocAxis.max, panels.roc).toFixed(1))
+      const value = finitePercentage(bar[key])
+      if (value === null || (index > 0 && bar.hour - bars[index - 1].hour !== 3_600_000)) finish()
+      if (value === null) return
+      const pointY = Number(scale(value, rocAxis.min, rocAxis.max, panels.roc).toFixed(1))
       if (index === 0 && firstAtLeft) points.push([left, pointY])
       points.push([Number(x(index, "roc").toFixed(1)), pointY])
     })
@@ -313,12 +315,12 @@ const Plot = memo(function Plot({ bars, liveBar, inspected, width, height, now, 
       {showCountdown && <text x={tagWidth / 2} y={tagPaddingY + tagLineHeight * 1.5 + tagRowGap} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{countdown}</text>}
     </g>
     {legend("price", [["VWAP14", price(active.vwap), "var(--chart-2)"], ["EMA200", price(active.ema), "var(--chart-3)"], ["Log BB(20)", `U ${price(active.logBBUpper)}\u00a0·\u00a0M ${price(active.logBBMiddle)}\u00a0·\u00a0L ${price(active.logBBLower)}`, "var(--chart-1)"]])}
-    {legend("roc", [["ROC(9)", active.roc?.toFixed(2) ?? "—", "var(--chart-1)"], ["MAROC(9)", active.maroc?.toFixed(2) ?? "—", "var(--chart-2)"]])}
+    {legend("roc", [["ROC(9)", formatPercent(active.roc), "var(--chart-1)"], ["MAROC(9)", formatPercent(active.maroc), "var(--chart-2)"]])}
     {legend("rsi", [["RSI(6)", active.rsi6?.toFixed(1) ?? "—", "var(--chart-1)"], ["RSI(12)", active.rsi12?.toFixed(1) ?? "—", "var(--chart-2)"], ["RSI(24)", active.rsi24?.toFixed(1) ?? "—", "var(--chart-3)"]])}
     {legend("oi", [["OI", compact(active.oi), "var(--chart-2)"]])}
     {legend("taker", [["Taker Buy", compact(active.buy), "var(--positive)"], ["Taker Sell", compact(active.sell), "var(--destructive)"]])}
     {panels.rsi[1] - panels.rsi[0] >= 35 && <>{lineLabel(axisStarts.rsi, panels.rsi[0], "100")}{lineLabel(axisStarts.rsi, panels.rsi[1], "0")}</>}
-    {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], `+${rocAxis.max.toFixed(rocAxis.decimals)}`)}{lineLabel(axisStarts.roc, panels.roc[1], rocAxis.min.toFixed(rocAxis.decimals))}</>}
+    {panels.roc[1] - panels.roc[0] >= 35 && <>{lineLabel(axisStarts.roc, panels.roc[0], formatPercent(rocAxis.max, rocAxis.decimals))}{lineLabel(axisStarts.roc, panels.roc[1], formatPercent(rocAxis.min, rocAxis.decimals))}</>}
     {oiAxis && panels.oi[1] - panels.oi[0] >= 35 && oiAxis.ticks.map(tick => <g key={tick}><line x1={columns.oi[0]} x2={right} y1={oiY(tick)} y2={oiY(tick)} stroke="var(--border)" strokeOpacity="0.25" />{lineLabel(axisStarts.oi, oiY(tick), compact(tick))}</g>)}
     {panels.taker[1] - panels.taker[0] >= 35 && takerAxis.ticks.map(tick => <g key={tick}>{lineLabel(axisStarts.taker, takerY(tick), compact(tick))}</g>)}
   </>

@@ -12,6 +12,7 @@ import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import { compareMarketRows, compareMarketTurnover, defaultSortDescending, type SortKey } from "@/market-sort"
+import { PERCENT_CHANGE_DESCRIPTION, formatPercent, percentageNumber, type PercentageValue } from "@/market-percent"
 import { BREAK_DESCRIPTION, describeBreak, formatBreakPriorAge, formatBreakTime, type BreakDirection, type BreakResult } from "@/market-breaks"
 import { BANDWIDTH_EXPANSION_DESCRIPTION, LOG_BB_DESCRIPTION, formatBandWidthExpansion, formatLiveBand, type BandWidthExpansion, type LogBBAboveBand } from "@/market-logbb"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
@@ -20,24 +21,24 @@ type MarketRow = {
   instId: string
   turnover24hUSDT: number
   price: number | null
-  priceChange: number | null
+  priceChange: PercentageValue
   currentLow: number | null
   currentHigh: number | null
   buy: number | null
   sell: number | null
   takerRatio: number | null
-  oiChange: number | null
+  oiChange: PercentageValue
   highBreakout: BreakResult
   lowBreakdown: BreakResult
-  roc: number | null
-  maroc: number | null
+  roc: PercentageValue
+  maroc: PercentageValue
   rsi6: number | null
   rsi12: number | null
   rsi24: number | null
   logBBAboveBand: LogBBAboveBand | null
   logBBExpansion: BandWidthExpansion | null
-  rocChange: number | null
-  marocChange: number | null
+  rocChange: PercentageValue
+  marocChange: PercentageValue
 }
 type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
@@ -54,12 +55,14 @@ declare global {
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
-const formatPercent = (value: number | null) => value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`
 const formatIndicator = (value: number | null) => value === null ? "—" : value.toFixed(2)
 const priceFormatter = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 })
 const turnoverFormatter = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 })
 const formatPrice = (value: number | null) => value === null ? "—" : priceFormatter.format(value)
-const directionClass = (value: number | null) => value === null ? "text-muted-foreground" : value > 0 ? "text-positive" : value < 0 ? "text-destructive" : ""
+const directionClass = (value: PercentageValue) => {
+  const number = percentageNumber(value)
+  return number === null ? "text-muted-foreground" : number > 0 ? "text-positive" : number < 0 ? "text-destructive" : ""
+}
 const rsiClass = (value: number | null) => value === null ? "text-muted-foreground" : value > 70 ? "text-positive" : value < 30 ? "text-destructive" : ""
 const RSI_PERIODS = [6, 12, 24] as const
 const mathCache = new Map<string, string>()
@@ -269,11 +272,11 @@ function App() {
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Change", "oiChange", String.raw`S=\begin{cases}\left(\frac{\mathrm{OI}_t}{\mathrm{OI}_{t-1}}-1\right)\times100\%,&\mathrm{OI}_t\ge\mathrm{OI}_{t-1}\\-\left(\frac{\mathrm{OI}_{t-1}}{\mathrm{OI}_t}-1\right)\times100\%,&\mathrm{OI}_t<\mathrm{OI}_{t-1}\end{cases}`, "Symmetric hourly OI change as a percentage. Reciprocal increases and decreases have equal magnitudes.")}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Change", "oiChange", String.raw`D=\begin{cases}\frac{\mathrm{OI}_t-\mathrm{OI}_{t-1}}{|\mathrm{OI}_{t-1}|}\times100\%,&\mathrm{OI}_{t-1}\ne0\\0\%,&\mathrm{OI}_{t-1}=\mathrm{OI}_t=0\\+\infty\%,&\mathrm{OI}_{t-1}=0,\,\mathrm{OI}_t>0\\-\infty\%,&\mathrm{OI}_{t-1}=0,\,\mathrm{OI}_t<0\end{cases}`, `Hourly OI change. ${PERCENT_CHANGE_DESCRIPTION}`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header(`ROC ${ROC_PERIOD}`, "roc", String.raw`\operatorname{ROC}_{${ROC_PERIOD}}`)}
-                  {header(`MAROC ${MAROC_PERIOD}`, "maroc", String.raw`\operatorname{MAROC}_{${MAROC_PERIOD}}`)}
+                  {header(`ROC ${ROC_PERIOD}`, "roc", String.raw`\operatorname{ROC}_{${ROC_PERIOD}}\,(\%)`, `${ROC_PERIOD}-hour price change. ${PERCENT_CHANGE_DESCRIPTION}`)}
+                  {header(`MAROC ${MAROC_PERIOD}`, "maroc", String.raw`\operatorname{MAROC}_{${MAROC_PERIOD}}\,(\%)`, `Mean of the latest ${MAROC_PERIOD} hourly ROC readings, as a percentage.`)}
                 </div>
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("rsi") ? descending ? "descending" : "ascending" : "none"}>
@@ -297,7 +300,7 @@ function App() {
                 <span className="font-medium">{row.instId.replace(/-USDT-SWAP$/, "")}</span>
                 <div className="flex justify-start gap-2 text-xs tabular-nums">
                   <span>{formatPrice(row.price)}</span>
-                  <span className={directionClass(row.priceChange)} title="Symmetric price change from the previous completed hour">{formatPercent(row.priceChange)}</span>
+                  <span className={directionClass(row.priceChange)} title={`Price change from the previous completed hour. ${PERCENT_CHANGE_DESCRIPTION}`}>{formatPercent(row.priceChange)}</span>
                 </div>
                 <div className="flex items-center justify-start gap-3 text-xs tabular-nums">
                   <span className="flex gap-1"><span className="text-muted-foreground">Low</span><span>{formatPrice(row.currentLow)}</span></span>
@@ -317,10 +320,10 @@ function App() {
               <TableCell className={cn("text-center tabular-nums", directionClass(row.oiChange))}>{formatPercent(row.oiChange)}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
-                  <span className={directionClass(row.roc)}><span className="sr-only">ROC </span>{formatIndicator(row.roc)}</span>
-                  <span className={directionClass(row.rocChange)}><span className="sr-only">ROC hourly change </span>{formatPercent(row.rocChange)}</span>
-                  <span className={directionClass(row.maroc)}><span className="sr-only">MAROC </span>{formatIndicator(row.maroc)}</span>
-                  <span className={directionClass(row.marocChange)}><span className="sr-only">MAROC hourly change </span>{formatPercent(row.marocChange)}</span>
+                  <span className={directionClass(row.roc)}><span className="sr-only">ROC </span>{formatPercent(row.roc)}</span>
+                  <span className={directionClass(row.rocChange)} title={`Hourly ROC change. ${PERCENT_CHANGE_DESCRIPTION}`}><span className="sr-only">ROC hourly change </span>{formatPercent(row.rocChange)}</span>
+                  <span className={directionClass(row.maroc)}><span className="sr-only">MAROC </span>{formatPercent(row.maroc)}</span>
+                  <span className={directionClass(row.marocChange)} title={`Hourly MAROC change. ${PERCENT_CHANGE_DESCRIPTION}`}><span className="sr-only">MAROC hourly change </span>{formatPercent(row.marocChange)}</span>
                 </div>
               </TableCell>
               <TableCell className="text-center tabular-nums">

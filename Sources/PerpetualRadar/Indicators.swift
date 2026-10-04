@@ -38,21 +38,22 @@ func historicalPage(_ rows: [Any], before: Int64) -> [Candle] {
     rows.compactMap { ($0 as? [String]).flatMap(Candle.init) }.filter { $0.confirmed && $0.hour < before }
 }
 
-func symmetricChange(_ current: Double?, _ previous: Double?) -> Double? {
-    guard let current, let previous, current.isFinite, previous.isFinite, current > 0, previous > 0 else { return nil }
-    let change = current >= previous ? current / previous - 1 : -(previous / current - 1)
-    return change.isFinite ? change : nil
-}
-
-func symmetricPercentChange(_ current: Double?, _ previous: Double?) -> Double? {
-    guard let change = symmetricChange(current, previous) else { return nil }
-    let percent = change * 100
-    return percent.isFinite ? percent : nil
-}
-
 func percentChange(_ current: Double?, _ previous: Double?) -> Double? {
-    guard let current, let previous, previous != 0 else { return nil }
-    return (current - previous) / abs(previous) * 100
+    guard let current, let previous, current.isFinite, previous.isFinite else { return nil }
+    if previous == 0 {
+        return current == 0 ? 0 : current > 0 ? .infinity : -.infinity
+    }
+    let difference = current - previous
+    // Opposite-sign finite values can overflow their difference even when D is finite.
+    let change = difference.isFinite ? difference / abs(previous) : current / abs(previous) - previous / abs(previous)
+    return change * 100
+}
+
+func percentageSnapshot(_ value: Double?) -> Any {
+    guard let value, !value.isNaN else { return NSNull() }
+    // Preserve infinities through the WebKit bridge and JSON snapshots.
+    if value.isInfinite { return value > 0 ? "Infinity" : "-Infinity" }
+    return value
 }
 
 func completedHistoryHours(at hour: Int64, since listedAt: Int64?, limit: Int) -> Int {
@@ -134,12 +135,14 @@ func rocMaroc(_ bars: [Int64: Candle], _ hour: Int64, _ rocPeriod: Int, _ marocP
     for offset in 0..<marocPeriod {
         guard let current = bars[hour - Int64(offset) * hourMS],
               let previous = bars[hour - Int64(offset + rocPeriod) * hourMS],
-              (offset == 0 || current.confirmed), previous.confirmed, previous.close > 0 else {
+              (offset == 0 || current.confirmed), previous.confirmed,
+              let change = percentChange(current.close, previous.close) else {
             return (values.first, nil)
         }
-        values.append((current.close / previous.close - 1) * 100)
+        values.append(change)
     }
-    return (values.first, values.reduce(0, +) / Double(marocPeriod))
+    let average = values.reduce(0) { $0 + $1 / Double(marocPeriod) }
+    return (values.first, average.isNaN ? nil : average)
 }
 
 func vwap14(_ bars: [Int64: Candle], _ hour: Int64) -> Double? {

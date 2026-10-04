@@ -1,5 +1,6 @@
 import type { BreakResult } from "./market-breaks.ts"
 import { logBBBandRank, type BandWidthExpansion, type LogBBAboveBand } from "./market-logbb.ts"
+import { percentageNumber, type PercentageValue } from "./market-percent.ts"
 
 export type SortKey = "turnover24hUSDT" | "highBreakout" | "highBreakoutPriorAge" | "lowBreakdown" | "lowBreakdownPriorAge" | "takerRatio" | "oiChange" | "roc" | "maroc" | "rsi6" | "rsi12" | "rsi24" | "logBBAboveBand" | "logBBExpansion"
 
@@ -9,9 +10,9 @@ export type SortableRow = {
   highBreakout: BreakResult
   lowBreakdown: BreakResult
   takerRatio: number | null
-  oiChange: number | null
-  roc: number | null
-  maroc: number | null
+  oiChange: PercentageValue
+  roc: PercentageValue
+  maroc: PercentageValue
   rsi6: number | null
   rsi12: number | null
   rsi24: number | null
@@ -47,6 +48,9 @@ function sortValue(row: SortableRow, key: SortKey): number | null {
     case "lowBreakdownPriorAge": return row.lowBreakdown.status === "event" ? row.lowBreakdown.priorAgeHours : null
     case "logBBAboveBand": return row.logBBAboveBand === null ? null : logBBBandRank[row.logBBAboveBand]
     case "logBBExpansion": return row.logBBExpansion?.hours ?? null
+    case "oiChange":
+    case "roc":
+    case "maroc": return percentageNumber(row[key])
     default: return row[key]
   }
 }

@@ -48,44 +48,88 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertNil(logBB(bars(count: 19), hour).0)
     }
 
-    func testOpenInterestSymmetricChangeMatchesReciprocalMovesWithoutScaling() throws {
-        XCTAssertEqual(try XCTUnwrap(symmetricChange(120, 100)), 0.2, accuracy: 0.000001)
-        XCTAssertEqual(try XCTUnwrap(symmetricChange(100, 120)), -0.2, accuracy: 0.000001)
-        XCTAssertEqual(try XCTUnwrap(symmetricChange(80, 100)), -0.25, accuracy: 0.000001)
-        XCTAssertEqual(try XCTUnwrap(symmetricChange(100, 80)), 0.25, accuracy: 0.000001)
-        XCTAssertEqual(symmetricChange(200, 100), 1)
-        XCTAssertEqual(symmetricChange(100, 200), -1)
-        XCTAssertEqual(symmetricChange(100, 100), 0)
+    func testPercentageChangesUseAbsolutePreviousValueAndPercentageUnits() throws {
+        for (current, previous, expected) in [
+            (120.0, 100.0, 20.0), (100, 120, -100.0 / 6),
+            (80, 100, -20), (100, 80, 25),
+            (200, 100, 100), (100, 200, -50), (100, 100, 0),
+            (-80, -100, 20), (-120, -100, -20),
+            (0, -100, 100), (0, 100, -100),
+            (100, -100, 200), (-100, 100, -200),
+        ] {
+            XCTAssertEqual(try XCTUnwrap(percentChange(current, previous)), expected, accuracy: 0.000001)
+        }
     }
 
-    func testOpenInterestSymmetricChangeRequiresFinitePositiveHourlyValues() {
-        XCTAssertNil(symmetricChange(nil, 100))
-        XCTAssertNil(symmetricChange(100, nil))
-        XCTAssertNil(symmetricChange(0, 100))
-        XCTAssertNil(symmetricChange(100, 0))
-        XCTAssertNil(symmetricChange(-100, 100))
-        XCTAssertNil(symmetricChange(100, -100))
-        XCTAssertNil(symmetricChange(.nan, 100))
-        XCTAssertNil(symmetricChange(100, .nan))
-        XCTAssertNil(symmetricChange(.infinity, 100))
-        XCTAssertNil(symmetricChange(100, .infinity))
-        XCTAssertNil(symmetricChange(.greatestFiniteMagnitude, .leastNormalMagnitude))
-        XCTAssertNil(symmetricChange(.leastNormalMagnitude, .greatestFiniteMagnitude))
+    func testPercentageChangesHandleEveryZeroBaselineBranch() {
+        XCTAssertEqual(percentChange(0, 0), 0)
+        XCTAssertEqual(percentChange(0, -0.0), 0)
+        XCTAssertEqual(percentChange(100, 0), .infinity)
+        XCTAssertEqual(percentChange(-100, 0), -.infinity)
+        XCTAssertEqual(percentChange(100, -0.0), .infinity)
+        XCTAssertEqual(percentChange(-100, -0.0), -.infinity)
     }
 
-    func testPriceSymmetricPercentChangeUsesReciprocalMagnitudeAndPercentUnits() throws {
-        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(120, 100)), 20, accuracy: 0.000001)
-        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(100, 120)), -20, accuracy: 0.000001)
-        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(80, 100)), -25, accuracy: 0.000001)
-        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(100, 80)), 25, accuracy: 0.000001)
-        XCTAssertEqual(symmetricPercentChange(200, 100), 100)
-        XCTAssertEqual(symmetricPercentChange(100, 200), -100)
-        XCTAssertEqual(symmetricPercentChange(100, 100), 0)
-        XCTAssertNil(symmetricPercentChange(nil, 100))
-        XCTAssertNil(symmetricPercentChange(100, nil))
-        XCTAssertNil(symmetricPercentChange(0, 100))
-        XCTAssertNil(symmetricPercentChange(100, 0))
-        XCTAssertNil(symmetricPercentChange(1e307, 1))
+    func testPercentageChangesKeepMissingAndNonfiniteInputsUnavailable() {
+        XCTAssertNil(percentChange(nil, 100))
+        XCTAssertNil(percentChange(100, nil))
+        XCTAssertNil(percentChange(.nan, 100))
+        XCTAssertNil(percentChange(100, .nan))
+        XCTAssertNil(percentChange(.infinity, 100))
+        XCTAssertNil(percentChange(100, -.infinity))
+        XCTAssertNil(percentChange(nil, 0))
+        XCTAssertNil(percentChange(.nan, 0))
+    }
+
+    func testPercentageChangesAvoidOverflowInFiniteDifferences() {
+        XCTAssertEqual(percentChange(.greatestFiniteMagnitude, -.greatestFiniteMagnitude), 200)
+        XCTAssertEqual(percentChange(-.greatestFiniteMagnitude, .greatestFiniteMagnitude), -200)
+        XCTAssertEqual(percentChange(.greatestFiniteMagnitude, .leastNormalMagnitude), .infinity)
+        XCTAssertEqual(percentChange(.leastNormalMagnitude, .greatestFiniteMagnitude), -100)
+    }
+
+    func testPercentageSnapshotsPreserveZeroAndInfinitiesAcrossJSON() throws {
+        let snapshot = [
+            "priceChange": percentageSnapshot(percentChange(80, 100)),
+            "oiChange": percentageSnapshot(percentChange(1, 0)),
+            "rocChange": percentageSnapshot(percentChange(-1, 0)),
+            "marocChange": percentageSnapshot(percentChange(0, 0)),
+            "missing": percentageSnapshot(nil),
+            "invalid": percentageSnapshot(.nan),
+        ]
+        XCTAssertTrue(JSONSerialization.isValidJSONObject(snapshot))
+        let data = try JSONSerialization.data(withJSONObject: snapshot)
+        let result = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(result["priceChange"] as? Double, -20)
+        XCTAssertEqual(result["oiChange"] as? String, "Infinity")
+        XCTAssertEqual(result["rocChange"] as? String, "-Infinity")
+        XCTAssertEqual(result["marocChange"] as? Double, 0)
+        XCTAssertTrue(result["missing"] is NSNull)
+        XCTAssertTrue(result["invalid"] is NSNull)
+    }
+
+    func testROCAndMAROCUseTheSameSignedAndZeroBaselineFormula() throws {
+        let hour = Int64(200) * hourMS
+        func bars(_ closes: [Double]) -> [Int64: Candle] {
+            Dictionary(uniqueKeysWithValues: closes.enumerated().map { age, close in
+                let ts = hour - Int64(age) * hourMS
+                return (ts, Candle(hour: ts, high: 200, low: -200, close: close, quoteVolume: 100, baseVolume: 1))
+            })
+        }
+        for (current, previous, expected) in [
+            (80.0, 100.0, -20.0), (-80, -100, 20), (-120, -100, -20),
+            (0, 0, 0), (100, 0, Double.infinity), (-100, 0, -Double.infinity),
+        ] {
+            let (roc, maroc) = rocMaroc(bars([current, previous]), hour, 1, 1)
+            XCTAssertEqual(roc, expected)
+            XCTAssertEqual(maroc, expected)
+        }
+        let (roc, maroc) = rocMaroc(bars([-80, -100, -200]), hour, 1, 2)
+        XCTAssertEqual(try XCTUnwrap(roc), 20, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(maroc), 35, accuracy: 0.000001)
+        let (infiniteROC, undefinedMean) = rocMaroc(bars([1, -1, 0, 0]), hour, 2, 2)
+        XCTAssertEqual(infiniteROC, .infinity)
+        XCTAssertNil(undefinedMean)
     }
 
     func testSwap24hTurnoverUsesBaseVolumeAndLastUSDTPrice() {

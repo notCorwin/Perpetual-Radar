@@ -16,6 +16,24 @@ test("indicator columns sort both ways and keep missing data last", () => {
   }
 })
 
+test("percentage columns sort native infinities numerically, preserve turnover ties, and keep missing values last", () => {
+  for (const key of ["oiChange", "roc", "maroc"] as const) {
+    const rows: SortableRow[] = [
+      { ...row("PositiveInfinityB", 10), [key]: "Infinity" },
+      { ...row("Missing", 100), [key]: null },
+      { ...row("Positive", 10), [key]: 25 },
+      { ...row("Zero", 10), [key]: 0 },
+      { ...row("Negative", 10), [key]: -50 },
+      { ...row("NegativeInfinity", 10), [key]: "-Infinity" },
+      { ...row("PositiveInfinityA", 20), [key]: "Infinity" },
+    ]
+    assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, key, true)).map(item => item.instId),
+      ["PositiveInfinityA", "PositiveInfinityB", "Positive", "Zero", "Negative", "NegativeInfinity", "Missing"])
+    assert.deepEqual([...rows].sort((a, b) => compareMarketRows(a, b, key, false)).map(item => item.instId),
+      ["NegativeInfinity", "Negative", "Zero", "Positive", "PositiveInfinityA", "PositiveInfinityB", "Missing"])
+  }
+})
+
 test("live band sorting ranks Upper, Middle, Lower, and below, keeping missing values last", () => {
   const rows: SortableRow[] = [
     { ...row("Lower", 100), logBBAboveBand: "lower" },
