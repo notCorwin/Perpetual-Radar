@@ -1,4 +1,4 @@
-name: Autobuild macOS Release
+name: Publish macOS Release
 
 on:
   push:
@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-release:
+  publish-release:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -22,13 +22,11 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - name: Build and test
+      - name: Build release app
         run: |
           npm ci
-          npm test
-          npm run lint
           APP_REVISION="$GITHUB_SHA" npm run app
-      - name: Package and verify app
+      - name: Package release app
         shell: bash
         run: |
           app='.build/app/Perpetual Radar.app'

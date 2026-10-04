@@ -7,6 +7,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
     "test": "swift test && node --experimental-strip-types --test src/*.test.ts",
+    "ci:local": "npm test && npm run lint && CI=1 npm run app",
     "app": "scripts/build-app.sh"
   },
   "dependencies": {
