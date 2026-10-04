@@ -666,11 +666,11 @@ final class Radar {
             let currentOI = (row.oiTimestamp >= Double(hour) ? row.oiUsd : nil) ?? chartLiveStats[id]?.oi
             let result: [String: Any] = [
                 "instId": id, "turnover24hUSDT": turnover, "price": price as Any? ?? null,
-                "priceChange": percentChange(price, previous?.confirmed == true ? previous?.close : nil) as Any? ?? null,
+                "priceChange": symmetricPercentChange(price, previous?.confirmed == true ? previous?.close : nil) as Any? ?? null,
                 "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
                 "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
                 "takerRatio": row.takerRatio as Any? ?? null,
-                "oiLog": logChange(currentOI, previousOI[id]) as Any? ?? null,
+                "oiChange": symmetricChange(currentOI, previousOI[id]) as Any? ?? null,
                 "highBreakout": breaks.highBreakout.snapshot,
                 "lowBreakdown": breaks.lowBreakdown.snapshot,
                 "roc": roc as Any? ?? null, "maroc": maroc as Any? ?? null,

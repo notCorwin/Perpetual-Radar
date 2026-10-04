@@ -4,13 +4,13 @@ import { chartNavigationTarget, compareMarketRows, compareMarketTurnover, defaul
 import type { BreakEvent, BreakResult } from "./market-breaks.ts"
 
 const row = (instId: string, value: number | null): SortableRow => ({
-  instId, turnover24hUSDT: value ?? 0, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, oiLog: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBAboveBand: null, logBBExpansion: null,
+  instId, turnover24hUSDT: value ?? 0, highBreakout: { status: "none" }, lowBreakdown: { status: "none" }, takerRatio: value, oiChange: value, roc: value, maroc: value, rsi6: value, rsi12: value, rsi24: value, logBBAboveBand: null, logBBExpansion: null,
 })
 
 test("indicator columns sort both ways and keep missing data last", () => {
   const rows = [row("Middle", 0), row("High", 2), row("Missing", null), row("Low", -2)]
   const sorted = (key: SortKey, descending: boolean) => [...rows].sort((a, b) => compareMarketRows(a, b, key, descending)).map(item => item.instId)
-  for (const key of ["takerRatio", "oiLog", "roc", "maroc", "rsi6", "rsi12", "rsi24"] as const) {
+  for (const key of ["takerRatio", "oiChange", "roc", "maroc", "rsi6", "rsi12", "rsi24"] as const) {
     assert.deepEqual(sorted(key, true), ["High", "Middle", "Low", "Missing"])
     assert.deepEqual(sorted(key, false), ["Low", "Middle", "High", "Missing"])
   }
@@ -69,7 +69,7 @@ test("break time sorts newest first, prior age sorts longest first, and all miss
     assert.deepEqual(sorted(key, true), ["Oldest", "Recent", "Live", "Loading", "Missing", "Young"])
     assert.deepEqual(sorted(key, false), ["Live", "Recent", "Oldest", "Loading", "Missing", "Young"])
   }
-  assert.equal(defaultSortDescending("oiLog"), true)
+  assert.equal(defaultSortDescending("oiChange"), true)
 })
 
 test("break sorting uses the selected direction and stable turnover and instrument ties", () => {
@@ -116,7 +116,7 @@ test("chart navigation follows visible sorting and jumps to list first or highes
   ]
   const turnoverOrder = [...markets].sort(compareMarketTurnover).map(market => market.instId)
   const listOrder = [...markets].filter(market => market.instId !== "B")
-    .sort((a, b) => compareMarketRows(a, b, "oiLog", true)).map(market => market.instId)
+    .sort((a, b) => compareMarketRows(a, b, "oiChange", true)).map(market => market.instId)
   assert.deepEqual(turnoverOrder, ["B", "C", "A"])
   assert.deepEqual(listOrder, ["A", "C"])
   assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "C", "ArrowUp"), "A")
@@ -131,7 +131,7 @@ test("chart navigation follows visible sorting and jumps to list first or highes
   assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "B", "ArrowUp"), "C")
   assert.equal(chartNavigationTarget(listOrder, turnoverOrder, "B", "ArrowDown"), "A")
   const ascendingOrder = [...markets].filter(market => market.instId !== "B")
-    .sort((a, b) => compareMarketRows(a, b, "oiLog", false)).map(market => market.instId)
+    .sort((a, b) => compareMarketRows(a, b, "oiChange", false)).map(market => market.instId)
   assert.deepEqual(ascendingOrder, ["C", "A"])
   assert.equal(chartNavigationTarget(ascendingOrder, turnoverOrder, "C", "ArrowDown"), "A")
   assert.equal(chartNavigationTarget(ascendingOrder, turnoverOrder, "A", "ArrowLeft"), "C")

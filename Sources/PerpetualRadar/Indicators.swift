@@ -38,9 +38,16 @@ func historicalPage(_ rows: [Any], before: Int64) -> [Candle] {
     rows.compactMap { ($0 as? [String]).flatMap(Candle.init) }.filter { $0.confirmed && $0.hour < before }
 }
 
-func logChange(_ current: Double?, _ previous: Double?) -> Double? {
-    guard let current, let previous, current > 0, previous > 0 else { return nil }
-    return log(current / previous)
+func symmetricChange(_ current: Double?, _ previous: Double?) -> Double? {
+    guard let current, let previous, current.isFinite, previous.isFinite, current > 0, previous > 0 else { return nil }
+    let change = current >= previous ? current / previous - 1 : -(previous / current - 1)
+    return change.isFinite ? change : nil
+}
+
+func symmetricPercentChange(_ current: Double?, _ previous: Double?) -> Double? {
+    guard let change = symmetricChange(current, previous) else { return nil }
+    let percent = change * 100
+    return percent.isFinite ? percent : nil
 }
 
 func percentChange(_ current: Double?, _ previous: Double?) -> Double? {

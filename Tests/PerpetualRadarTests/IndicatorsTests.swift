@@ -48,13 +48,44 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertNil(logBB(bars(count: 19), hour).0)
     }
 
-    func testOpenInterestLogChangeRequiresPositiveHourlyValues() {
-        XCTAssertEqual(logChange(120, 100)!, log(1.2), accuracy: 0.000001)
-        XCTAssertEqual(logChange(80, 100)!, log(0.8), accuracy: 0.000001)
-        XCTAssertNil(logChange(nil, 100))
-        XCTAssertNil(logChange(100, nil))
-        XCTAssertNil(logChange(0, 100))
-        XCTAssertNil(logChange(100, 0))
+    func testOpenInterestSymmetricChangeMatchesReciprocalMovesWithoutScaling() throws {
+        XCTAssertEqual(try XCTUnwrap(symmetricChange(120, 100)), 0.2, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(symmetricChange(100, 120)), -0.2, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(symmetricChange(80, 100)), -0.25, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(symmetricChange(100, 80)), 0.25, accuracy: 0.000001)
+        XCTAssertEqual(symmetricChange(200, 100), 1)
+        XCTAssertEqual(symmetricChange(100, 200), -1)
+        XCTAssertEqual(symmetricChange(100, 100), 0)
+    }
+
+    func testOpenInterestSymmetricChangeRequiresFinitePositiveHourlyValues() {
+        XCTAssertNil(symmetricChange(nil, 100))
+        XCTAssertNil(symmetricChange(100, nil))
+        XCTAssertNil(symmetricChange(0, 100))
+        XCTAssertNil(symmetricChange(100, 0))
+        XCTAssertNil(symmetricChange(-100, 100))
+        XCTAssertNil(symmetricChange(100, -100))
+        XCTAssertNil(symmetricChange(.nan, 100))
+        XCTAssertNil(symmetricChange(100, .nan))
+        XCTAssertNil(symmetricChange(.infinity, 100))
+        XCTAssertNil(symmetricChange(100, .infinity))
+        XCTAssertNil(symmetricChange(.greatestFiniteMagnitude, .leastNormalMagnitude))
+        XCTAssertNil(symmetricChange(.leastNormalMagnitude, .greatestFiniteMagnitude))
+    }
+
+    func testPriceSymmetricPercentChangeUsesReciprocalMagnitudeAndPercentUnits() throws {
+        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(120, 100)), 20, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(100, 120)), -20, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(80, 100)), -25, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(symmetricPercentChange(100, 80)), 25, accuracy: 0.000001)
+        XCTAssertEqual(symmetricPercentChange(200, 100), 100)
+        XCTAssertEqual(symmetricPercentChange(100, 200), -100)
+        XCTAssertEqual(symmetricPercentChange(100, 100), 0)
+        XCTAssertNil(symmetricPercentChange(nil, 100))
+        XCTAssertNil(symmetricPercentChange(100, nil))
+        XCTAssertNil(symmetricPercentChange(0, 100))
+        XCTAssertNil(symmetricPercentChange(100, 0))
+        XCTAssertNil(symmetricPercentChange(1e307, 1))
     }
 
     func testSwap24hTurnoverUsesBaseVolumeAndLastUSDTPrice() {
