@@ -8,6 +8,18 @@ private let spreadFilterEnabledKey = "spreadFilterEnabled"
 private let maximumSpreadPercentKey = "maximumSpreadPercent"
 private let contractAgeFilterEnabledKey = "contractAgeFilterEnabled"
 private let minimumContractAgeMonthsKey = "minimumContractAgeMonths"
+private let marketFiltersKey = "marketFiltersJSON"
+
+func validMarketFiltersJSON(_ value: String) -> Bool {
+    guard let data = value.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          object["version"] as? Int == 1,
+          let match = object["match"] as? String, ["all", "any"].contains(match),
+          let rules = object["rules"] as? [[String: Any]] else { return false }
+    return rules.allSatisfy { rule in
+        ["id", "field", "operator", "value", "upper"].allSatisfy { rule[$0] is String }
+    }
+}
 
 func supportedTurnoverThreshold(_ value: Int) -> Bool {
     value == 10_000_000 || value == 30_000_000 || value == 100_000_000
@@ -65,6 +77,7 @@ final class Radar {
     private(set) var maximumSpreadPercent: Double
     private(set) var contractAgeFilterEnabled: Bool
     private(set) var minimumContractAgeMonths: Int
+    private(set) var marketFiltersJSON: String
     private var rows: [String: Market] = [:]
     private var cachedRows: [String: [String: Any]] = [:]
     private var cachedPeriods: (roc: Int, maroc: Int)?
@@ -96,6 +109,8 @@ final class Radar {
         contractAgeFilterEnabled = defaults.object(forKey: contractAgeFilterEnabledKey) as? Bool ?? true
         let savedAge = defaults.integer(forKey: minimumContractAgeMonthsKey)
         minimumContractAgeMonths = contractAgeMonthRange.contains(savedAge) ? savedAge : defaultMinimumContractAgeMonths
+        let savedFilters = defaults.string(forKey: marketFiltersKey) ?? ""
+        marketFiltersJSON = validMarketFiltersJSON(savedFilters) ? savedFilters : "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
         if let storeURL {
             store = try Store(url: storeURL)
         } else {
@@ -148,6 +163,14 @@ final class Radar {
         guard contractAgeMonthRange.contains(value) else { return false }
         minimumContractAgeMonths = value
         defaults.set(value, forKey: minimumContractAgeMonthsKey)
+        touch()
+        return true
+    }
+
+    func setMarketFiltersJSON(_ value: String) -> Bool {
+        guard validMarketFiltersJSON(value) else { return false }
+        marketFiltersJSON = value
+        defaults.set(value, forKey: marketFiltersKey)
         touch()
         return true
     }
@@ -662,7 +685,8 @@ final class Radar {
                     "revision": revision,
                     "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                     "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
-                    "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths]
+                    "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
+                    "marketFiltersJSON": marketFiltersJSON]
         }
         if cachedPeriods?.roc != rocPeriod || cachedPeriods?.maroc != marocPeriod {
             cachedRows.removeAll()
@@ -688,11 +712,15 @@ final class Radar {
             if let cached = cachedRows[id] { output.append(cached); continue }
             let bars = candles[id] ?? [:]
             let breaks = recentExtremesBreaks(bars, hour, listedAt: row.listedAt)
+            let breaks96 = recentExtremesBreaks(bars, hour, listedAt: row.listedAt, lookbackHours: 96)
+            let extremes48 = priorExtremes(bars, hour, hours: 48)
+            let extremes96 = priorExtremes(bars, hour, hours: 96)
             let (upper, middle, lower) = logBB(bars, hour)
             let (roc, maroc) = rocMaroc(bars, hour, rocPeriod, marocPeriod)
             let current = bars[hour], previous = bars[hour - hourMS]
             let live = current?.confirmed == false ? current : nil
-            let liveEMA = updatedEMA200(ema200(id, bars), close: live?.close)
+            let previousEMA = ema200(id, bars)
+            let liveEMA = updatedEMA200(previousEMA, close: live?.close)
             let (oldRoc, oldMaroc) = previous?.confirmed == true ? rocMaroc(bars, hour - hourMS, rocPeriod, marocPeriod) : (nil, nil)
             let price = current?.close
             let currentOI = (row.oiTimestamp >= Double(hour) ? row.oiUsd : nil) ?? chartLiveStats[id]?.oi
@@ -706,6 +734,8 @@ final class Radar {
                 "oiChange": percentageSnapshot(percentChange(currentOI, previousOI[id])),
                 "highBreakout": breaks.highBreakout.snapshot,
                 "lowBreakdown": breaks.lowBreakdown.snapshot,
+                "highBreakout96": breaks96.highBreakout.snapshot,
+                "lowBreakdown96": breaks96.lowBreakdown.snapshot,
                 "roc": percentageSnapshot(roc), "maroc": percentageSnapshot(maroc),
                 "rocChange": percentageSnapshot(percentChange(roc, oldRoc)),
                 "marocChange": percentageSnapshot(percentChange(maroc, oldMaroc)),
@@ -714,6 +744,16 @@ final class Radar {
                 "rsi24": rsi(bars, hour, 24) as Any? ?? null,
                 "logBBAboveBand": logBBAboveBand(price, upper, middle, lower)?.rawValue as Any? ?? null,
                 "logBBExpansion": logBBExpansion(bars, hour, listedAt: row.listedAt)?.snapshot as Any? ?? null,
+                "filterMetrics": [
+                    "liveOpen": live?.open as Any? ?? null, "liveClose": live?.close as Any? ?? null,
+                    "ema200": liveEMA as Any? ?? null, "previousEMA200": previousEMA as Any? ?? null,
+                    "vwap14": vwap14(bars, hour) as Any? ?? null,
+                    "bbUpper": upper as Any? ?? null, "bbMiddle": middle as Any? ?? null, "bbLower": lower as Any? ?? null,
+                    "priorHigh48": extremes48.high as Any? ?? null, "priorLow48": extremes48.low as Any? ?? null,
+                    "priorHigh96": extremes96.high as Any? ?? null, "priorLow96": extremes96.low as Any? ?? null,
+                    "oiUSD": currentOI as Any? ?? null, "spreadPercent": row.spreadPercent as Any? ?? null,
+                    "liveVolumeUSDT": live?.quoteVolume as Any? ?? null,
+                ],
             ]
             cachedRows[id] = result
             output.append(result)
@@ -721,6 +761,7 @@ final class Radar {
         return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error, "revision": revision,
                 "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
-                "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths]
+                "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
+                "marketFiltersJSON": marketFiltersJSON]
     }
 }

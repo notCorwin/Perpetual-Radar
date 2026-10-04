@@ -156,3 +156,10 @@
     @apply overflow-x-clip overscroll-none font-sans;
     }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="select-content"], [data-slot="spinner"] {
+    animation: none;
+    transition: none;
+  }
+}

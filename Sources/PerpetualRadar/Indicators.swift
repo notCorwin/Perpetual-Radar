@@ -113,21 +113,23 @@ enum BreakResult: Equatable {
     }
 }
 
-func recentExtremesBreaks(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int64? = nil) -> (highBreakout: BreakResult, lowBreakdown: BreakResult) {
-    guard completedHistoryHours(at: hour, since: listedAt, limit: breakoutLookbackHours) == breakoutLookbackHours else {
+func recentExtremesBreaks(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int64? = nil,
+                         lookbackHours: Int = breakoutLookbackHours) -> (highBreakout: BreakResult, lowBreakdown: BreakResult) {
+    guard lookbackHours > 0,
+          completedHistoryHours(at: hour, since: listedAt, limit: lookbackHours) == lookbackHours else {
         return (.insufficientHistory, .insufficientHistory)
     }
     var highBreakout: BreakResult?, lowBreakdown: BreakResult?
     for age in 0..<breakoutSearchHours {
         let candidateHour = hour - Int64(age) * hourMS
-        // Before this point in a new contract's life, a full 48h break was impossible.
-        guard completedHistoryHours(at: candidateHour, since: listedAt, limit: breakoutLookbackHours) == breakoutLookbackHours else { break }
+        // Do not shorten the comparison window for newly listed contracts.
+        guard completedHistoryHours(at: candidateHour, since: listedAt, limit: lookbackHours) == lookbackHours else { break }
         guard let candidate = bars[candidateHour], age == 0 || candidate.confirmed else {
             return (highBreakout ?? .loading, lowBreakdown ?? .loading)
         }
         var high = -Double.infinity, low = Double.infinity
         var highHour = candidateHour, lowHour = candidateHour
-        for offset in 1...breakoutLookbackHours {
+        for offset in 1...lookbackHours {
             let priorHour = candidateHour - Int64(offset) * hourMS
             guard let prior = bars[priorHour], prior.confirmed else {
                 // An unknown newer candidate could supersede any older event.
@@ -147,6 +149,19 @@ func recentExtremesBreaks(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int6
         if highBreakout != nil, lowBreakdown != nil { break }
     }
     return (highBreakout ?? .none, lowBreakdown ?? .none)
+}
+
+// Current-candle filters compare against completed hours only. A history gap is
+// unavailable, never evidence that a contract has not broken an extreme.
+func priorExtremes(_ bars: [Int64: Candle], _ hour: Int64, hours: Int) -> (high: Double?, low: Double?) {
+    guard hours > 0 else { return (nil, nil) }
+    var high = -Double.infinity, low = Double.infinity
+    for offset in 1...hours {
+        guard let bar = bars[hour - Int64(offset) * hourMS], bar.confirmed else { return (nil, nil) }
+        high = max(high, bar.high)
+        low = min(low, bar.low)
+    }
+    return (high, low)
 }
 
 func rocMaroc(_ bars: [Int64: Candle], _ hour: Int64, _ rocPeriod: Int, _ marocPeriod: Int) -> (Double?, Double?) {

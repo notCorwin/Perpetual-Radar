@@ -310,13 +310,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 replyHandler(nil, "Minimum contract age must be a whole number from 1 to 1200 months"); return
             }
         }
+        if let requested = parameters["marketFiltersJSON"] {
+            guard let filters = requested as? String, radar?.setMarketFiltersJSON(filters) == true else {
+                replyHandler(nil, "Invalid market filter configuration"); return
+            }
+        }
         if !startupError.isEmpty {
             replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
                           "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
                           "spreadFilterEnabled": radar?.spreadFilterEnabled ?? true,
                           "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15,
                           "contractAgeFilterEnabled": radar?.contractAgeFilterEnabled ?? true,
-                          "minimumContractAgeMonths": radar?.minimumContractAgeMonths ?? defaultMinimumContractAgeMonths], nil)
+                          "minimumContractAgeMonths": radar?.minimumContractAgeMonths ?? defaultMinimumContractAgeMonths,
+                          "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}"], nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9

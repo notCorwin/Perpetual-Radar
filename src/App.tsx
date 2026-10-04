@@ -4,6 +4,7 @@ import katex from "katex"
 import "katex/dist/katex.min.css"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
@@ -11,42 +12,21 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
-import { compareMarketRows, compareMarketTurnover, defaultSortDescending, type EMA200Signal, type SortKey } from "@/market-sort"
+import { compareMarketRows, compareMarketTurnover, defaultSortDescending, type SortKey } from "@/market-sort"
 import { PERCENT_CHANGE_DESCRIPTION, formatPercent, percentageNumber, type PercentageValue } from "@/market-percent"
 import { BREAK_DESCRIPTION, describeBreak, formatBreakPriorAge, formatBreakTime, type BreakDirection, type BreakResult } from "@/market-breaks"
-import { BANDWIDTH_EXPANSION_DESCRIPTION, LOG_BB_DESCRIPTION, formatBandWidthExpansion, formatLiveBand, type BandWidthExpansion, type LogBBAboveBand } from "@/market-logbb"
+import { BANDWIDTH_EXPANSION_DESCRIPTION, LOG_BB_DESCRIPTION, formatBandWidthExpansion, formatLiveBand } from "@/market-logbb"
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 import { evaluateMarketOpportunity, OPPORTUNITY_DESCRIPTION } from "@/market-opportunity"
 import { MarketOpportunity } from "@/MarketOpportunity"
 import { MarketListViewport } from "@/MarketListViewport"
+import { MarketFilters } from "@/MarketFilters"
+import { emptyMarketFilters, matchesMarketFilters, parseMarketFilters, type MarketFilters as FilterConfig } from "@/market-filters"
+import type { MarketRow } from "@/market-row"
 
-type MarketRow = {
-  instId: string
-  turnover24hUSDT: number
-  ema200Signal: EMA200Signal | null
-  price: number | null
-  priceChange: PercentageValue
-  currentLow: number | null
-  currentHigh: number | null
-  buy: number | null
-  sell: number | null
-  takerRatio: number | null
-  oiChange: PercentageValue
-  highBreakout: BreakResult
-  lowBreakdown: BreakResult
-  roc: PercentageValue
-  maroc: PercentageValue
-  rsi6: number | null
-  rsi12: number | null
-  rsi24: number | null
-  logBBAboveBand: LogBBAboveBand | null
-  logBBExpansion: BandWidthExpansion | null
-  rocChange: PercentageValue
-  marocChange: PercentageValue
-}
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number }
+type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number; marketFiltersJSON: string }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number }
+type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number; marketFiltersJSON?: string }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
@@ -92,6 +72,8 @@ function BreakReadings({ result, direction }: { result: BreakResult; direction: 
 function App() {
   const revision = useRef(-1)
   const contractAgeDraftDirty = useRef(false)
+  const filtersJSON = useRef<string | undefined>(undefined)
+  const [listFilters, setListFilters] = useState<FilterConfig>(emptyMarketFilters)
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
@@ -108,6 +90,24 @@ function App() {
   const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
+  const acceptSnapshot = (snapshot: Snapshot) => {
+    if (snapshot.revision < revision.current) return
+    revision.current = snapshot.revision
+    setRows(snapshot.rows)
+    setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
+    setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
+    setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
+    if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
+    setContractAgeFilterEnabled(snapshot.contractAgeFilterEnabled)
+    setMinimumContractAgeMonths(snapshot.minimumContractAgeMonths)
+    if (!contractAgeDraftDirty.current && document.activeElement?.id !== "minimum-contract-age") setContractAgeDraft(String(snapshot.minimumContractAgeMonths))
+    if (filtersJSON.current !== snapshot.marketFiltersJSON) {
+      filtersJSON.current = snapshot.marketFiltersJSON
+      setListFilters(parseMarketFilters(snapshot.marketFiltersJSON))
+    }
+    setUpdatedAt(snapshot.updatedAt)
+    setError(snapshot.error)
+  }
   useEffect(() => {
     if (selected) return
     let stopped = false
@@ -116,18 +116,7 @@ function App() {
       try {
         const snapshot = await window.webkit.messageHandlers.radar.postMessage({ rocPeriod: ROC_PERIOD, marocPeriod: MAROC_PERIOD, sinceRevision: revision.current })
         if (stopped) return
-        if (snapshot.revision >= revision.current && !("unchanged" in snapshot)) {
-          revision.current = snapshot.revision
-          setRows(snapshot.rows)
-          setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
-          setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
-          setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
-          if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
-          setContractAgeFilterEnabled(snapshot.contractAgeFilterEnabled)
-          setMinimumContractAgeMonths(snapshot.minimumContractAgeMonths)
-          if (!contractAgeDraftDirty.current && document.activeElement?.id !== "minimum-contract-age") setContractAgeDraft(String(snapshot.minimumContractAgeMonths))
-          setUpdatedAt(snapshot.updatedAt)
-        }
+        if (!("unchanged" in snapshot)) acceptSnapshot(snapshot)
         setStatus("Live")
         setError(snapshot.error)
       } catch (cause) {
@@ -142,13 +131,18 @@ function App() {
   }, [selected])
 
   const rankedRows = useMemo(() => rows.map(row => ({ ...row, opportunity: evaluateMarketOpportunity(row) })), [rows])
+  const searchedRows = useMemo(() => rankedRows.filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase())), [rankedRows, query])
   const visible = useMemo(() => {
-    return rankedRows
-      .filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase()))
+    return searchedRows
+      .filter(row => matchesMarketFilters(row, listFilters))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
-  }, [rankedRows, query, sort, descending])
+  }, [searchedRows, listFilters, sort, descending])
   const listOrder = useMemo(() => visible.map(row => row.instId), [visible])
-  const turnoverOrder = useMemo(() => [...rows].sort(compareMarketTurnover).map(row => row.instId), [rows])
+  const turnoverOrder = useMemo(() => rankedRows.filter(row => matchesMarketFilters(row, listFilters)).sort(compareMarketTurnover).map(row => row.instId), [rankedRows, listFilters])
+  const countMatches = (filters: FilterConfig) => searchedRows.filter(row => matchesMarketFilters(row, filters)).length
+  const saveFilters = async (filters: FilterConfig) => {
+    acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ marketFiltersJSON: JSON.stringify(filters) }))
+  }
 
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
@@ -157,20 +151,7 @@ function App() {
 
   const saveSetting = (request: SettingRequest) => {
     void window.webkit.messageHandlers.radar.postMessage(request)
-      .then(snapshot => {
-        if (snapshot.revision < revision.current) return
-        revision.current = snapshot.revision
-        setMinimum24hTurnoverUSDT(snapshot.minimum24hTurnoverUSDT)
-        setSpreadFilterEnabled(snapshot.spreadFilterEnabled)
-        setMaximumSpreadPercent(snapshot.maximumSpreadPercent)
-        if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
-        setContractAgeFilterEnabled(snapshot.contractAgeFilterEnabled)
-        setMinimumContractAgeMonths(snapshot.minimumContractAgeMonths)
-        if (!contractAgeDraftDirty.current && document.activeElement?.id !== "minimum-contract-age") setContractAgeDraft(String(snapshot.minimumContractAgeMonths))
-        setRows(snapshot.rows)
-        setUpdatedAt(snapshot.updatedAt)
-        setError(snapshot.error)
-      })
+      .then(acceptSnapshot)
       .catch(cause => setError(cause instanceof Error ? cause.message : "Cannot save setting"))
   }
 
@@ -261,6 +242,7 @@ function App() {
         </Badge>
         <span className="text-xs text-muted-foreground">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString("en-US")}` : "Waiting for data"}</span>
       </header>
+      <MarketFilters filters={listFilters} onApply={saveFilters} countMatches={countMatches} total={searchedRows.length} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
       <section aria-label="Perpetual swap markets" className="flex-1">
         <Table className="table-auto">
@@ -347,7 +329,15 @@ function App() {
                   <div className="flex gap-1" title={BANDWIDTH_EXPANSION_DESCRIPTION}><span className="text-muted-foreground">Expansion</span><span className={cn(row.logBBExpansion && row.logBBExpansion.hours > 0 ? "text-positive" : "text-muted-foreground")}>{formatBandWidthExpansion(row.logBBExpansion)}</span></div>
                 </div>
               </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-16 text-center text-muted-foreground">{rows.length ? "No matching contracts" : "Loading OKX contracts…"}</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-12">
+              <Empty>
+                <EmptyHeader><EmptyTitle>{rows.length ? "No matching contracts" : "Waiting for eligible contracts"}</EmptyTitle><EmptyDescription>{rows.length ? "Adjust the indicator conditions or search to show more markets." : "OKX data is loading. Settings control the turnover, spread, and listing age of eligible markets."}</EmptyDescription></EmptyHeader>
+                <EmptyContent>
+                  {listFilters.rules.length > 0 && <Button variant="outline" size="sm" onClick={() => { void saveFilters(emptyMarketFilters()).catch(cause => setError(cause instanceof Error ? cause.message : "Cannot clear filters")) }}>Clear indicator filters</Button>}
+                  {query && <Button variant="ghost" size="sm" onClick={() => setQuery("")}>Clear search</Button>}
+                </EmptyContent>
+              </Empty>
+            </TableCell></TableRow>}
           </TableBody>
         </Table>
       </section>
