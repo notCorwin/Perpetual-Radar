@@ -204,10 +204,10 @@ function App() {
     else setSpreadDraft(String(value))
   }
 
-  const header = (label: string, key: SortKey, formula?: string, description?: string) => {
+  const header = (label: string, key: SortKey, formula: string, description?: string) => {
     const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
     return <Button variant="ghost" size="sm" className={cn("h-auto min-h-6 gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} aria-pressed={sort === key} title={description}>
-      {formula ? math(formula) : label}<SortIcon data-icon="inline-end" aria-hidden="true" />
+      {math(formula)}<SortIcon data-icon="inline-end" aria-hidden="true" />
     </Button>
   }
 
@@ -266,10 +266,10 @@ function App() {
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={["highBreakout", "highBreakoutPriorAge", "lowBreakdown", "lowBreakdownPriorAge"].includes(sort) ? descending ? "descending" : "ascending" : "none"}>
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-center gap-x-3">
-                  {header("High breakout · 48h", "highBreakout", undefined, BREAK_DESCRIPTION)}
-                  {header("High age", "highBreakoutPriorAge", undefined, "Sort by the previous high's age at the breakout, longest first. Tied highs use the most recent occurrence.")}
-                  {header("Low breakdown · 48h", "lowBreakdown", undefined, BREAK_DESCRIPTION)}
-                  {header("Low age", "lowBreakdownPriorAge", undefined, "Sort by the previous low's age at the breakdown, longest first. Tied lows use the most recent occurrence.")}
+                  {header("High breakout · 48h", "highBreakout", String.raw`\text{High breakout}\cdot48\,\mathrm{h}`, BREAK_DESCRIPTION)}
+                  {header("High age", "highBreakoutPriorAge", String.raw`\text{High age}`, "Sort by the previous high's age at the breakout, longest first. Tied highs use the most recent occurrence.")}
+                  {header("Low breakdown · 48h", "lowBreakdown", String.raw`\text{Low breakdown}\cdot48\,\mathrm{h}`, BREAK_DESCRIPTION)}
+                  {header("Low age", "lowBreakdownPriorAge", String.raw`\text{Low age}`, "Sort by the previous low's age at the breakdown, longest first. Tied lows use the most recent occurrence.")}
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
@@ -289,7 +289,7 @@ function App() {
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("logBB") ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {header("Log BB · Live", "logBBAboveBand", String.raw`\operatorname{LogBB}_{\mathrm{Live}}`, LOG_BB_DESCRIPTION)}
-                  {header("Bandwidth expansion", "logBBExpansion", undefined, BANDWIDTH_EXPANSION_DESCRIPTION)}
+                  {header("Bandwidth expansion", "logBBExpansion", String.raw`\text{Bandwidth expansion}`, BANDWIDTH_EXPANSION_DESCRIPTION)}
                 </div>
               </TableHead>
             </TableRow>
