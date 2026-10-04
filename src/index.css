@@ -54,6 +54,7 @@
 
 :root {
     color-scheme: light;
+    --market-list-design-width: 1600px;
     --market-table-leading-inset: 24px;
     --chart-text-size: 10px;
     --chart-legend-gap: 24px;

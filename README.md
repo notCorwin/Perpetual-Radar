@@ -64,6 +64,8 @@ open ".build/app/Perpetual Radar.app"
 
 `npm run app` compiles the dashboard and Swift executable, then creates an ad hoc signed `.app` bundle. The first launch loads one-hour history across eligible contracts, so some indicators take time to appear. Click a symbol to open its chart in the app. The app stores its SQLite cache at `~/Library/Application Support/PerpetualRadar/radar.sqlite3`.
 
+The market list fills the window width, using a minimum design width of 1600 points and enough room for the widest loaded row. In narrower windows, the toolbar and table scale together after layout, preserving columns and formula rendering. Data refreshes preserve the window size you choose.
+
 Run `npm run ci:local` before pushing to complete CI locally: Swift and TypeScript tests, lint, and a full macOS app build. GitHub Actions handles CD: pushes to `main` build the release package and replace the single GitHub `autobuild` release and tag. Actions does not run the test or lint suites. The release contains only the latest `Perpetual.Radar.app.tar` and `update.json`; previous build assets are removed after the new package is verified and its manifest is published. The release notes show the latest build time, commit, and download link. The updater uses the manifest's SHA-256 digest and the bundle's commit revision to verify the package.
 
 ## Test

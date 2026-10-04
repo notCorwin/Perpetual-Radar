@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, ArrowDownUp, ArrowUp, Radio, Search, Settings2 } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
@@ -18,6 +18,7 @@ import { BANDWIDTH_EXPANSION_DESCRIPTION, LOG_BB_DESCRIPTION, formatBandWidthExp
 import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 import { evaluateMarketOpportunity, OPPORTUNITY_DESCRIPTION } from "@/market-opportunity"
 import { MarketOpportunity } from "@/MarketOpportunity"
+import { MarketListViewport } from "@/MarketListViewport"
 
 type MarketRow = {
   instId: string
@@ -49,7 +50,6 @@ type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: b
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
-  postMessage(request: { fitWidth: number }): Promise<{ ok: boolean }>
   postMessage(request: { captureChart: { x: number; y: number; width: number; height: number } }): Promise<{ ok: boolean }>
   postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number; chartEndHour?: number }): Promise<ChartPollResponse>
 }
@@ -91,7 +91,6 @@ function BreakReadings({ result, direction }: { result: BreakResult; direction: 
 
 function App() {
   const revision = useRef(-1)
-  const requestedFitWidth = useRef(0)
   const contractAgeDraftDirty = useRef(false)
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
@@ -141,34 +140,6 @@ function App() {
     void refresh()
     return () => { stopped = true; window.clearTimeout(timer) }
   }, [selected])
-
-  useLayoutEffect(() => {
-    const table = document.querySelector("table")
-    const container = table?.parentElement
-    if (!table || !container) return
-    const fit = () => {
-      if (!table.isConnected) return
-      table.style.zoom = "1"
-      table.style.width = "max-content"
-      const width = table.scrollWidth
-      const available = container.clientWidth
-      if (!width || !available) return
-      if (width > available + 1 && width !== requestedFitWidth.current) {
-        requestedFitWidth.current = width
-        void window.webkit.messageHandlers.radar.postMessage({ fitWidth: Math.ceil(width) }).catch(() => {})
-      }
-      table.style.width = `${Math.max(width, available)}px`
-      const target = width > available ? available - 1 : available
-      const zoom = Math.min(1, target / width)
-      table.style.zoom = String(zoom)
-      const rendered = table.getBoundingClientRect().width
-      if (Math.abs(rendered - target) > 1) table.style.zoom = String(zoom * target / rendered)
-    }
-    window.addEventListener("resize", fit)
-    fit()
-    void document.fonts.ready.then(fit)
-    return () => window.removeEventListener("resize", fit)
-  }, [selected, rows, query, sort, descending])
 
   const rankedRows = useMemo(() => rows.map(row => ({ ...row, opportunity: evaluateMarketOpportunity(row) })), [rows])
   const visible = useMemo(() => {
@@ -240,8 +211,9 @@ function App() {
   if (selected) return <MarketChart instId={selected} listOrder={listOrder} turnoverOrder={turnoverOrder} onSelect={setSelected} onBack={() => setSelected(null)} />
 
   return (
-    <main className="flex min-h-svh flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
+    <MarketListViewport>
+    <main className="flex min-h-[inherit] flex-col">
+      <header className="flex items-center gap-3 border-b px-4 py-3 whitespace-nowrap">
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT{spreadFilterEnabled ? ` · spread ≤ ${maximumSpreadPercent}%` : ""}{contractAgeFilterEnabled ? ` · age ≥ ${minimumContractAgeMonths} ${minimumContractAgeMonths === 1 ? "month" : "months"}` : ""}</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
@@ -280,7 +252,7 @@ function App() {
             </FieldGroup>
           </PopoverContent>
         </Popover>
-        <div className="relative min-w-48 flex-1 sm:ml-auto sm:max-w-64">
+        <div className="relative ml-auto w-64 shrink-0">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input aria-label="Search contracts" placeholder="Search contracts" value={query} onChange={event => setQuery(event.target.value)} className="pl-8" />
         </div>
@@ -380,6 +352,7 @@ function App() {
         </Table>
       </section>
     </main>
+    </MarketListViewport>
   )
 }
 
