@@ -670,7 +670,7 @@ final class Radar {
                 "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
                 "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
                 "takerRatio": row.takerRatio as Any? ?? null,
-                "oiChange": symmetricChange(currentOI, previousOI[id]) as Any? ?? null,
+                "oiChange": symmetricPercentChange(currentOI, previousOI[id]) as Any? ?? null,
                 "highBreakout": breaks.highBreakout.snapshot,
                 "lowBreakdown": breaks.lowBreakdown.snapshot,
                 "roc": roc as Any? ?? null, "maroc": maroc as Any? ?? null,

@@ -54,9 +54,6 @@ declare global {
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
-const formatOIChange = (value: number | null) => value === null ? "—" : value === 0
-  ? "0.000000"
-  : `${value > 0 ? "+" : ""}${Math.abs(value) < 0.000001 ? value.toExponential(2) : value.toFixed(6)}`
 const formatPercent = (value: number | null) => value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`
 const formatIndicator = (value: number | null) => value === null ? "—" : value.toFixed(2)
 const priceFormatter = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 })
@@ -272,7 +269,7 @@ function App() {
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Change", "oiChange", String.raw`S=\begin{cases}\frac{\mathrm{OI}_t}{\mathrm{OI}_{t-1}}-1,&\mathrm{OI}_t\ge\mathrm{OI}_{t-1}\\-\left(\frac{\mathrm{OI}_{t-1}}{\mathrm{OI}_t}-1\right),&\mathrm{OI}_t<\mathrm{OI}_{t-1}\end{cases}`, "Symmetric hourly OI change S. Reciprocal increases and decreases have equal magnitudes. Displayed without scaling.")}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Change", "oiChange", String.raw`S=\begin{cases}\left(\frac{\mathrm{OI}_t}{\mathrm{OI}_{t-1}}-1\right)\times100\%,&\mathrm{OI}_t\ge\mathrm{OI}_{t-1}\\-\left(\frac{\mathrm{OI}_{t-1}}{\mathrm{OI}_t}-1\right)\times100\%,&\mathrm{OI}_t<\mathrm{OI}_{t-1}\end{cases}`, "Symmetric hourly OI change as a percentage. Reciprocal increases and decreases have equal magnitudes.")}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {header(`ROC ${ROC_PERIOD}`, "roc", String.raw`\operatorname{ROC}_{${ROC_PERIOD}}`)}
@@ -317,7 +314,7 @@ function App() {
                 </div>
               </TableCell>
               <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>
-              <TableCell className={cn("text-center tabular-nums", directionClass(row.oiChange))}>{formatOIChange(row.oiChange)}</TableCell>
+              <TableCell className={cn("text-center tabular-nums", directionClass(row.oiChange))}>{formatPercent(row.oiChange)}</TableCell>
               <TableCell className="text-center tabular-nums">
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
                   <span className={directionClass(row.roc)}><span className="sr-only">ROC </span>{formatIndicator(row.roc)}</span>
