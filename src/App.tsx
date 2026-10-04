@@ -198,7 +198,7 @@ function App() {
 
   const header = (label: string, key: SortKey, formula: string, description?: string) => {
     const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
-    return <Button variant="ghost" size="sm" className="h-auto min-h-6 gap-1" onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} title={description}>
+    return <Button variant="ghost" size="sm" className={cn("h-auto min-h-6 gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} title={description}>
       {math(formula)}<SortIcon data-icon="inline-end" aria-hidden="true" />
     </Button>
   }
@@ -251,7 +251,7 @@ function App() {
         <Table className="table-auto">
           <TableHeader>
             <TableRow className="bg-muted/30">
-              <TableHead className="py-1.5 text-left" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
+              <TableHead className="py-1.5 pl-[var(--market-table-leading-inset)] text-left" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-start">
                   {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
                 </div>
@@ -288,7 +288,7 @@ function App() {
             {visible.length ? visible.map(row => <TableRow key={row.instId} className="cursor-pointer hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2" tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => setSelected(row.instId)} onKeyDown={event => {
               if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(row.instId) }
             }}>
-              <TableCell className="text-left" title={row.instId}>
+              <TableCell className="pl-[var(--market-table-leading-inset)] text-left" title={row.instId}>
                 <span className="font-medium">{row.instId.replace(/-USDT-SWAP$/, "")}</span>
                 <div className="flex justify-start gap-2 text-xs tabular-nums">
                   <span>{formatPrice(row.price)}</span>
