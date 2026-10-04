@@ -38,6 +38,26 @@ func historicalPage(_ rows: [Any], before: Int64) -> [Candle] {
     rows.compactMap { ($0 as? [String]).flatMap(Candle.init) }.filter { $0.confirmed && $0.hour < before }
 }
 
+func updatedEMA200(_ previous: Double?, close: Double?) -> Double? {
+    guard let previous, let close, previous.isFinite, close.isFinite, previous > 0, close > 0 else { return nil }
+    return previous + (close - previous) * (2.0 / 201.0)
+}
+
+enum EMA200Signal: String {
+    case long = "Long"
+    case short = "Short"
+    case unsure = "Unsure"
+}
+
+func ema200Signal(_ candle: Candle?, _ ema: Double?) -> EMA200Signal? {
+    guard let candle, !candle.confirmed, let open = candle.open, let ema,
+          open.isFinite, candle.close.isFinite, ema.isFinite,
+          open > 0, candle.close > 0, ema > 0 else { return nil }
+    if min(open, candle.close) > ema { return .long }
+    if max(open, candle.close) < ema { return .short }
+    return .unsure
+}
+
 func percentChange(_ current: Double?, _ previous: Double?) -> Double? {
     guard let current, let previous, current.isFinite, previous.isFinite else { return nil }
     if previous == 0 {

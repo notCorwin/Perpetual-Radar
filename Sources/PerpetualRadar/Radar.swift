@@ -593,7 +593,7 @@ final class Radar {
         if endHour == nil, let previous = ema200(id, series) {
             let alpha = 2.0 / 201.0
             let last = series[hour] == nil ? hour - hourMS : hour
-            var value = series[hour].map { previous + ($0.close - previous) * alpha } ?? previous
+            var value = series[hour].flatMap { updatedEMA200(previous, close: $0.close) } ?? previous
             for ts in stride(from: last, through: first, by: -Int(hourMS)) {
                 guard let bar = series[ts] else { break }
                 chartEMA[ts] = value
@@ -603,7 +603,7 @@ final class Radar {
         var output: [[String: Any]] = []
         for ts in stride(from: first, through: end, by: Int(hourMS)) {
             guard let bar = series[ts] else { ema = nil; continue }
-            ema = chartEMA[ts] ?? ema.map { $0 + (bar.close - $0) * 2 / 201 }
+            ema = chartEMA[ts] ?? updatedEMA200(ema, close: bar.close)
             guard let open = bar.open else { continue }
             let (roc, maroc) = rocMaroc(series, ts, 9, 9)
             let (upper, middle, lower) = logBB(series, ts)
@@ -661,6 +661,7 @@ final class Radar {
             let (roc, maroc) = rocMaroc(bars, hour, rocPeriod, marocPeriod)
             let current = bars[hour], previous = bars[hour - hourMS]
             let live = current?.confirmed == false ? current : nil
+            let liveEMA = updatedEMA200(ema200(id, bars), close: live?.close)
             let (oldRoc, oldMaroc) = previous?.confirmed == true ? rocMaroc(bars, hour - hourMS, rocPeriod, marocPeriod) : (nil, nil)
             let price = current?.close
             let currentOI = (row.oiTimestamp >= Double(hour) ? row.oiUsd : nil) ?? chartLiveStats[id]?.oi
@@ -668,6 +669,7 @@ final class Radar {
                 "instId": id, "turnover24hUSDT": turnover, "price": price as Any? ?? null,
                 "priceChange": percentageSnapshot(percentChange(price, previous?.confirmed == true ? previous?.close : nil)),
                 "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
+                "ema200Signal": ema200Signal(live, liveEMA)?.rawValue as Any? ?? null,
                 "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
                 "takerRatio": row.takerRatio as Any? ?? null,
                 "oiChange": percentageSnapshot(percentChange(currentOI, previousOI[id])),
