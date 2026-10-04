@@ -251,8 +251,8 @@ function App() {
         <Table className="table-auto">
           <TableHeader>
             <TableRow className="bg-muted/30">
-              <TableHead className="py-1.5 text-center" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
-                <div className="flex flex-col items-center">
+              <TableHead className="py-1.5 text-left" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
+                <div className="flex flex-col items-start">
                   {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
                 </div>
               </TableHead>
@@ -288,17 +288,17 @@ function App() {
             {visible.length ? visible.map(row => <TableRow key={row.instId} className="cursor-pointer hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2" tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => setSelected(row.instId)} onKeyDown={event => {
               if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(row.instId) }
             }}>
-              <TableCell className="text-center" title={row.instId}>
+              <TableCell className="text-left" title={row.instId}>
                 <span className="font-medium">{row.instId.replace(/-USDT-SWAP$/, "")}</span>
-                <div className="flex justify-center gap-2 text-xs tabular-nums">
+                <div className="flex justify-start gap-2 text-xs tabular-nums">
                   <span>{formatPrice(row.price)}</span>
                   <span className={directionClass(row.priceChange)}>{formatPercent(row.priceChange)}</span>
                 </div>
-                <div className="flex items-center justify-center gap-3 text-xs tabular-nums">
+                <div className="flex items-center justify-start gap-3 text-xs tabular-nums">
                   <span className="flex gap-1"><span className="text-muted-foreground">Low</span><span>{formatPrice(row.currentLow)}</span></span>
                   <span className="flex gap-1"><span className="text-muted-foreground">High</span><span>{formatPrice(row.currentHigh)}</span></span>
                 </div>
-                <div className="flex items-center justify-center gap-1 text-xs tabular-nums" title={`${row.turnover24hUSDT.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`}>
+                <div className="flex items-center justify-start gap-1 text-xs tabular-nums" title={`${row.turnover24hUSDT.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`}>
                   <span className="text-muted-foreground">Turnover</span><span>{turnoverFormatter.format(row.turnover24hUSDT)} USDT</span>
                 </div>
               </TableCell>
