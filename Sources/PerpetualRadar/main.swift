@@ -453,8 +453,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9
         let maroc = parameters["marocPeriod"] as? Int ?? 9
-        replyHandler(radar?.snapshot(rocPeriod: roc, marocPeriod: maroc,
-                                     sinceRevision: parameters["sinceRevision"] as? Int), nil)
+        let since = parameters["sinceRevision"] as? Int
+        guard let radar else { replyHandler(nil, "Collector is starting."); return }
+        Task {
+            do { replyHandler(try await radar.asyncSnapshot(rocPeriod: roc, marocPeriod: maroc, sinceRevision: since), nil) }
+            catch { replyHandler(nil, String(describing: error)) }
+        }
     }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {

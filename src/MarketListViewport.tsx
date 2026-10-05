@@ -50,6 +50,6 @@ export function MarketListViewport({ children }: { children: ReactNode }) {
   }, [])
 
   return <div ref={viewportRef} className="w-full overflow-hidden">
-    <div ref={contentRef} className="origin-top-left">{children}</div>
+    <div ref={contentRef} data-market-list-content className="origin-top-left">{children}</div>
   </div>
 }

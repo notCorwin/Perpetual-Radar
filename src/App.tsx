@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { Fragment, memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { ArrowDown, ArrowDownUp, ArrowUp, Radio, Search, ScanSearch, Settings2 } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
@@ -19,8 +19,10 @@ import { MarketChart, type ChartPollResponse } from "@/MarketChart"
 import { OPPORTUNITY_DESCRIPTION } from "@/market-opportunity"
 import { MarketOpportunity } from "@/MarketOpportunity"
 import { MarketListViewport } from "@/MarketListViewport"
+import { MarketRowsViewport } from "@/MarketRowsViewport"
 import { MarketFilters } from "@/MarketFilters"
 import { FilterExplanation } from "@/FilterExplanation"
+import { keepSnapshotValue, reconcileMarketRows } from "@/market-snapshot"
 import { emptyFilterConfig, initialEditorState, parseFilterConfig, previewResponseIsCurrent, newRuleID, type CompileResponse, type ExplainResponse, type FilterCombination, type FilterConfigV2, type FilterEditorState, type FilterMetric, type FilterTruth, type NativeMarketRow } from "@/rule-engine"
 
 type WindowAppearance = { frostedBackgroundEnabled: boolean; frostedBackgroundOpacity: number }
@@ -74,6 +76,58 @@ function BreakReadings({ result, direction }: { result: BreakResult; direction: 
   </Fragment>
 }
 
+const MarketRowView = memo(function MarketRowView({ row, index, onSelect, onExplain }: { row: NativeMarketRow; index: number; onSelect: (id: string) => void; onExplain: (id: string) => void }) {
+  return <TableRow data-market-index={index} aria-rowindex={index + 2} interactive tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => onSelect(row.instId)} onKeyDown={event => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(row.instId) }
+  }}>
+    <TableCell className="pl-[var(--market-table-leading-inset)] text-left" title={row.instId}>
+      <span className="font-medium">{row.instId.replace(/-USDT-SWAP$/, "")}</span>
+      <div className="flex justify-start gap-2 text-xs tabular-nums">
+        <span>{formatPrice(row.price)}</span>
+        <span className={directionClass(row.priceChange)} title={`Price change from the previous completed hour. ${PERCENT_CHANGE_DESCRIPTION}`}>{formatPercent(row.priceChange)}</span>
+      </div>
+      <div className="flex items-center justify-start gap-3 text-xs tabular-nums">
+        <span className="flex gap-1"><span className="text-muted-foreground">Low</span><span>{formatPrice(row.currentLow)}</span></span>
+        <span className="flex gap-1"><span className="text-muted-foreground">High</span><span>{formatPrice(row.currentHigh)}</span></span>
+      </div>
+      <div className="flex items-center justify-start gap-1 text-xs tabular-nums" title={row.turnover24hUSDT === null ? "Hourly turnover is unavailable" : `${row.turnover24hUSDT.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`}>
+        <span className="text-muted-foreground">Turnover</span><span>{row.turnover24hUSDT === null ? "—" : turnoverFormatter.format(row.turnover24hUSDT)} USDT</span>
+      </div>
+    </TableCell>
+    <TableCell className="text-center tabular-nums"><MarketOpportunity instId={row.instId} opportunity={row.opportunity} /><Button variant="ghost" size="sm" className="mt-1" aria-label={`Explain ${row.instId} rules`} onClick={event => { event.stopPropagation(); onExplain(row.instId) }} onKeyDown={event => event.stopPropagation()}><ScanSearch data-icon="inline-start" aria-hidden="true" />Rules</Button></TableCell>
+    <TableCell className="text-center tabular-nums">
+      <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-baseline gap-x-3 text-right">
+        <BreakReadings result={row.highBreakout} direction="high" />
+        <BreakReadings result={row.lowBreakdown} direction="low" />
+      </div>
+    </TableCell>
+    <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>
+    <TableCell className={cn("text-center tabular-nums", directionClass(row.oiChange))}>{formatPercent(row.oiChange)}</TableCell>
+    <TableCell className="text-center tabular-nums">
+      <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
+        <span className={directionClass(row.roc)}><span className="sr-only">ROC </span>{formatPercent(row.roc)}</span>
+        <span className={directionClass(row.rocChange)} title={`Hourly ROC change. ${PERCENT_CHANGE_DESCRIPTION}`}><span className="sr-only">ROC hourly change </span>{formatPercent(row.rocChange)}</span>
+        <span className={directionClass(row.maroc)}><span className="sr-only">MAROC </span>{formatPercent(row.maroc)}</span>
+        <span className={directionClass(row.marocChange)} title={`Hourly MAROC change. ${PERCENT_CHANGE_DESCRIPTION}`}><span className="sr-only">MAROC hourly change </span>{formatPercent(row.marocChange)}</span>
+      </div>
+    </TableCell>
+    <TableCell className="text-center tabular-nums">
+      <div className="flex flex-col items-center text-xs">
+        {RSI_PERIODS.map(period => <div key={period} className="flex gap-1"><span className="text-muted-foreground">{period}</span><span className={rsiClass(row[`rsi${period}`])}>{formatIndicator(row[`rsi${period}`])}</span></div>)}
+      </div>
+    </TableCell>
+    <TableCell className="text-center tabular-nums">
+      <div className="flex flex-col items-center text-xs">
+        <div className="flex gap-1" title={LOG_BB_DESCRIPTION}><span className="text-muted-foreground">Live</span><span className={cn(row.logBBAboveBand === null ? "text-muted-foreground" : row.logBBAboveBand === "below" ? "text-destructive" : "text-positive")}>{formatLiveBand(row.logBBAboveBand)}</span></div>
+        <div className="flex gap-1" title={BANDWIDTH_EXPANSION_DESCRIPTION}><span className="text-muted-foreground">Expansion</span><span className={cn(row.logBBExpansion && row.logBBExpansion.hours > 0 ? "text-positive" : "text-muted-foreground")}>{formatBandWidthExpansion(row.logBBExpansion)}</span></div>
+      </div>
+    </TableCell>
+  </TableRow>
+})
+const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain }: { rows: NativeMarketRow[]; onSelect: (id: string) => void; onExplain: (id: string) => void }) {
+  return <MarketRowsViewport ids={rows.map(row => row.instId)}>{index => <MarketRowView row={rows[index]} index={index} onSelect={onSelect} onExplain={onExplain} />}</MarketRowsViewport>
+})
+
 function App() {
   const revision = useRef(-1)
   const backgroundOpacityDraftDirty = useRef(false)
@@ -107,6 +161,7 @@ function App() {
   const [selected, setSelected] = useState<string | null>(null)
   const [explanationOpen, setExplanationOpen] = useState(false)
   const [explainingId, setExplainingId] = useState<string | null>(null)
+  const explainMarket = useCallback((id: string) => { setExplainingId(id); setExplanationOpen(true) }, [])
   const draftJSON = JSON.stringify(filterDraft ?? listFilters)
   const compileKey = editor.source === null ? draftJSON : `source:${editor.source}`
   const compiling = compilation.pending || compilation.key !== compileKey
@@ -119,7 +174,7 @@ function App() {
     if (snapshot.revision < revision.current) return false
     const includeData = revision.current === -1 || "filterResults" in snapshot
     revision.current = snapshot.revision
-    if (includeData) setRows(snapshot.rows)
+    if (includeData) setRows(current => reconcileMarketRows(current, snapshot.rows))
     setFrostedBackgroundEnabled(snapshot.frostedBackgroundEnabled)
     setFrostedBackgroundOpacity(snapshot.frostedBackgroundOpacity)
     if (!backgroundOpacityDraftDirty.current && document.activeElement?.id !== "background-opacity") setBackgroundOpacityDraft(String(snapshot.frostedBackgroundOpacity))
@@ -127,10 +182,10 @@ function App() {
       appliedJSON.current = snapshot.filterConfigJSON
       setListFilters(parseFilterConfig(snapshot.filterConfigJSON))
     }
-    setFilterCombinations(snapshot.marketFilterCombinations)
+    setFilterCombinations(current => keepSnapshotValue(current, snapshot.marketFilterCombinations))
     setFilterCombinationId(snapshot.selectedMarketFilterCombinationID)
-    setMetrics(snapshot.filterMetricsCatalog)
-    setFunctions(snapshot.filterFunctions)
+    setMetrics(current => keepSnapshotValue(current, snapshot.filterMetricsCatalog))
+    setFunctions(current => keepSnapshotValue(current, snapshot.filterFunctions))
     setUpdatedAt(snapshot.updatedAt)
     setError(snapshot.error)
     setReady(true)
@@ -188,12 +243,13 @@ function App() {
       try {
         const snapshot = await window.webkit.messageHandlers.radar.postMessage({ previewMarketFilters: { filtersJSON: lastValidJSON, token } })
         if (stopped || epoch !== previewEpoch.current) return
-        if (previewResponseIsCurrent(snapshot, token, revision.current) && acceptSnapshot(snapshot)) {
-          setResults(snapshot.filterResults)
+        if (previewResponseIsCurrent(snapshot, token, revision.current)) startTransition(() => {
+          if (!acceptSnapshot(snapshot)) return
+          setResults(current => keepSnapshotValue(current, snapshot.filterResults))
           setPreviewJSON(lastValidJSON)
-          setHistory(snapshot.historyProgress)
+          setHistory(current => keepSnapshotValue(current, snapshot.historyProgress))
           setStatus("Live")
-        }
+        })
       } catch (cause) {
         if (stopped) return
         setStatus("Reconnecting")
@@ -296,7 +352,7 @@ function App() {
       <FilterExplanation open={explanationOpen} onOpenChange={setExplanationOpen} instId={explainingId} onSelect={setExplainingId} rows={rows} results={results} filtersJSON={previewJSON} revision={revision.current} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
       <section aria-label="Perpetual swap markets" className="flex-1">
-        <Table className="table-auto">
+        <Table className="table-auto" data-market-count={visible.length} aria-rowcount={visible.length + 1}>
           <TableHeader>
             <TableRow>
               <TableHead className="py-1.5 pl-[var(--market-table-leading-inset)] text-left" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
@@ -334,53 +390,7 @@ function App() {
               </TableHead>
             </TableRow>
           </TableHeader>
-          <TableBody>
-            {visible.length ? visible.map(row => <TableRow key={row.instId} interactive tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => setSelected(row.instId)} onKeyDown={event => {
-              if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(row.instId) }
-            }}>
-              <TableCell className="pl-[var(--market-table-leading-inset)] text-left" title={row.instId}>
-                <span className="font-medium">{row.instId.replace(/-USDT-SWAP$/, "")}</span>
-                <div className="flex justify-start gap-2 text-xs tabular-nums">
-                  <span>{formatPrice(row.price)}</span>
-                  <span className={directionClass(row.priceChange)} title={`Price change from the previous completed hour. ${PERCENT_CHANGE_DESCRIPTION}`}>{formatPercent(row.priceChange)}</span>
-                </div>
-                <div className="flex items-center justify-start gap-3 text-xs tabular-nums">
-                  <span className="flex gap-1"><span className="text-muted-foreground">Low</span><span>{formatPrice(row.currentLow)}</span></span>
-                  <span className="flex gap-1"><span className="text-muted-foreground">High</span><span>{formatPrice(row.currentHigh)}</span></span>
-                </div>
-                <div className="flex items-center justify-start gap-1 text-xs tabular-nums" title={row.turnover24hUSDT === null ? "Hourly turnover is unavailable" : `${row.turnover24hUSDT.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`}>
-                  <span className="text-muted-foreground">Turnover</span><span>{row.turnover24hUSDT === null ? "—" : turnoverFormatter.format(row.turnover24hUSDT)} USDT</span>
-                </div>
-              </TableCell>
-              <TableCell className="text-center tabular-nums"><MarketOpportunity instId={row.instId} opportunity={row.opportunity} /><Button variant="ghost" size="sm" className="mt-1" aria-label={`Explain ${row.instId} rules`} onClick={event => { event.stopPropagation(); setExplainingId(row.instId); setExplanationOpen(true) }} onKeyDown={event => event.stopPropagation()}><ScanSearch data-icon="inline-start" aria-hidden="true" />Rules</Button></TableCell>
-              <TableCell className="text-center tabular-nums">
-                <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-baseline gap-x-3 text-right">
-                  <BreakReadings result={row.highBreakout} direction="high" />
-                  <BreakReadings result={row.lowBreakdown} direction="low" />
-                </div>
-              </TableCell>
-              <TableCell className={cn("text-center tabular-nums", directionClass(row.takerRatio))} title={row.buy !== null && row.sell !== null ? `Buy ${row.buy.toLocaleString("en-US")} / Sell ${row.sell.toLocaleString("en-US")} contracts` : "Loading current-hour taker volume"}>{formatPercent(row.takerRatio)}</TableCell>
-              <TableCell className={cn("text-center tabular-nums", directionClass(row.oiChange))}>{formatPercent(row.oiChange)}</TableCell>
-              <TableCell className="text-center tabular-nums">
-                <div className="mx-auto grid w-max grid-cols-[max-content_max-content] gap-x-3 text-right">
-                  <span className={directionClass(row.roc)}><span className="sr-only">ROC </span>{formatPercent(row.roc)}</span>
-                  <span className={directionClass(row.rocChange)} title={`Hourly ROC change. ${PERCENT_CHANGE_DESCRIPTION}`}><span className="sr-only">ROC hourly change </span>{formatPercent(row.rocChange)}</span>
-                  <span className={directionClass(row.maroc)}><span className="sr-only">MAROC </span>{formatPercent(row.maroc)}</span>
-                  <span className={directionClass(row.marocChange)} title={`Hourly MAROC change. ${PERCENT_CHANGE_DESCRIPTION}`}><span className="sr-only">MAROC hourly change </span>{formatPercent(row.marocChange)}</span>
-                </div>
-              </TableCell>
-              <TableCell className="text-center tabular-nums">
-                <div className="flex flex-col items-center text-xs">
-                  {RSI_PERIODS.map(period => <div key={period} className="flex gap-1"><span className="text-muted-foreground">{period}</span><span className={rsiClass(row[`rsi${period}`])}>{formatIndicator(row[`rsi${period}`])}</span></div>)}
-                </div>
-              </TableCell>
-              <TableCell className="text-center tabular-nums">
-                <div className="flex flex-col items-center text-xs">
-                  <div className="flex gap-1" title={LOG_BB_DESCRIPTION}><span className="text-muted-foreground">Live</span><span className={cn(row.logBBAboveBand === null ? "text-muted-foreground" : row.logBBAboveBand === "below" ? "text-destructive" : "text-positive")}>{formatLiveBand(row.logBBAboveBand)}</span></div>
-                  <div className="flex gap-1" title={BANDWIDTH_EXPANSION_DESCRIPTION}><span className="text-muted-foreground">Expansion</span><span className={cn(row.logBBExpansion && row.logBBExpansion.hours > 0 ? "text-positive" : "text-muted-foreground")}>{formatBandWidthExpansion(row.logBBExpansion)}</span></div>
-                </div>
-              </TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={8} className="py-12">
+          {visible.length ? <MarketRows rows={visible} onSelect={setSelected} onExplain={explainMarket} /> : <TableBody><TableRow><TableCell colSpan={8} className="py-12">
               <Empty>
                 <EmptyHeader><EmptyTitle>{rows.length ? "No matching contracts" : "Waiting for contracts"}</EmptyTitle><EmptyDescription>{rows.length ? "Adjust the rules or search. Explain markets includes unmatched and unknown contracts." : "OKX hourly data is loading. All universe restrictions are visible in Filters."}</EmptyDescription></EmptyHeader>
                 <EmptyContent>
@@ -389,8 +399,7 @@ function App() {
                   {query && <Button variant="ghost" size="sm" onClick={() => setQuery("")}>Clear search</Button>}
                 </EmptyContent>
               </Empty>
-            </TableCell></TableRow>}
-          </TableBody>
+            </TableCell></TableRow></TableBody>}
         </Table>
       </section>
     </main>

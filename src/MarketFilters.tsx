@@ -14,9 +14,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
-import { FILTER_FIELDS } from "@/market-filters"
 import {
-  canReceiveChildren, comparisons, duplicateRule, emptyFilterConfig, formulaExamples, indicatorTemplates, makeRule, moveRule, newRuleID,
+  canReceiveChildren, categoryComparisons, comparisons, duplicateRule, emptyFilterConfig, formulaExamples, indicatorTemplates, makeRule, moveRule, newRuleID,
   parseFilterConfig, removeRule, ruleCount, ruleKinds, unaryComparison, updateRule,
   type FilterCombination, type FilterConfigV2, type FilterEditorState, type FilterMetric, type NamedFormula, type RuleKind, type RuleNode,
 } from "@/rule-engine"
@@ -34,15 +33,14 @@ function Picker({ value, choices, onChange, label }: { value: string; choices: s
   return <Select value={value} onValueChange={onChange}><SelectTrigger className="w-full" aria-label={label}><SelectValue /></SelectTrigger><SelectContent position="popper"><SelectGroup>{choices.map(([key, title]) => <SelectItem key={key} value={key}>{title}</SelectItem>)}</SelectGroup></SelectContent></Select>
 }
 
-function ExpressionInput({ label, value, onChange, metrics, definitions, choices = [], unit, units = {} }: {
-  label: string; value: string; onChange: (value: string) => void; metrics: FilterMetric[]; definitions: NamedFormula[]; choices?: { value: string; label: string }[]; unit?: string; units?: Record<string, string>
-}) {
+type ExpressionInputProps = { label: string; value: string; onChange: (value: string) => void; onSelectExpression?: (value: string) => void; metrics: FilterMetric[]; definitions: NamedFormula[]; choices?: { value: string; label: string }[]; unit?: string; units?: Record<string, string> }
+function ExpressionInput({ label, value, onChange, onSelectExpression, metrics, definitions, choices = [], unit, units = {} }: ExpressionInputProps) {
   const [open, setOpen] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const template = indicatorTemplates.find(item => item.expression.split("(")[0].toLowerCase() === value.split("(")[0].trim().toLowerCase())
   const parameters = template && value.match(/^[A-Za-z]+\(([^()]*)\)$/)?.[1].split(",").map(item => item.trim())
   const reading = metrics.find(metric => metric.key.toLowerCase() === value.trim().toLowerCase())
-  const insert = (expression: string) => { onChange(expression); setOpen(false); window.requestAnimationFrame(() => input.current?.focus()) }
+  const insert = (expression: string) => { (onSelectExpression ?? onChange)(expression); setOpen(false); window.requestAnimationFrame(() => input.current?.focus()) }
   return <Field>
     <FieldLabel>{label}</FieldLabel>
     <div className="flex items-center gap-1">
@@ -65,6 +63,20 @@ function ExpressionInput({ label, value, onChange, metrics, definitions, choices
       <FieldLabel>{template.params[index]}</FieldLabel><Input type="number" min={index === 1 && template.label.startsWith("Log BB") ? "0" : "1"} step={index === 1 && template.label.startsWith("Log BB") ? "any" : "1"} value={parameter} aria-label={`${label} ${template.params[index]}`} onChange={event => { const next = [...parameters]; next[index] = event.target.value; onChange(`${value.split("(")[0]}(${next.join(", ")})`) }} />
     </Field>)}</FieldGroup>}
   </Field>
+}
+
+function CategoryValueInput(props: ExpressionInputProps) {
+  const [custom, setCustom] = useState(false)
+  const choices = props.choices ?? []
+  const selected = choices.find(choice => JSON.stringify(choice.value) === props.value.trim())
+  const expression = custom || !selected
+  return <FieldGroup className="gap-2">
+    <Field><FieldLabel>Right value</FieldLabel><Picker label="Right value" value={expression ? "expression" : selected.value} choices={[...choices.map(choice => [choice.value, choice.label]), ["expression", "Custom expression…"]]} onChange={value => {
+      setCustom(value === "expression")
+      if (value !== "expression") props.onChange(JSON.stringify(value))
+    }} />{!expression && <FieldDescription>Category</FieldDescription>}</Field>
+    {expression && <ExpressionInput {...props} />}
+  </FieldGroup>
 }
 
 function newBranch(kind: RuleKind): RuleNode {
@@ -102,8 +114,22 @@ function RuleCard({ node, parent, index = 0, tree }: { node: RuleNode; parent?: 
   const propsUnit = (expression: string) => tree.units[expression] ?? metrics.find(item => item.key === expression)?.unit
   const expressionProps = { metrics, definitions, units: tree.units }
   const family = !parent ? ["all", "any"] : ["all", "any", "sequence"].includes(node.kind) ? ["all", "any", "sequence"] : ["not", "every", "recent", "count"].includes(node.kind) ? ["not", "every", "recent", "count"] : ["condition", "crossup", "crossdown"]
-  const choiceField = FILTER_FIELDS[node.left as keyof typeof FILTER_FIELDS]
-  const rightChoices = choiceField && "choices" in choiceField ? choiceField.choices : []
+  const metric = metrics.find(item => item.key.toLowerCase() === node.left.trim().toLowerCase())
+  const rightChoices = metric?.choices ?? []
+  const categorical = metric ? !metric.numeric : ["category", "text"].includes(propsUnit(node.left) ?? "")
+  const selectLeft = (left: string) => {
+    const selected = metrics.find(item => item.key.toLowerCase() === left.toLowerCase())
+    const next: Partial<RuleNode> = { left }
+    if (node.kind === "condition" && selected) {
+      if (!selected.numeric && !categoryComparisons.some(([key]) => key === node.comparison)) next.comparison = "eq"
+      if (!unaryComparison(next.comparison ?? node.comparison)) {
+        const unit = propsUnit(node.right)
+        if (selected.choices.length && (!unit || !["category", "text"].includes(unit) || /^"/.test(node.right.trim()) && !selected.choices.some(choice => JSON.stringify(choice.value) === node.right.trim()))) next.right = JSON.stringify(selected.choices[0].value)
+        else if (selected.numeric && /^"/.test(node.right.trim())) next.right = "0"
+      }
+    }
+    change(next)
+  }
   const move = (direction: -1 | 1) => {
     if (!parent || !parent.children[index + direction]) return
     const root = moveRule(config.root, node.id, parent.id, direction > 0 ? index + 2 : index - 1)
@@ -150,9 +176,9 @@ function RuleCard({ node, parent, index = 0, tree }: { node: RuleNode; parent?: 
           <FieldDescription>Each closed anchor shifts this rule back one hour. Historical offsets remain relative to that anchor.</FieldDescription>
         </FieldGroup>}
         {["condition", "crossup", "crossdown"].includes(node.kind) && <FieldGroup className="grid grid-cols-[minmax(0,1fr)_13rem_minmax(0,1fr)] items-start gap-3">
-          <ExpressionInput label="Left expression" value={node.left} onChange={left => change({ left })} {...expressionProps} />
-          <Field><FieldLabel>Comparison</FieldLabel>{node.kind === "condition" ? <Picker label="Comparison" value={node.comparison} choices={comparisons} onChange={comparison => change({ comparison })} /> : <FieldDescription>{node.kind === "crossup" ? "Previous ≤, current >" : "Previous ≥, current <"}</FieldDescription>}</Field>
-          {(node.kind !== "condition" || !unaryComparison(node.comparison)) && <FieldGroup><ExpressionInput label={node.comparison === "between" ? "Minimum expression" : "Right expression"} value={node.right} onChange={right => change({ right })} {...expressionProps} choices={rightChoices} unit={propsUnit(node.left)} />{node.comparison === "between" && <ExpressionInput label="Maximum expression" value={node.upper} onChange={upper => change({ upper })} {...expressionProps} unit={propsUnit(node.left)} />}</FieldGroup>}
+          <ExpressionInput label="Left expression" value={node.left} onChange={left => change({ left })} onSelectExpression={selectLeft} {...expressionProps} />
+          <Field><FieldLabel>Comparison</FieldLabel>{node.kind === "condition" ? <Picker label="Comparison" value={node.comparison} choices={categorical ? categoryComparisons : comparisons} onChange={comparison => change({ comparison })} /> : <FieldDescription>{node.kind === "crossup" ? "Previous ≤, current >" : "Previous ≥, current <"}</FieldDescription>}</Field>
+          {(node.kind !== "condition" || !unaryComparison(node.comparison)) && <FieldGroup>{node.kind === "condition" && rightChoices.length > 0 ? <CategoryValueInput label="Right expression" value={node.right} onChange={right => change({ right })} {...expressionProps} choices={rightChoices} unit={propsUnit(node.left)} /> : <ExpressionInput label={node.comparison === "between" ? "Minimum expression" : "Right expression"} value={node.right} onChange={right => change({ right })} {...expressionProps} unit={propsUnit(node.left)} />}{node.comparison === "between" && <ExpressionInput label="Maximum expression" value={node.upper} onChange={upper => change({ upper })} {...expressionProps} unit={propsUnit(node.left)} />}</FieldGroup>}
         </FieldGroup>}
         {["every", "recent", "count", "sequence"].includes(node.kind) && <FieldGroup className="grid grid-cols-[12rem_13rem_12rem_minmax(0,1fr)] gap-3">
           <Field><FieldLabel>{node.kind === "sequence" ? "Maximum span (h)" : "Window hours"}</FieldLabel><Input type="number" min="1" step="1" value={node.hours} aria-label="Window hours" onChange={event => change({ hours: Number(event.target.value) })} /></Field>

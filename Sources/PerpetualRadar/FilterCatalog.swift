@@ -3,10 +3,27 @@ import Foundation
 struct FilterMetricInfo: Sendable {
     let key: String, label: String, group: String, description: String, unit: String
     let numeric: Bool
-    var snapshot: [String: Any] { ["key": key, "label": label, "group": group, "description": description, "unit": unit, "numeric": numeric] }
+    var snapshot: [String: Any] { ["key": key, "label": label, "group": group, "description": description, "unit": unit, "numeric": numeric,
+        "choices": FilterCatalog.choices(for: key).map { ["value": $0.value, "label": $0.label] }] }
 }
 
 enum FilterCatalog {
+    struct Choice: Sendable { let value: String, label: String }
+    static func choices(for key: String) -> [Choice] {
+        switch key {
+        case "emaTrend", "oiTrend": return [.init(value: "rising", label: "Rising"), .init(value: "flat", label: "Flat"), .init(value: "falling", label: "Falling")]
+        case "emaBody": return [.init(value: "above", label: "Entire body above"), .init(value: "below", label: "Entire body below"), .init(value: "cross-up", label: "Crossing upward"), .init(value: "cross-down", label: "Crossing downward"), .init(value: "touching", label: "Touching EMA200")]
+        case "candleDirection": return [.init(value: "above", label: "Bullish"), .init(value: "below", label: "Bearish"), .init(value: "equal", label: "Doji")]
+        case "priceEMA", "rsi6vs12", "rsi12vs24", "rocVsMaroc", "buyVsSell", "priceUpper", "priceMiddle", "priceLower", "priceVWAP": return [.init(value: "above", label: "Above / greater"), .init(value: "equal", label: "Equal"), .init(value: "below", label: "Below / less")]
+        case "high48", "high96", "closeHigh48", "closeHigh96", "low48", "low96", "closeLow48", "closeLow96", "recentHigh48", "recentHigh96", "recentLow48", "recentLow96": return [.init(value: "yes", label: "Yes"), .init(value: "no", label: "No")]
+        case "bbZone": return [.init(value: "upper", label: "Above upper"), .init(value: "middle", label: "Middle < price ≤ upper"), .init(value: "lower", label: "Lower < price ≤ middle"), .init(value: "below", label: "At / below lower")]
+        case "bbExpansionComplete": return [.init(value: "complete", label: "Complete"), .init(value: "partial", label: "Lower bound (≥)")]
+        case "opportunityStatus": return ["Candidate", "Watch", "Overheated", "Incomplete"].map { .init(value: $0, label: $0) }
+        case "opportunityDirection": return ["Long", "Short"].map { .init(value: $0, label: $0) }
+        case "opportunitySetup": return ["Startup", "Pullback"].map { .init(value: $0, label: $0) }
+        default: return []
+        }
+    }
     static let metrics: [FilterMetricInfo] = [
         .init(key: "emaTrend", label: "EMA200 trend", group: "EMA & live candle", description: "Live EMA200 compared with the previous completed hour's EMA200.", unit: "category", numeric: false),
         .init(key: "emaSlope", label: "EMA200 hourly slope (%)", group: "EMA & live candle", description: "Percentage change of live EMA200 from the previous completed EMA200.", unit: "%", numeric: true),

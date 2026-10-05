@@ -89,6 +89,8 @@ final class Radar {
     private(set) var marketFilterCombinations: [MarketFilterCombination] = []
     private let historyLoader: FilterHistoryLoader
     private let filterWorker = FilterEvaluationWorker()
+    private let snapshotWorker = MarketSnapshotWorker()
+    private var snapshotGenerations: [String: Int] = [:]
     private var compiledFilters: [String: CompiledFilter] = [:]
     private var liveHourQuotes: [String: FilterQuote] = [:]
     private var closedHourQuotes: [String: [Int64: FilterQuote]] = [:]
@@ -314,25 +316,15 @@ final class Radar {
         } catch { return ["diagnostics": [String(describing: error)]] }
     }
 
-    private func filterContexts(_ snapshot: [String: Any]) -> [FilterMarketData] {
-        (snapshot["rows"] as? [[String: Any]] ?? []).compactMap { row in
-            guard let id = row["instId"] as? String, let market = rows[id] else { return nil }
-            let metrics = row["filterMetrics"] as? [String: Any] ?? [:]
-            let stats = FilterStat(oi: metrics["oiUSD"] as? Double, sell: market.sell, buy: market.buy)
-            let quote = FilterQuote(turnover: market.turnover24hUSDT, spread: market.spreadPercent, timestamp: market.quoteTimestamp)
-            return FilterMarketData(id: id, hour: hour, now: millis(), listedAt: market.listedAt, candles: candles[id] ?? [:], stats: [hour: stats], quotes: [hour: quote],
-                current: LegacyFilterReadings.from(row), previousEMA: metrics["previousEMA200"] as? Double)
-        }
-    }
-
     func previewMarketFilters(filtersJSON: String, token: String) async throws -> [String: Any] {
         let compiled = try compiledFilter(filtersJSON)
         for (id, closed) in try await historyLoader.consumeUpdatedHistory(through: hour - hourMS) where rows[id] != nil {
             candles[id, default: [:]].merge(closed) { _, observed in observed }
-            cachedRows.removeValue(forKey: id); touch(id)
+            invalidateSnapshot(id); touch(id)
         }
-        var response = snapshot(rocPeriod: 9, marocPeriod: 9)
-        let prepared = try await historyLoader.prepare(filterContexts(response), filter: compiled)
+        let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
+        var response = captured.response
+        let prepared = try await historyLoader.prepare(captured.markets, filter: compiled)
         try Task.checkCancellation()
         await historyLoader.schedule(prepared, filter: compiled)
         let results = await filterWorker.evaluate(prepared, filter: compiled)
@@ -344,11 +336,12 @@ final class Radar {
     }
 
     func explainMarketFilters(instId: String, filtersJSON: String, token: String) async throws -> [String: Any] {
-        let compiled = try compiledFilter(filtersJSON), response = snapshot(rocPeriod: 9, marocPeriod: 9)
-        guard let original = filterContexts(response).first(where: { $0.id == instId }) else { throw FilterError("Unknown contract.") }
+        let compiled = try compiledFilter(filtersJSON)
+        let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
+        guard let original = captured.markets.first(where: { $0.id == instId }) else { throw FilterError("Unknown contract.") }
         guard let market = try await historyLoader.prepare([original], filter: compiled).first else { throw FilterError("Contract data is unavailable.") }
         let trace = await filterWorker.explain(market, filter: compiled)
-        return ["instId": instId, "filterToken": token, "revision": response["revision"] ?? 0, "trace": trace.snapshot]
+        return ["instId": instId, "filterToken": token, "revision": captured.response["revision"] ?? 0, "trace": trace.snapshot]
     }
 
     private func getData(_ path: String, _ parameters: [String: String]) async throws -> Data {
@@ -452,7 +445,7 @@ final class Radar {
             rows[id]?.turnover24hUSDT = quotes[id]?.turnover
             rows[id]?.spreadPercent = quotes[id]?.spread
             rows[id]?.quoteTimestamp = quotes[id]?.timestamp ?? 0
-            cachedRows.removeValue(forKey: id)
+            invalidateSnapshot(id)
             if let quote = quotes[id], quote.timestamp >= hour, quote.timestamp < hour + hourMS {
                 liveHourQuotes[id] = FilterQuote(turnover: quote.turnover, spread: quote.spread, timestamp: quote.timestamp)
             }
@@ -483,7 +476,7 @@ final class Radar {
               let current = numeric(item["oi"]), current >= 0,
               let stamp = numeric(item["ts"]), stamp >= row.oiTimestamp else { return }
         row.oiTimestamp = stamp; row.oiUsd = numeric(item["oiUsd"])
-        rows[id] = row; cachedRows.removeValue(forKey: id); touch(id)
+        rows[id] = row; invalidateSnapshot(id); touch(id)
     }
 
     @discardableResult
@@ -496,7 +489,7 @@ final class Radar {
             settled = Candle(hour: old.hour, high: old.high, low: old.low, close: old.close, quoteVolume: old.quoteVolume, baseVolume: bar.baseVolume, open: bar.open)
         } else { settled = bar }
         candles[id, default: [:]][bar.hour] = settled
-        cachedRows.removeValue(forKey: id)
+        invalidateSnapshot(id)
         if settled.confirmed && persist {
             do { try store.save(id, settled) }
             catch { startupError = "Cache error: \(error.localizedDescription)" }
@@ -558,7 +551,7 @@ final class Radar {
                             if ts == hour - hourMS { hasPreviousHour = true }
                         }
                         if hasPreviousHour {
-                            cachedRows.removeValue(forKey: id)
+                            invalidateSnapshot(id)
                             touch(id)
                         }
                         if !hasPreviousHour { failed.insert(id) }
@@ -577,7 +570,7 @@ final class Radar {
                            buy.isFinite, sell.isFinite, buy >= 0, sell >= 0 {
                             rows[id]?.buy = buy; rows[id]?.sell = sell
                             rows[id]?.takerRatio = buy + sell > 0 ? (buy - sell) / (buy + sell) * 100 : nil
-                            cachedRows.removeValue(forKey: id)
+                            invalidateSnapshot(id)
                             touch(id)
                         }
                     }
@@ -659,7 +652,7 @@ final class Radar {
             closedHourQuotes.removeAll()
         } catch { startupError = "Cannot save hourly quote snapshots: \(error.localizedDescription)" }
         hour = current
-        cachedRows.removeAll()
+        invalidateSnapshots()
         for id in rows.keys { chartRevisions[id, default: 0] &+= 1 }
         chartLiveStats.removeAll()
         for id in rows.keys {
@@ -738,7 +731,7 @@ final class Radar {
             } catch { failures.append(label) }
         }
         if updatedOI {
-            cachedRows.removeValue(forKey: id)
+            invalidateSnapshot(id)
             touch(id)
         }
         var result = chartSnapshot(id)
@@ -865,91 +858,27 @@ final class Radar {
         return ["bars": output, "error": "", "revision": chartRevision]
     }
 
-    func snapshot(rocPeriod: Int, marocPeriod: Int, sinceRevision: Int? = nil) -> [String: Any] {
+    private func invalidateSnapshot(_ id: String) {
+        cachedRows.removeValue(forKey: id)
+        snapshotGenerations[id, default: 0] &+= 1
+    }
+    private func invalidateSnapshots() {
+        cachedRows.removeAll()
+        for id in rows.keys { snapshotGenerations[id, default: 0] &+= 1 }
+    }
+
+    private struct SnapshotBatch {
+        var response: [String: Any]
+        var inputs: [MarketSnapshotInput] = []
+        var cached: [String: [String: Any]] = [:]
+        var generations: [String: Int] = [:]
+        var roc = 9, maroc = 9
+    }
+
+    private func snapshotMetadata() -> [String: Any] {
         let error = !startupError.isEmpty ? startupError : !failedPaths.isEmpty ? "Some OKX data is unavailable; retrying." :
             !disconnectedChannels.isEmpty ? "OKX \(disconnectedChannels.sorted()[0]) disconnected; reconnecting." : ""
-        guard (1...100).contains(rocPeriod), (1...100).contains(marocPeriod) else {
-            return ["rows": [], "updatedAt": NSNull(), "error": "Periods must be from 1 to 100.",
-                    "revision": revision,
-                    "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
-                    "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
-                    "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
-                    "frostedBackgroundEnabled": frostedBackgroundEnabled, "frostedBackgroundOpacity": frostedBackgroundOpacity,
-                    "marketFiltersJSON": marketFiltersJSON,
-                    "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
-                    "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]
-        }
-        if cachedPeriods?.roc != rocPeriod || cachedPeriods?.maroc != marocPeriod {
-            cachedRows.removeAll()
-            cachedPeriods = (rocPeriod, marocPeriod)
-        } else if sinceRevision == revision {
-            return ["unchanged": true, "revision": revision, "error": error]
-        }
-        let null = NSNull()
-        let previousOI: [String: Double]
-        do { previousOI = try store.openInterest(hour: hour - hourMS) }
-        catch {
-            startupError = "Cache error: \(error.localizedDescription)"
-            previousOI = [:]
-        }
-        var output: [[String: Any]] = []
-        let now = Date()
-        for id in rows.keys.sorted() {
-            guard let row = rows[id] else { continue }
-            let turnover = row.turnover24hUSDT
-            if let cached = cachedRows[id] { output.append(cached); continue }
-            let bars = candles[id] ?? [:]
-            let breaks = recentExtremesBreaks(bars, hour, listedAt: row.listedAt)
-            let breaks96 = recentExtremesBreaks(bars, hour, listedAt: row.listedAt, lookbackHours: 96)
-            let extremes48 = priorExtremes(bars, hour, hours: 48)
-            let extremes96 = priorExtremes(bars, hour, hours: 96)
-            let (upper, middle, lower) = logBB(bars, hour)
-            let (roc, maroc) = rocMaroc(bars, hour, rocPeriod, marocPeriod)
-            let current = bars[hour], previous = bars[hour - hourMS]
-            let live = current?.confirmed == false ? current : nil
-            let previousEMA = ema200(id, bars)
-            let liveEMA = updatedEMA200(previousEMA, close: live?.close)
-            let (oldRoc, oldMaroc) = previous?.confirmed == true ? rocMaroc(bars, hour - hourMS, rocPeriod, marocPeriod) : (nil, nil)
-            let price = current?.close
-            let currentOI = (row.oiTimestamp >= Double(hour) ? row.oiUsd : nil) ?? chartLiveStats[id]?.oi
-            var result: [String: Any] = [
-                "instId": id, "turnover24hUSDT": turnover as Any? ?? null, "price": price as Any? ?? null,
-                "priceChange": percentageSnapshot(percentChange(price, previous?.confirmed == true ? previous?.close : nil)),
-                "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
-                "ema200Signal": ema200Signal(live, liveEMA)?.rawValue as Any? ?? null,
-                "buy": row.buy as Any? ?? null, "sell": row.sell as Any? ?? null,
-                "takerRatio": row.takerRatio as Any? ?? null,
-                "oiChange": percentageSnapshot(percentChange(currentOI, previousOI[id])),
-                "highBreakout": breaks.highBreakout.snapshot,
-                "lowBreakdown": breaks.lowBreakdown.snapshot,
-                "highBreakout96": breaks96.highBreakout.snapshot,
-                "lowBreakdown96": breaks96.lowBreakdown.snapshot,
-                "roc": percentageSnapshot(roc), "maroc": percentageSnapshot(maroc),
-                "rocChange": percentageSnapshot(percentChange(roc, oldRoc)),
-                "marocChange": percentageSnapshot(percentChange(maroc, oldMaroc)),
-                "rsi6": rsi(bars, hour, 6) as Any? ?? null,
-                "rsi12": rsi(bars, hour, 12) as Any? ?? null,
-                "rsi24": rsi(bars, hour, 24) as Any? ?? null,
-                "logBBAboveBand": logBBAboveBand(price, upper, middle, lower)?.rawValue as Any? ?? null,
-                "logBBExpansion": logBBExpansion(bars, hour, listedAt: row.listedAt)?.snapshot as Any? ?? null,
-                "filterMetrics": [
-                    "liveOpen": live?.open as Any? ?? null, "liveClose": live?.close as Any? ?? null,
-                    "ema200": liveEMA as Any? ?? null, "previousEMA200": previousEMA as Any? ?? null,
-                    "vwap14": vwap14(bars, hour) as Any? ?? null,
-                    "bbUpper": upper as Any? ?? null, "bbMiddle": middle as Any? ?? null, "bbLower": lower as Any? ?? null,
-                    "priorHigh48": extremes48.high as Any? ?? null, "priorLow48": extremes48.low as Any? ?? null,
-                    "priorHigh96": extremes96.high as Any? ?? null, "priorLow96": extremes96.low as Any? ?? null,
-                    "oiUSD": currentOI as Any? ?? null, "spreadPercent": row.spreadPercent as Any? ?? null,
-                    "liveVolumeUSDT": live?.quoteVolume as Any? ?? null,
-                ],
-            ]
-            let context = FilterMarketData(id: id, hour: hour, now: Int64(now.timeIntervalSince1970 * 1000), listedAt: row.listedAt, candles: bars,
-                stats: [:], quotes: [:], current: LegacyFilterReadings.from(result), previousEMA: previousEMA)
-            result["opportunity"] = FilterEvaluator(market: context, filter: CompiledFilter(config: FilterConfigV2())).opportunity(at: hour).snapshot
-            cachedRows[id] = result
-            output.append(result)
-        }
-        return ["rows": output, "updatedAt": updatedAt as Any? ?? null, "error": error, "revision": revision,
+        return ["rows": [[String: Any]](), "updatedAt": updatedAt as Any? ?? NSNull(), "error": error, "revision": revision,
                 "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                 "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
@@ -959,5 +888,67 @@ final class Radar {
                 "filterMetricsCatalog": FilterCatalog.metrics.map(\.snapshot), "filterFunctions": FilterCatalog.functions,
                 "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
                 "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]
+    }
+
+    private func prepareSnapshot(rocPeriod: Int, marocPeriod: Int, sinceRevision: Int? = nil) -> SnapshotBatch {
+        var batch = SnapshotBatch(response: snapshotMetadata(), roc: rocPeriod, maroc: marocPeriod)
+        guard (1...100).contains(rocPeriod), (1...100).contains(marocPeriod) else {
+            batch.response["error"] = "Periods must be from 1 to 100."; return batch
+        }
+        if cachedPeriods?.roc != rocPeriod || cachedPeriods?.maroc != marocPeriod {
+            invalidateSnapshots(); cachedPeriods = (rocPeriod, marocPeriod)
+        } else if sinceRevision == revision {
+            batch.response = ["unchanged": true, "revision": revision, "error": batch.response["error"] ?? ""]; return batch
+        }
+        let previousOI: [String: Double]
+        do { previousOI = try store.openInterest(hour: hour - hourMS) }
+        catch { startupError = "Cache error: \(error.localizedDescription)"; previousOI = [:] }
+        let now = millis()
+        for id in rows.keys.sorted() {
+            guard let row = rows[id] else { continue }
+            let bars = candles[id] ?? [:]
+            batch.inputs.append(.init(id: id, hour: hour, now: now, candles: bars, listedAt: row.listedAt,
+                turnover: row.turnover24hUSDT, spreadPercent: row.spreadPercent, quoteTimestamp: row.quoteTimestamp,
+                buy: row.buy, sell: row.sell, takerRatio: row.takerRatio,
+                currentOI: (row.oiTimestamp >= Double(hour) ? row.oiUsd : nil) ?? chartLiveStats[id]?.oi,
+                previousOI: previousOI[id], previousEMA: ema200(id, bars)))
+            batch.generations[id] = snapshotGenerations[id, default: 0]
+        }
+        batch.cached = cachedRows
+        return batch
+    }
+
+    private func finishSnapshot(_ batch: SnapshotBatch, calculated: [String: MarketSnapshotRow]) -> (response: [String: Any], markets: [FilterMarketData]) {
+        var response = batch.response, output: [[String: Any]] = [], markets: [FilterMarketData] = []
+        for input in batch.inputs {
+            guard let row = calculated[input.id]?.fields ?? batch.cached[input.id] else { continue }
+            output.append(row); markets.append(input.filterData(row: row))
+            // An OI/ticker/candle update during background work must invalidate
+            // this row without changing the captured response's revision.
+            if calculated[input.id] != nil, snapshotGenerations[input.id, default: 0] == batch.generations[input.id], input.hour == hour,
+               cachedPeriods?.roc == batch.roc, cachedPeriods?.maroc == batch.maroc { cachedRows[input.id] = row }
+        }
+        if response["unchanged"] == nil { response["rows"] = output }
+        return (response, markets)
+    }
+
+    private func calculateSnapshot(rocPeriod: Int, marocPeriod: Int, sinceRevision: Int? = nil) async throws -> (response: [String: Any], markets: [FilterMarketData]) {
+        let batch = prepareSnapshot(rocPeriod: rocPeriod, marocPeriod: marocPeriod, sinceRevision: sinceRevision)
+        let missing = batch.inputs.filter { batch.cached[$0.id] == nil }
+        let calculated = try await snapshotWorker.calculate(missing, rocPeriod: rocPeriod, marocPeriod: marocPeriod)
+        try Task.checkCancellation()
+        return finishSnapshot(batch, calculated: calculated)
+    }
+
+    func asyncSnapshot(rocPeriod: Int, marocPeriod: Int, sinceRevision: Int? = nil) async throws -> [String: Any] {
+        try await calculateSnapshot(rocPeriod: rocPeriod, marocPeriod: marocPeriod, sinceRevision: sinceRevision).response
+    }
+
+    // Retain the synchronous read API for persistence clients. Interactive app
+    // requests always use asyncSnapshot / calculateSnapshot above.
+    func snapshot(rocPeriod: Int, marocPeriod: Int, sinceRevision: Int? = nil) -> [String: Any] {
+        let batch = prepareSnapshot(rocPeriod: rocPeriod, marocPeriod: marocPeriod, sinceRevision: sinceRevision)
+        let calculated = Dictionary(uniqueKeysWithValues: batch.inputs.filter { batch.cached[$0.id] == nil }.map { ($0.id, $0.calculate(rocPeriod: rocPeriod, marocPeriod: marocPeriod)) })
+        return finishSnapshot(batch, calculated: calculated).response
     }
 }

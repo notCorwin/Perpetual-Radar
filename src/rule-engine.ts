@@ -9,7 +9,8 @@ export type RuleNode = {
   left: string; comparison: string; right: string; upper: string; hours: number; minimum: number; gapHours: number; captures: NamedFormula[]
 }
 export type FilterConfigV2 = { version: 2; root: RuleNode; definitions: NamedFormula[] }
-export type FilterMetric = { key: string; label: string; group: string; description: string; unit: string; numeric: boolean }
+export type FilterMetricChoice = { value: string; label: string }
+export type FilterMetric = { key: string; label: string; group: string; description: string; unit: string; numeric: boolean; choices: FilterMetricChoice[] }
 export type FilterCombination = { id: string; name: string; filtersJSON: string; filterConfigJSON?: string }
 export type CompileResponse = { configJSON?: string; formula?: string; diagnostics: string[]; requiredHours?: number; units?: Record<string, string> }
 export type FilterTrace = { id: string; label: string; result: FilterTruth; hour: number; readings: Record<string, string>; reason: string; children: FilterTrace[]; eventHours: number[] }
@@ -87,6 +88,7 @@ export const comparisons = [
   ["between", "Between (inclusive)"], ["abs-gte", "Absolute value ≥"], ["abs-lte", "Absolute value ≤"], ["positive", "Positive"], ["negative", "Negative"], ["zero", "Zero"], ["present", "Available"], ["missing", "Unavailable"],
 ]
 export const unaryComparison = (op: string): boolean => ["positive", "negative", "zero", "present", "missing"].includes(op)
+export const categoryComparisons = comparisons.filter(([key]) => ["eq", "neq", "present", "missing"].includes(key))
 export const indicatorTemplates = [
   { expression: "EMA(200)", label: "EMA", unit: "USDT", params: ["Period (h)"] },
   { expression: "RSI(14)", label: "RSI", unit: "0–100", params: ["Period (h)"] },

@@ -92,6 +92,7 @@
     --chart-annotation: var(--control);
     --chart-rsi-area: color-mix(in srgb, var(--foreground) 5%, transparent);
     --market-list-design-width: 1600px;
+    --market-row-estimate: 96px;
     --market-table-leading-inset: 24px;
     --chart-text-size: 10px;
     --chart-legend-gap: 24px;
