@@ -9,6 +9,7 @@ private let maximumSpreadPercentKey = "maximumSpreadPercent"
 private let contractAgeFilterEnabledKey = "contractAgeFilterEnabled"
 private let minimumContractAgeMonthsKey = "minimumContractAgeMonths"
 private let marketFiltersKey = "marketFiltersJSON"
+private let selectedMarketFilterCombinationKey = "selectedMarketFilterCombinationID"
 private let emptyMarketFiltersJSON = "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
 
 func validMarketFiltersJSON(_ value: String) -> Bool {
@@ -80,6 +81,7 @@ final class Radar {
     private(set) var minimumContractAgeMonths: Int
     private(set) var marketFiltersJSON: String
     private(set) var marketFilterCombinations: [MarketFilterCombination]
+    private(set) var selectedMarketFilterCombinationID = ""
     private var rows: [String: Market] = [:]
     private var cachedRows: [String: [String: Any]] = [:]
     private var cachedPeriods: (roc: Int, maroc: Int)?
@@ -129,6 +131,17 @@ final class Radar {
         marketFilterCombinations = try store.marketFilterCombinations()
             .filter { validMarketFiltersJSON($0.filtersJSON) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if let savedSelection = try store.preference(forKey: selectedMarketFilterCombinationKey) {
+            if marketFilterCombinations.contains(where: { $0.id == savedSelection }) {
+                selectedMarketFilterCombinationID = savedSelection
+            } else if !savedSelection.isEmpty {
+                try store.setPreference("", forKey: selectedMarketFilterCombinationKey)
+            }
+        } else if let appliedCombination = marketFilterCombinations.first(where: { $0.filtersJSON == marketFiltersJSON }) {
+            // Recover the applied combination for databases created before selection was persisted.
+            try store.setPreference(appliedCombination.id, forKey: selectedMarketFilterCombinationKey)
+            selectedMarketFilterCombinationID = appliedCombination.id
+        }
     }
 
     deinit {
@@ -188,17 +201,39 @@ final class Radar {
 
     func saveMarketFilterCombination(name: String, filtersJSON: String) throws -> Bool {
         guard let name = normalizedMarketFilterCombinationName(name), validMarketFiltersJSON(filtersJSON) else { return false }
-        let combination = try store.saveMarketFilterCombination(name: name, filtersJSON: filtersJSON)
+        let combination = try store.transaction {
+            let saved = try store.saveMarketFilterCombination(name: name, filtersJSON: filtersJSON)
+            try store.setPreference(saved.id, forKey: selectedMarketFilterCombinationKey)
+            return saved
+        }
         marketFilterCombinations.removeAll { $0.id == combination.id }
         marketFilterCombinations.append(combination)
         marketFilterCombinations.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        selectedMarketFilterCombinationID = combination.id
+        touch()
+        return true
+    }
+
+    func setSelectedMarketFilterCombinationID(_ id: String) throws -> Bool {
+        guard id.isEmpty || marketFilterCombinations.contains(where: { $0.id == id }) else { return false }
+        guard id != selectedMarketFilterCombinationID else { return true }
+        try store.setPreference(id, forKey: selectedMarketFilterCombinationKey)
+        selectedMarketFilterCombinationID = id
         touch()
         return true
     }
 
     func deleteMarketFilterCombination(_ id: String) throws -> Bool {
-        guard try store.deleteMarketFilterCombination(id) else { return false }
+        let deleted = try store.transaction {
+            guard try store.deleteMarketFilterCombination(id) else { return false }
+            if selectedMarketFilterCombinationID == id {
+                try store.setPreference("", forKey: selectedMarketFilterCombinationKey)
+            }
+            return true
+        }
+        guard deleted else { return false }
         marketFilterCombinations.removeAll { $0.id == id }
+        if selectedMarketFilterCombinationID == id { selectedMarketFilterCombinationID = "" }
         touch()
         return true
     }
@@ -715,7 +750,8 @@ final class Radar {
                     "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                     "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
                     "marketFiltersJSON": marketFiltersJSON,
-                    "marketFilterCombinations": marketFilterCombinations.map(\.snapshot)]
+                    "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
+                    "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]
         }
         if cachedPeriods?.roc != rocPeriod || cachedPeriods?.maroc != marocPeriod {
             cachedRows.removeAll()
@@ -792,6 +828,7 @@ final class Radar {
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                 "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
                 "marketFiltersJSON": marketFiltersJSON,
-                "marketFilterCombinations": marketFilterCombinations.map(\.snapshot)]
+                "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
+                "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]
     }
 }

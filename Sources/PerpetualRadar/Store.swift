@@ -73,6 +73,18 @@ final class Store {
         try execute("INSERT INTO preferences (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, value])
     }
 
+    func transaction<T>(_ action: () throws -> T) throws -> T {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let result = try action()
+            try execute("COMMIT")
+            return result
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
     func marketFilterCombinations() throws -> [MarketFilterCombination] {
         let stmt = try statement("SELECT id,name,filters_json FROM market_filter_combinations ORDER BY name COLLATE NOCASE")
         defer { sqlite3_finalize(stmt) }

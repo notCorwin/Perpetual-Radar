@@ -335,6 +335,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 replyHandler(nil, "Cannot save combination: \(error.localizedDescription)"); return
             }
         }
+        if let requested = parameters["selectedMarketFilterCombinationID"] {
+            guard let id = requested as? String, let radar else {
+                replyHandler(nil, "Invalid filter combination selection"); return
+            }
+            do {
+                guard try radar.setSelectedMarketFilterCombinationID(id) else {
+                    replyHandler(nil, "The saved combination no longer exists"); return
+                }
+            } catch {
+                replyHandler(nil, "Cannot remember combination: \(error.localizedDescription)"); return
+            }
+        }
         if let requested = parameters["deleteMarketFilterCombination"] {
             guard let id = requested as? String, let radar else {
                 replyHandler(nil, "Invalid filter combination"); return
@@ -355,7 +367,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                           "contractAgeFilterEnabled": radar?.contractAgeFilterEnabled ?? true,
                           "minimumContractAgeMonths": radar?.minimumContractAgeMonths ?? defaultMinimumContractAgeMonths,
                           "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}",
-                          "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? []], nil)
+                          "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? [],
+                          "selectedMarketFilterCombinationID": radar?.selectedMarketFilterCombinationID ?? ""], nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9

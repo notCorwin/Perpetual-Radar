@@ -24,9 +24,9 @@ import { MarketFilters } from "@/MarketFilters"
 import { emptyMarketFilters, matchesMarketFilters, parseMarketFilters, previewMarketFilters, type MarketFilterCombination, type MarketFilters as FilterConfig } from "@/market-filters"
 import type { MarketRow } from "@/market-row"
 
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number; marketFiltersJSON: string; marketFilterCombinations: MarketFilterCombination[] }
+type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number; marketFiltersJSON: string; marketFilterCombinations: MarketFilterCombination[]; selectedMarketFilterCombinationID: string }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number; marketFiltersJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string }
+type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number; marketFiltersJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
@@ -76,6 +76,7 @@ function App() {
   const [listFilters, setListFilters] = useState<FilterConfig>(emptyMarketFilters)
   const [filterDraft, setFilterDraft] = useState<FilterConfig | null>(null)
   const [filterCombinations, setFilterCombinations] = useState<MarketFilterCombination[]>([])
+  const [filterCombinationId, setFilterCombinationId] = useState("")
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
@@ -108,6 +109,7 @@ function App() {
       setListFilters(parseMarketFilters(snapshot.marketFiltersJSON))
     }
     setFilterCombinations(snapshot.marketFilterCombinations)
+    setFilterCombinationId(snapshot.selectedMarketFilterCombinationID)
     setUpdatedAt(snapshot.updatedAt)
     setError(snapshot.error)
   }
@@ -153,6 +155,9 @@ function App() {
     const saved = snapshot.marketFilterCombinations.find(combination => combination.name === name.trim())
     if (!saved) throw new Error("Cannot find the saved combination. Try again.")
     return saved
+  }
+  const selectFilterCombination = async (id: string) => {
+    acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ selectedMarketFilterCombinationID: id }))
   }
   const deleteFilterCombination = async (id: string) => {
     acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ deleteMarketFilterCombination: id }))
@@ -256,7 +261,7 @@ function App() {
         </Badge>
         <span className="text-xs text-muted-foreground">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString("en-US")}` : "Waiting for data"}</span>
       </header>
-      <MarketFilters filters={listFilters} draft={filterDraft} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} matches={visible.length} total={searchedRows.length} />
+      <MarketFilters filters={listFilters} draft={filterDraft} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} matches={visible.length} total={searchedRows.length} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
       <section aria-label="Perpetual swap markets" className="flex-1">
         <Table className="table-auto">

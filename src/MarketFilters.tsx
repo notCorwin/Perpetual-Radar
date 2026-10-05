@@ -22,6 +22,8 @@ type Props = {
   onDraftChange: (draft: FilterConfig | null) => void
   onApply: (filters: FilterConfig) => Promise<void>
   combinations: MarketFilterCombination[]
+  combinationId: string
+  onSelectCombination: (id: string) => Promise<void>
   onSaveCombination: (name: string, filters: FilterConfig) => Promise<MarketFilterCombination>
   onDeleteCombination: (id: string) => Promise<void>
   matches: number
@@ -105,20 +107,20 @@ function FilterCondition({ rule, index, onChange, onRemove, showError, reorder }
   </FieldSet>
 }
 
-export function MarketFilters({ filters, draft: draftOverride, onDraftChange, onApply, combinations, onSaveCombination, onDeleteCombination, matches, total }: Props) {
+export function MarketFilters({ filters, draft: draftOverride, onDraftChange, onApply, combinations, combinationId, onSelectCombination, onSaveCombination, onDeleteCombination, matches, total }: Props) {
   const [open, setOpen] = useState(true)
   const draft = draftOverride ?? filters
   const preview = previewMarketFilters(draft)
   const [showErrors, setShowErrors] = useState(false)
-  const [saving, setSaving] = useState<"filters" | "combination" | "delete" | null>(null)
+  const [saving, setSaving] = useState<"filters" | "combination" | "selection" | "delete" | null>(null)
   const [saveError, setSaveError] = useState("")
   const [feedback, setFeedback] = useState("")
-  const [combinationId, setCombinationId] = useState("")
-  const [combinationName, setCombinationName] = useState("")
+  const [nameDraft, setNameDraft] = useState<{ combinationId: string; value: string } | null>(null)
   const [nameError, setNameError] = useState("")
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const selectedCombination = combinations.find(combination => combination.id === combinationId)
+  const combinationName = nameDraft && nameDraft.combinationId === combinationId ? nameDraft.value : selectedCombination?.name ?? ""
   const existingCombination = combinations.find(combination => combination.name.toLowerCase() === combinationName.trim().toLowerCase())
   const formRef = useRef<HTMLFormElement>(null)
   const dirty = JSON.stringify(filters) !== JSON.stringify(draft)
@@ -183,12 +185,25 @@ export function MarketFilters({ filters, draft: draftOverride, onDraftChange, on
     setSaveError("")
     setNameError("")
     try {
-      const saved = await onSaveCombination(name, draft)
-      setCombinationId(saved.id)
-      setCombinationName(saved.name)
+      await onSaveCombination(name, draft)
+      setNameDraft(null)
       setShowErrors(false)
       setFeedback("Combination saved. Apply filters to confirm the draft.")
     } catch (cause) { setOpen(true); setSaveError(cause instanceof Error ? cause.message : "Cannot save combination. Try again.") }
+    finally { setSaving(null) }
+  }
+  const loadCombination = async (id: string) => {
+    const combination = combinations.find(item => item.id === id)
+    if (!combination) return
+    setSaving("selection")
+    setSaveError("")
+    try {
+      await onSelectCombination(id)
+      setNameDraft(null)
+      setNameError("")
+      setShowErrors(false)
+      edit(parseMarketFilters(combination.filtersJSON))
+    } catch (cause) { setOpen(true); setSaveError(cause instanceof Error ? cause.message : "Cannot remember combination. Try again.") }
     finally { setSaving(null) }
   }
   const deleteCombination = async () => {
@@ -197,8 +212,7 @@ export function MarketFilters({ filters, draft: draftOverride, onDraftChange, on
     setSaveError("")
     try {
       await onDeleteCombination(selectedCombination.id)
-      setCombinationId("")
-      setCombinationName("")
+      setNameDraft(null)
       setNameError("")
       setFeedback("Saved combination deleted.")
     } catch (cause) { setOpen(true); setSaveError(cause instanceof Error ? cause.message : "Cannot delete combination. Try again.") }
@@ -242,22 +256,17 @@ export function MarketFilters({ filters, draft: draftOverride, onDraftChange, on
           <FieldGroup className="grid grid-cols-[20rem_20rem_auto_auto_minmax(0,1fr)] items-end gap-3">
             <Field>
               <FieldLabel htmlFor="filter-saved-combinations">Saved combinations</FieldLabel>
-              <Select value="" disabled={!combinations.length} onValueChange={id => {
-                const combination = combinations.find(item => item.id === id)
-                if (!combination) return
-                setCombinationId(id)
-                setCombinationName(combination.name)
-                setNameError("")
-                setShowErrors(false)
-                edit(parseMarketFilters(combination.filtersJSON))
-              }}>
-                <SelectTrigger id="filter-saved-combinations" className="w-full"><SelectValue placeholder={selectedCombination?.name ?? (combinations.length ? "Choose saved combination…" : "No saved combinations")} /></SelectTrigger>
-                <SelectContent position="popper"><SelectGroup>{combinations.map(combination => <SelectItem key={combination.id} value={combination.id}>{combination.name}</SelectItem>)}</SelectGroup></SelectContent>
-              </Select>
+              <div className="flex items-center gap-2">
+                <Select value={selectedCombination?.id ?? ""} disabled={!combinations.length} onValueChange={id => { void loadCombination(id) }}>
+                  <SelectTrigger id="filter-saved-combinations" className="w-full min-w-0"><SelectValue placeholder={combinations.length ? "Choose saved combination…" : "No saved combinations"} /></SelectTrigger>
+                  <SelectContent position="popper"><SelectGroup>{combinations.map(combination => <SelectItem key={combination.id} value={combination.id}>{combination.name}</SelectItem>)}</SelectGroup></SelectContent>
+                </Select>
+                <Button type="button" variant="ghost" size="icon" disabled={!selectedCombination} onClick={() => { if (selectedCombination) void loadCombination(selectedCombination.id) }} aria-label="Reload selected combination" title="Reload selected combination">{saving === "selection" ? <Spinner aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}</Button>
+              </div>
             </Field>
             <Field data-invalid={Boolean(nameError)}>
               <FieldLabel htmlFor="filter-combination-name">Combination name</FieldLabel>
-              <Input id="filter-combination-name" name="combinationName" value={combinationName} onChange={event => { setCombinationName(event.target.value); setNameError("") }} maxLength={80} autoComplete="off" placeholder="Name this combination…" aria-invalid={Boolean(nameError)} aria-describedby={nameError ? "filter-combination-name-error" : undefined} />
+              <Input id="filter-combination-name" name="combinationName" value={combinationName} onChange={event => { setNameDraft({ combinationId, value: event.target.value }); setNameError("") }} maxLength={80} autoComplete="off" placeholder="Name this combination…" aria-invalid={Boolean(nameError)} aria-describedby={nameError ? "filter-combination-name-error" : undefined} />
               {nameError && <FieldError id="filter-combination-name-error">{nameError}</FieldError>}
             </Field>
             <Button type="button" variant="outline" onClick={() => { void saveCombination() }}>{saving === "combination" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <Save data-icon="inline-start" aria-hidden="true" />}{existingCombination ? "Update combination" : "Save combination"}</Button>
