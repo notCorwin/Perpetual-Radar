@@ -6,7 +6,7 @@ let chartHours = 96
 let breakoutLookbackHours = 48
 let breakoutSearchHours = 48
 
-struct Candle {
+struct Candle: Sendable {
     let hour: Int64
     let open: Double?
     let high: Double
@@ -28,9 +28,9 @@ struct Candle {
         confirmed = values[8] == "1"; quoteVolume = quote; baseVolume = base
     }
 
-    init(hour: Int64, high: Double, low: Double, close: Double, quoteVolume: Double, baseVolume: Double?, open: Double? = nil) {
+    init(hour: Int64, high: Double, low: Double, close: Double, quoteVolume: Double, baseVolume: Double?, open: Double? = nil, confirmed: Bool = true) {
         self.hour = hour; self.open = open; self.high = high; self.low = low; self.close = close
-        confirmed = true; self.quoteVolume = quoteVolume; self.baseVolume = baseVolume
+        self.confirmed = confirmed; self.quoteVolume = quoteVolume; self.baseVolume = baseVolume
     }
 }
 
@@ -85,7 +85,7 @@ func completedHistoryHours(at hour: Int64, since listedAt: Int64?, limit: Int) -
     return Int(min(Int64(limit), (hour - firstHour) / hourMS))
 }
 
-struct BreakEvent: Equatable {
+struct BreakEvent: Equatable, Sendable {
     let hour: Int64
     let hoursAgo: Int
     let priorHour: Int64
@@ -94,7 +94,7 @@ struct BreakEvent: Equatable {
     let live: Bool
 }
 
-enum BreakResult: Equatable {
+enum BreakResult: Equatable, Sendable {
     case event(BreakEvent)
     case none
     case insufficientHistory
@@ -114,13 +114,13 @@ enum BreakResult: Equatable {
 }
 
 func recentExtremesBreaks(_ bars: [Int64: Candle], _ hour: Int64, listedAt: Int64? = nil,
-                         lookbackHours: Int = breakoutLookbackHours) -> (highBreakout: BreakResult, lowBreakdown: BreakResult) {
+                         lookbackHours: Int = breakoutLookbackHours, searchHours: Int = breakoutSearchHours) -> (highBreakout: BreakResult, lowBreakdown: BreakResult) {
     guard lookbackHours > 0,
           completedHistoryHours(at: hour, since: listedAt, limit: lookbackHours) == lookbackHours else {
         return (.insufficientHistory, .insufficientHistory)
     }
     var highBreakout: BreakResult?, lowBreakdown: BreakResult?
-    for age in 0..<breakoutSearchHours {
+    for age in 0..<max(0, searchHours) {
         let candidateHour = hour - Int64(age) * hourMS
         // Do not shorten the comparison window for newly listed contracts.
         guard completedHistoryHours(at: candidateHour, since: listedAt, limit: lookbackHours) == lookbackHours else { break }
@@ -190,9 +190,9 @@ func vwap14(_ bars: [Int64: Candle], _ hour: Int64) -> Double? {
     return base > 0 ? quote / base : nil
 }
 
-func rsi(_ bars: [Int64: Candle], _ hour: Int64, _ period: Int) -> Double? {
+func rsi(_ bars: [Int64: Candle], _ hour: Int64, _ period: Int, historyHours: Int = candleLookback) -> Double? {
     var closes: [Double] = []
-    for age in 0...candleLookback {
+    for age in 0...historyHours {
         guard let bar = bars[hour - Int64(age) * hourMS], age == 0 || bar.confirmed else { break }
         closes.append(bar.close)
     }
@@ -245,7 +245,7 @@ func logBBAboveBand(_ price: Double?, _ upper: Double?, _ middle: Double?, _ low
     return .below
 }
 
-struct BandWidthExpansion: Equatable {
+struct BandWidthExpansion: Equatable, Sendable {
     let hours: Int
     let complete: Bool
 

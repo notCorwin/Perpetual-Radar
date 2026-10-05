@@ -4,9 +4,10 @@ struct MarketFilterCombination: Equatable {
     let id: String
     let name: String
     let filtersJSON: String
+    var filtersV2JSON: String? = nil
 
     var snapshot: [String: Any] {
-        ["id": id, "name": name, "filtersJSON": filtersJSON]
+        ["id": id, "name": name, "filtersJSON": filtersJSON, "filterConfigJSON": filtersV2JSON ?? filtersJSON]
     }
 }
 

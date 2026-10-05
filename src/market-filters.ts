@@ -140,8 +140,8 @@ export const FILTER_FIELDS = {
   vwapDistance: numeric("Distance from VWAP14 (%)", "Bands & VWAP", "Signed (live close − VWAP14) / VWAP14 × 100%.", r => percent(r.filterMetrics?.liveClose, r.filterMetrics?.vwap14)),
   price: numeric("Live price (USDT)", "Market & opportunity", "Current live hourly close in USDT.", r => finite(r.filterMetrics?.liveClose), nonnegative),
   priceChange: numeric("Hourly price change (%)", "Market & opportunity", "Live close compared with the previous completed hourly close.", r => percentageNumber(r.priceChange)),
-  turnover: numeric("24h turnover (M USDT)", "Market & opportunity", "24-hour turnover in millions of USDT. Applies within the universe selected in Settings.", r => r.turnover24hUSDT / 1_000_000, nonnegative),
-  spread: numeric("Bid–ask spread (%)", "Market & opportunity", "Current ticker spread in percent. Applies within the universe selected in Settings.", r => finite(r.filterMetrics?.spreadPercent), nonnegative),
+  turnover: numeric("24h turnover (M USDT)", "Market & opportunity", "24-hour turnover in millions of USDT.", r => r.turnover24hUSDT === null ? null : r.turnover24hUSDT / 1_000_000, nonnegative),
+  spread: numeric("Bid–ask spread (%)", "Market & opportunity", "Current ticker spread in percent.", r => finite(r.filterMetrics?.spreadPercent), nonnegative),
   liveVolume: numeric("Live candle volume (USDT)", "Market & opportunity", "Current hourly candle's accumulated quote volume in USDT.", r => finite(r.filterMetrics?.liveVolumeUSDT), nonnegative),
   opportunityStatus: choice("Opportunity status", "Market & opportunity", "Current ranking classification. Scores are unchanged by filtering.", [
     { value: "Candidate", label: "Candidate" }, { value: "Watch", label: "Watch" },

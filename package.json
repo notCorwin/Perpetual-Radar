@@ -7,11 +7,13 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
     "test": "swift test && node --experimental-strip-types --test src/*.test.ts",
-    "ci:local": "npm test && npm run lint && CI=1 npm run app",
-    "app": "scripts/build-app.sh"
+    "ci:local": "npm test && npm run lint && CI=1 npm run app && RADAR_UI_TESTS=1 swift test --filter RuleEditorUITests",
+    "app": "scripts/build-app.sh",
+    "test:ui": "npm run build && RADAR_UI_TESTS=1 swift test --filter RuleEditorUITests"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
+    "cmdk": "^1.1.1",
     "cn": "^0.4.0",
     "katex": "^0.18.9",
     "lucide-react": "^1.48.0",

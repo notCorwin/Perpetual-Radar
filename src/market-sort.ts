@@ -8,7 +8,7 @@ export type SortKey = "opportunity" | "turnover24hUSDT" | "highBreakout" | "high
 
 export type SortableRow = {
   instId: string
-  turnover24hUSDT: number
+  turnover24hUSDT: number | null
   highBreakout: BreakResult
   lowBreakdown: BreakResult
   takerRatio: number | null
@@ -23,8 +23,11 @@ export type SortableRow = {
   opportunity?: OpportunityResult
 }
 
-export function compareMarketTurnover(a: { instId: string; turnover24hUSDT: number }, b: { instId: string; turnover24hUSDT: number }): number {
-  return b.turnover24hUSDT - a.turnover24hUSDT || a.instId.localeCompare(b.instId)
+export function compareMarketTurnover(a: { instId: string; turnover24hUSDT: number | null }, b: { instId: string; turnover24hUSDT: number | null }): number {
+  const left = a.turnover24hUSDT, right = b.turnover24hUSDT
+  if (left === null || right === null) { if (left !== right) return left === null ? 1 : -1 }
+  else if (left !== right) return right - left
+  return a.instId.localeCompare(b.instId)
 }
 
 export function wrappedMarket(order: string[], index: number): string | undefined {

@@ -9,12 +9,14 @@ private let maximumSpreadPercentKey = "maximumSpreadPercent"
 private let contractAgeFilterEnabledKey = "contractAgeFilterEnabled"
 private let minimumContractAgeMonthsKey = "minimumContractAgeMonths"
 private let marketFiltersKey = "marketFiltersJSON"
+private let marketFiltersV2Key = "marketFiltersV2JSON"
 private let selectedMarketFilterCombinationKey = "selectedMarketFilterCombinationID"
 private let frostedBackgroundEnabledKey = "frostedBackgroundEnabled"
 private let frostedBackgroundOpacityKey = "frostedBackgroundOpacity"
 private let emptyMarketFiltersJSON = "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
 
 func validMarketFiltersJSON(_ value: String) -> Bool {
+    if let config = try? FilterConfigV2.decode(value) { return (try? FilterCompiler.compile(config)) != nil }
     guard let data = value.data(using: .utf8),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           object["version"] as? Int == 1,
@@ -65,6 +67,7 @@ private struct Market {
     let listedAt: Int64?
     var turnover24hUSDT: Double?
     var spreadPercent: Double?
+    var quoteTimestamp: Int64 = 0
     var oiTimestamp = 0.0
     var oiUsd: Double?
     var buy: Double?
@@ -82,7 +85,13 @@ final class Radar {
     private(set) var contractAgeFilterEnabled: Bool
     private(set) var minimumContractAgeMonths: Int
     private(set) var marketFiltersJSON: String
-    private(set) var marketFilterCombinations: [MarketFilterCombination]
+    private(set) var marketFiltersV2JSON = FilterConfigV2().json
+    private(set) var marketFilterCombinations: [MarketFilterCombination] = []
+    private let historyLoader: FilterHistoryLoader
+    private let filterWorker = FilterEvaluationWorker()
+    private var compiledFilters: [String: CompiledFilter] = [:]
+    private var liveHourQuotes: [String: FilterQuote] = [:]
+    private var closedHourQuotes: [String: [Int64: FilterQuote]] = [:]
     private(set) var selectedMarketFilterCombinationID = ""
     private(set) var frostedBackgroundEnabled: Bool
     private(set) var frostedBackgroundOpacity: Double
@@ -127,17 +136,34 @@ final class Radar {
         frostedBackgroundEnabled = try store.preference(forKey: frostedBackgroundEnabledKey) != "false"
         let savedOpacity = (try store.preference(forKey: frostedBackgroundOpacityKey)).flatMap(Double.init) ?? 0.3
         frostedBackgroundOpacity = savedOpacity.isFinite && (0...1).contains(savedOpacity) ? savedOpacity : 0.3
+        historyLoader = FilterHistoryLoader(url: store.url)
         let storedFilters = try store.preference(forKey: marketFiltersKey)
         let savedFilters = storedFilters ?? defaults.string(forKey: marketFiltersKey) ?? emptyMarketFiltersJSON
         marketFiltersJSON = validMarketFiltersJSON(savedFilters) ? savedFilters : emptyMarketFiltersJSON
-        if storedFilters != marketFiltersJSON {
-            try store.setPreference(marketFiltersJSON, forKey: marketFiltersKey)
-        }
-        // Remove the legacy copy only after SQLite has committed the configuration.
-        defaults.removeObject(forKey: marketFiltersKey)
-        marketFilterCombinations = try store.marketFilterCombinations()
+        let legacyCombinations = try store.marketFilterCombinations()
             .filter { validMarketFiltersJSON($0.filtersJSON) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        // Both the applied configuration and every saved combination migrate in
+        // one transaction. Legacy JSON remains available for recovery/older builds.
+        let migration = try store.transaction { () -> (String, [MarketFilterCombination]) in
+            if storedFilters != marketFiltersJSON { try store.setPreference(marketFiltersJSON, forKey: marketFiltersKey) }
+            let sourceConfig = try (try store.preference(forKey: marketFiltersV2Key)).map(FilterConfigV2.decode) ?? FilterConfigV2.migrate(marketFiltersJSON,
+                turnover: minimum24hTurnoverUSDT, spread: spreadFilterEnabled ? maximumSpreadPercent : nil, ageMonths: contractAgeFilterEnabled ? minimumContractAgeMonths : nil)
+            let config = try FilterCompiler.compile(sourceConfig).config
+            try store.setPreference(config.json, forKey: marketFiltersV2Key)
+            let combinations = try legacyCombinations.map { original in
+                var combination = original
+                let sourceConfig = try original.filtersV2JSON.map(FilterConfigV2.decode) ?? FilterConfigV2.migrate(original.filtersJSON,
+                    turnover: minimum24hTurnoverUSDT, spread: spreadFilterEnabled ? maximumSpreadPercent : nil, ageMonths: contractAgeFilterEnabled ? minimumContractAgeMonths : nil)
+                let config = try FilterCompiler.compile(sourceConfig).config
+                if original.filtersV2JSON != config.json { try store.saveCombinationV2(original.id, json: config.json) }
+                combination.filtersV2JSON = config.json
+                return combination
+            }
+            return (config.json, combinations)
+        }
+        marketFiltersV2JSON = migration.0; marketFilterCombinations = migration.1
+        defaults.removeObject(forKey: marketFiltersKey)
         if let savedSelection = try store.preference(forKey: selectedMarketFilterCombinationKey) {
             if marketFilterCombinations.contains(where: { $0.id == savedSelection }) {
                 selectedMarketFilterCombinationID = savedSelection
@@ -200,8 +226,13 @@ final class Radar {
 
     func setMarketFiltersJSON(_ value: String) throws -> Bool {
         guard validMarketFiltersJSON(value) else { return false }
-        try store.setPreference(value, forKey: marketFiltersKey)
+        let config = try FilterCompiler.compile(migratedFilter(value)).config
+        try store.transaction {
+            try store.setPreference(value, forKey: marketFiltersKey)
+            try store.setPreference(config.json, forKey: marketFiltersV2Key)
+        }
         marketFiltersJSON = value
+        marketFiltersV2JSON = config.json
         touch()
         return true
     }
@@ -223,8 +254,9 @@ final class Radar {
 
     func saveMarketFilterCombination(name: String, filtersJSON: String) throws -> Bool {
         guard let name = normalizedMarketFilterCombinationName(name), validMarketFiltersJSON(filtersJSON) else { return false }
+        let config = try FilterCompiler.compile(migratedFilter(filtersJSON)).config
         let combination = try store.transaction {
-            let saved = try store.saveMarketFilterCombination(name: name, filtersJSON: filtersJSON)
+            let saved = try store.saveMarketFilterCombination(name: name, filtersJSON: filtersJSON, filtersV2JSON: config.json)
             try store.setPreference(saved.id, forKey: selectedMarketFilterCombinationKey)
             return saved
         }
@@ -258,6 +290,65 @@ final class Radar {
         if selectedMarketFilterCombinationID == id { selectedMarketFilterCombinationID = "" }
         touch()
         return true
+    }
+
+    private func migratedFilter(_ value: String) throws -> FilterConfigV2 {
+        try FilterConfigV2.migrate(value, turnover: minimum24hTurnoverUSDT, spread: spreadFilterEnabled ? maximumSpreadPercent : nil,
+                                   ageMonths: contractAgeFilterEnabled ? minimumContractAgeMonths : nil)
+    }
+
+    private func compiledFilter(_ value: String) throws -> CompiledFilter {
+        if let cached = compiledFilters[value] { return cached }
+        let compiled = try FilterCompiler.compile(FilterConfigV2.decode(value))
+        if compiledFilters.count >= 8 { compiledFilters.removeAll() }
+        compiledFilters[value] = compiled; return compiled
+    }
+
+    func compileMarketFilters(_ request: [String: Any]) -> [String: Any] {
+        do {
+            let compiled: CompiledFilter
+            if let source = request["source"] as? String { compiled = try FilterCompiler.compile(source: source, previous: (request["previousJSON"] as? String).flatMap { try? FilterConfigV2.decode($0) }) }
+            else if let json = request["filtersJSON"] as? String { compiled = try compiledFilter(json) }
+            else { throw FilterError("Provide a formula or filter configuration.") }
+            return ["configJSON": compiled.config.json, "formula": compiled.formula, "diagnostics": [], "requiredHours": compiled.requiredHours, "units": compiled.units]
+        } catch { return ["diagnostics": [String(describing: error)]] }
+    }
+
+    private func filterContexts(_ snapshot: [String: Any]) -> [FilterMarketData] {
+        (snapshot["rows"] as? [[String: Any]] ?? []).compactMap { row in
+            guard let id = row["instId"] as? String, let market = rows[id] else { return nil }
+            let metrics = row["filterMetrics"] as? [String: Any] ?? [:]
+            let stats = FilterStat(oi: metrics["oiUSD"] as? Double, sell: market.sell, buy: market.buy)
+            let quote = FilterQuote(turnover: market.turnover24hUSDT, spread: market.spreadPercent, timestamp: market.quoteTimestamp)
+            return FilterMarketData(id: id, hour: hour, now: millis(), listedAt: market.listedAt, candles: candles[id] ?? [:], stats: [hour: stats], quotes: [hour: quote],
+                current: LegacyFilterReadings.from(row), previousEMA: metrics["previousEMA200"] as? Double)
+        }
+    }
+
+    func previewMarketFilters(filtersJSON: String, token: String) async throws -> [String: Any] {
+        let compiled = try compiledFilter(filtersJSON)
+        for (id, closed) in try await historyLoader.consumeUpdatedHistory(through: hour - hourMS) where rows[id] != nil {
+            candles[id, default: [:]].merge(closed) { _, observed in observed }
+            cachedRows.removeValue(forKey: id); touch(id)
+        }
+        var response = snapshot(rocPeriod: 9, marocPeriod: 9)
+        let prepared = try await historyLoader.prepare(filterContexts(response), filter: compiled)
+        try Task.checkCancellation()
+        await historyLoader.schedule(prepared, filter: compiled)
+        let results = await filterWorker.evaluate(prepared, filter: compiled)
+        try Task.checkCancellation()
+        response["filterResults"] = results.mapValues(\.rawValue)
+        response["filterToken"] = token
+        response["historyProgress"] = await historyLoader.progress().snapshot
+        return response
+    }
+
+    func explainMarketFilters(instId: String, filtersJSON: String, token: String) async throws -> [String: Any] {
+        let compiled = try compiledFilter(filtersJSON), response = snapshot(rocPeriod: 9, marocPeriod: 9)
+        guard let original = filterContexts(response).first(where: { $0.id == instId }) else { throw FilterError("Unknown contract.") }
+        guard let market = try await historyLoader.prepare([original], filter: compiled).first else { throw FilterError("Contract data is unavailable.") }
+        let trace = await filterWorker.explain(market, filter: compiled)
+        return ["instId": instId, "filterToken": token, "revision": response["revision"] ?? 0, "trace": trace.snapshot]
     }
 
     private func getData(_ path: String, _ parameters: [String: String]) async throws -> Data {
@@ -308,7 +399,7 @@ final class Radar {
                 for case let item as [String: Any] in items {
                     guard item["state"] as? String == "live", item["instCategory"] as? String == "1",
                           item["settleCcy"] as? String == "USDT", let id = item["instId"] as? String,
-                          id.hasSuffix("-USDT-SWAP"), id != "USDC-USDT-SWAP" else { continue }
+                          id.hasSuffix("-USDT-SWAP") else { continue }
                     let listedAt = (item["listTime"] as? String).flatMap(Int64.init).flatMap { $0 > 0 ? $0 : nil }
                     rows[id] = Market(id: id, listedAt: listedAt)
                 }
@@ -348,11 +439,11 @@ final class Radar {
     }
 
     private func updateTickers(_ tickers: [Any]) throws {
-        var quotes: [String: (turnover: Double, spread: Double?)] = [:]
+        var quotes: [String: (turnover: Double, spread: Double?, timestamp: Int64)] = [:]
         for case let ticker as [String: Any] in tickers {
             guard let id = ticker["instId"] as? String, rows[id] != nil,
                   let value = usdtTurnover24h(ticker) else { continue }
-            quotes[id] = (value, spreadPercent(ticker))
+            quotes[id] = (value, spreadPercent(ticker), (ticker["ts"] as? String).flatMap(Int64.init) ?? 0)
         }
         guard !quotes.isEmpty else {
             throw NSError(domain: "OKX", code: 4, userInfo: [NSLocalizedDescriptionKey: "No USDT swap ticker data found"])
@@ -360,6 +451,11 @@ final class Radar {
         for id in rows.keys {
             rows[id]?.turnover24hUSDT = quotes[id]?.turnover
             rows[id]?.spreadPercent = quotes[id]?.spread
+            rows[id]?.quoteTimestamp = quotes[id]?.timestamp ?? 0
+            cachedRows.removeValue(forKey: id)
+            if let quote = quotes[id], quote.timestamp >= hour, quote.timestamp < hour + hourMS {
+                liveHourQuotes[id] = FilterQuote(turnover: quote.turnover, spread: quote.spread, timestamp: quote.timestamp)
+            }
         }
         touch()
     }
@@ -556,12 +652,19 @@ final class Radar {
     private func advanceHourIfNeeded() -> Bool {
         let current = millis() / hourMS * hourMS
         guard current != hour else { return false }
+        for (id, quote) in liveHourQuotes { closedHourQuotes[id, default: [:]][quote.timestamp / hourMS * hourMS] = quote }
+        liveHourQuotes.removeAll()
+        do {
+            try store.transaction { for (id, quotes) in closedHourQuotes { for (ts, quote) in quotes { try store.saveHourlyQuote(id, hour: ts, quote: quote) } } }
+            closedHourQuotes.removeAll()
+        } catch { startupError = "Cannot save hourly quote snapshots: \(error.localizedDescription)" }
         hour = current
         cachedRows.removeAll()
         for id in rows.keys { chartRevisions[id, default: 0] &+= 1 }
         chartLiveStats.removeAll()
         for id in rows.keys {
             rows[id]?.buy = nil; rows[id]?.sell = nil; rows[id]?.takerRatio = nil
+            rows[id]?.turnover24hUSDT = nil; rows[id]?.spreadPercent = nil; rows[id]?.quoteTimestamp = 0
             candles[id] = candles[id]?.filter { $0.key >= hour - Int64(candleLookback) * hourMS }
         }
         emaStates = emaStates.filter { $0.value.0 >= hour - Int64(candleLookback + 1) * hourMS && $0.value.0 < hour }
@@ -792,11 +895,8 @@ final class Radar {
         var output: [[String: Any]] = []
         let now = Date()
         for id in rows.keys.sorted() {
-            guard let row = rows[id], let turnover = row.turnover24hUSDT,
-                  turnover >= Double(minimum24hTurnoverUSDT),
-                  passesSpreadFilter(row.spreadPercent, enabled: spreadFilterEnabled, maximum: maximumSpreadPercent),
-                  passesContractAgeFilter(row.listedAt, enabled: contractAgeFilterEnabled,
-                                          minimumMonths: minimumContractAgeMonths, now: now) else { continue }
+            guard let row = rows[id] else { continue }
+            let turnover = row.turnover24hUSDT
             if let cached = cachedRows[id] { output.append(cached); continue }
             let bars = candles[id] ?? [:]
             let breaks = recentExtremesBreaks(bars, hour, listedAt: row.listedAt)
@@ -812,8 +912,8 @@ final class Radar {
             let (oldRoc, oldMaroc) = previous?.confirmed == true ? rocMaroc(bars, hour - hourMS, rocPeriod, marocPeriod) : (nil, nil)
             let price = current?.close
             let currentOI = (row.oiTimestamp >= Double(hour) ? row.oiUsd : nil) ?? chartLiveStats[id]?.oi
-            let result: [String: Any] = [
-                "instId": id, "turnover24hUSDT": turnover, "price": price as Any? ?? null,
+            var result: [String: Any] = [
+                "instId": id, "turnover24hUSDT": turnover as Any? ?? null, "price": price as Any? ?? null,
                 "priceChange": percentageSnapshot(percentChange(price, previous?.confirmed == true ? previous?.close : nil)),
                 "currentLow": live?.low as Any? ?? null, "currentHigh": live?.high as Any? ?? null,
                 "ema200Signal": ema200Signal(live, liveEMA)?.rawValue as Any? ?? null,
@@ -843,6 +943,9 @@ final class Radar {
                     "liveVolumeUSDT": live?.quoteVolume as Any? ?? null,
                 ],
             ]
+            let context = FilterMarketData(id: id, hour: hour, now: Int64(now.timeIntervalSince1970 * 1000), listedAt: row.listedAt, candles: bars,
+                stats: [:], quotes: [:], current: LegacyFilterReadings.from(result), previousEMA: previousEMA)
+            result["opportunity"] = FilterEvaluator(market: context, filter: CompiledFilter(config: FilterConfigV2())).opportunity(at: hour).snapshot
             cachedRows[id] = result
             output.append(result)
         }
@@ -852,6 +955,8 @@ final class Radar {
                 "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
                 "frostedBackgroundEnabled": frostedBackgroundEnabled, "frostedBackgroundOpacity": frostedBackgroundOpacity,
                 "marketFiltersJSON": marketFiltersJSON,
+                "filterConfigJSON": marketFiltersV2JSON,
+                "filterMetricsCatalog": FilterCatalog.metrics.map(\.snapshot), "filterFunctions": FilterCatalog.functions,
                 "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
                 "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]
     }

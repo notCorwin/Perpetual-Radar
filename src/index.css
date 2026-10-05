@@ -45,6 +45,7 @@
     --color-destructive-surface: var(--destructive-surface);
     --color-destructive-hover: var(--destructive-hover);
     --color-table-header: var(--table-header);
+    --color-overlay: var(--overlay);
     --color-popover-foreground: var(--popover-foreground);
     --color-popover: var(--popover);
     --color-card-foreground: var(--card-foreground);
@@ -110,6 +111,7 @@
     --card-foreground: oklch(0.2 0.012 260);
     --control-base: oklch(1 0 0);
     --popover-base: oklch(1 0 0);
+    --overlay: rgb(0 0 0 / 12%);
     --popover-foreground: oklch(0.2 0.012 260);
     --primary: #006da3;
     --primary-foreground: oklch(1 0 0);
@@ -151,6 +153,7 @@
         --card-foreground: oklch(0.94 0.01 260);
         --control-base: oklch(0.3 0.012 260);
         --popover-base: oklch(0.22 0.014 260);
+        --overlay: rgb(0 0 0 / 40%);
         --popover-foreground: oklch(0.94 0.01 260);
         --primary: #56b4e9;
         --primary-foreground: oklch(0.13 0.012 260);
@@ -200,7 +203,9 @@
   [data-slot="button"], [data-slot="input"], [data-slot="toggle"],
   [data-slot="toggle-group-item"], [data-slot="badge"], [data-slot="table-row"],
   [data-slot="select-trigger"], [data-slot="select-content"],
-  [data-slot="popover-content"], [data-slot="spinner"] {
+  [data-slot="popover-content"], [data-slot="spinner"], [data-slot="textarea"],
+  [data-slot="input-group"], [data-slot="tabs-trigger"],
+  [data-slot="dialog-overlay"], [data-slot="dialog-content"] {
     animation: none;
     transition: none;
   }

@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var webView: WKWebView!
     private var windowBackground: WindowBackgroundView!
     private var radar: Radar?
+    private var filterPreviewTask: Task<Void, Never>?
+    private var filterExplainTask: Task<Void, Never>?
     private var startupError = ""
     private var webRoot: URL?
     private let updater = AppUpdater()
@@ -274,6 +276,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let parameters = message.body as? [String: Any] else { replyHandler(nil, "Invalid request"); return }
+        if let request = parameters["compileMarketFilters"] as? [String: Any] {
+            replyHandler(radar?.compileMarketFilters(request) ?? ["diagnostics": [startupError.isEmpty ? "Collector is starting." : startupError]], nil)
+            return
+        }
+        if let request = parameters["previewMarketFilters"] as? [String: Any], let json = request["filtersJSON"] as? String, let token = request["token"] as? String {
+            guard let radar else { replyHandler(nil, startupError); return }
+            filterPreviewTask?.cancel()
+            filterPreviewTask = Task {
+                do { replyHandler(try await radar.previewMarketFilters(filtersJSON: json, token: token), nil) }
+                catch { replyHandler(nil, String(describing: error)) }
+            }
+            return
+        }
+        if let request = parameters["explainMarketFilters"] as? [String: Any], let json = request["filtersJSON"] as? String,
+           let token = request["token"] as? String, let id = request["instId"] as? String {
+            guard let radar else { replyHandler(nil, startupError); return }
+            filterExplainTask?.cancel()
+            filterExplainTask = Task {
+                do { replyHandler(try await radar.explainMarketFilters(instId: id, filtersJSON: json, token: token), nil) }
+                catch { replyHandler(nil, String(describing: error)) }
+            }
+            return
+        }
         if let bounds = parameters["captureChart"] as? [String: Any] {
             guard let x = bounds["x"] as? Double, x.isFinite,
                   let y = bounds["y"] as? Double, y.isFinite,
@@ -410,7 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             }
         }
         if !startupError.isEmpty {
-            let snapshot: [String: Any] = ["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
+            let failureSnapshot: [String: Any] = ["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
                           "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
                           "spreadFilterEnabled": radar?.spreadFilterEnabled ?? true,
                           "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15,
@@ -419,9 +444,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                           "frostedBackgroundEnabled": radar?.frostedBackgroundEnabled ?? true,
                           "frostedBackgroundOpacity": radar?.frostedBackgroundOpacity ?? 0.3,
                           "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}",
+                          "filterConfigJSON": radar?.marketFiltersV2JSON ?? FilterConfigV2().json,
+                          "filterMetricsCatalog": FilterCatalog.metrics.map(\.snapshot), "filterFunctions": FilterCatalog.functions,
                           "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? [],
                           "selectedMarketFilterCombinationID": radar?.selectedMarketFilterCombinationID ?? ""]
-            replyHandler(snapshot, nil)
+            replyHandler(failureSnapshot, nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9

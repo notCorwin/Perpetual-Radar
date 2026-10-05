@@ -23,7 +23,7 @@ export type MarketFilterMetrics = {
 
 export type MarketRow = {
   instId: string
-  turnover24hUSDT: number
+  turnover24hUSDT: number | null
   ema200Signal: EMA200Signal | null
   price: number | null
   priceChange: PercentageValue

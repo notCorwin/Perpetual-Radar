@@ -3,8 +3,10 @@ import CSQLite
 
 final class Store {
     private var db: OpaquePointer?
+    let url: URL
 
     init(url: URL) throws {
+        self.url = url
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
         try execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -17,6 +19,8 @@ final class Store {
         // Existing Python caches may predate base_volume.
         if !columns("candles").contains("base_volume") { try execute("ALTER TABLE candles ADD COLUMN base_volume REAL") }
         if !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
+        if !columns("market_filter_combinations").contains("filters_v2_json") { try execute("ALTER TABLE market_filter_combinations ADD COLUMN filters_v2_json TEXT") }
+        try execute("CREATE TABLE IF NOT EXISTS hourly_quotes (inst_id TEXT, hour INTEGER, turnover REAL, spread REAL, quote_timestamp INTEGER NOT NULL, PRIMARY KEY(inst_id,hour))")
     }
 
     deinit { sqlite3_close(db) }
@@ -69,6 +73,12 @@ final class Store {
         }
     }
 
+    func dataVersion() throws -> Int64 {
+        let stmt = try statement("PRAGMA data_version"); defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }
+        return sqlite3_column_int64(stmt, 0)
+    }
+
     func setPreference(_ value: String, forKey key: String) throws {
         try execute("INSERT INTO preferences (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, value])
     }
@@ -86,28 +96,29 @@ final class Store {
     }
 
     func marketFilterCombinations() throws -> [MarketFilterCombination] {
-        let stmt = try statement("SELECT id,name,filters_json FROM market_filter_combinations ORDER BY name COLLATE NOCASE")
+        let stmt = try statement("SELECT id,name,filters_json,filters_v2_json FROM market_filter_combinations ORDER BY name COLLATE NOCASE")
         defer { sqlite3_finalize(stmt) }
         var result: [MarketFilterCombination] = []
         var status = sqlite3_step(stmt)
         while status == SQLITE_ROW {
             result.append(MarketFilterCombination(id: String(cString: sqlite3_column_text(stmt, 0)),
                                                  name: String(cString: sqlite3_column_text(stmt, 1)),
-                                                 filtersJSON: String(cString: sqlite3_column_text(stmt, 2))))
+                                                 filtersJSON: String(cString: sqlite3_column_text(stmt, 2)),
+                                                 filtersV2JSON: sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 3))))
             status = sqlite3_step(stmt)
         }
         guard status == SQLITE_DONE else { throw failure() }
         return result
     }
 
-    func saveMarketFilterCombination(name: String, filtersJSON: String) throws -> MarketFilterCombination {
-        let stmt = try statement("INSERT INTO market_filter_combinations (id,name,name_key,filters_json) VALUES (?,?,?,?) ON CONFLICT(name_key) DO UPDATE SET name=excluded.name,filters_json=excluded.filters_json RETURNING id,name,filters_json")
+    func saveMarketFilterCombination(name: String, filtersJSON: String, filtersV2JSON: String? = nil) throws -> MarketFilterCombination {
+        let stmt = try statement("INSERT INTO market_filter_combinations (id,name,name_key,filters_json,filters_v2_json) VALUES (?,?,?,?,?) ON CONFLICT(name_key) DO UPDATE SET name=excluded.name,filters_json=excluded.filters_json,filters_v2_json=excluded.filters_v2_json RETURNING id,name,filters_json")
         defer { sqlite3_finalize(stmt) }
-        bind([UUID().uuidString, name, name.lowercased(), filtersJSON], to: stmt)
+        bind([UUID().uuidString, name, name.lowercased(), filtersJSON, filtersV2JSON], to: stmt)
         guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }
         let result = MarketFilterCombination(id: String(cString: sqlite3_column_text(stmt, 0)),
                                              name: String(cString: sqlite3_column_text(stmt, 1)),
-                                             filtersJSON: String(cString: sqlite3_column_text(stmt, 2)))
+                                             filtersJSON: String(cString: sqlite3_column_text(stmt, 2)), filtersV2JSON: filtersV2JSON)
         // Finish the statement so the write commits before acknowledging the save.
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
         return result
@@ -116,6 +127,26 @@ final class Store {
     func deleteMarketFilterCombination(_ id: String) throws -> Bool {
         try execute("DELETE FROM market_filter_combinations WHERE id=?", [id])
         return sqlite3_changes(db) > 0
+    }
+
+    func saveCombinationV2(_ id: String, json: String) throws {
+        try execute("UPDATE market_filter_combinations SET filters_v2_json=? WHERE id=?", [json, id])
+    }
+
+    func saveHourlyQuote(_ id: String, hour: Int64, quote: FilterQuote) throws {
+        guard quote.timestamp >= hour, quote.timestamp < hour + hourMS else { return }
+        try execute("INSERT INTO hourly_quotes (inst_id,hour,turnover,spread,quote_timestamp) VALUES (?,?,?,?,?) ON CONFLICT(inst_id,hour) DO NOTHING", [id, hour, quote.turnover, quote.spread, quote.timestamp])
+    }
+
+    func hourlyQuotes(_ id: String, since: Int64, through: Int64) throws -> [Int64: FilterQuote] {
+        let stmt = try statement("SELECT hour,turnover,spread,quote_timestamp FROM hourly_quotes WHERE inst_id=? AND hour>=? AND hour<=?")
+        defer { sqlite3_finalize(stmt) }; bind([id, since, through], to: stmt)
+        var result: [Int64: FilterQuote] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result[sqlite3_column_int64(stmt, 0)] = FilterQuote(turnover: sqlite3_column_type(stmt, 1) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 1),
+                spread: sqlite3_column_type(stmt, 2) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 2), timestamp: sqlite3_column_int64(stmt, 3))
+        }
+        return result
     }
 
     func load(hour: Int64, ids: Set<String>) throws -> (candles: [String: [Int64: Candle]], ema: [String: (Int64, Double)]) {
