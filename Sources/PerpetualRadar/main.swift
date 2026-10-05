@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKURLSchemeHandler {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKURLSchemeHandler {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var windowBackground: WindowBackgroundView!
@@ -72,7 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "radar")
-        let backgroundEnabled = radar?.frostedBackgroundEnabled ?? true
         configureBackgroundScript(in: configuration.userContentController)
         configuration.setURLSchemeHandler(self, forURLScheme: "radar")
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -87,8 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         window.minSize = NSSize(width: 400, height: 300)
         windowBackground = WindowBackgroundView(contentView: webView)
         window.contentView = windowBackground
-        windowBackground.apply(enabled: backgroundEnabled, to: window)
+        window.delegate = self
+        applyWindowBackground()
         window.center(); window.makeKeyAndOrderFront(nil)
+        applyWindowBackground()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeAfterWake),
                                                         name: NSWorkspace.didWakeNotification, object: nil)
 
@@ -124,8 +125,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
 
     @objc private func resumeAfterWake(_ notification: Notification) {
         radar?.resumeAfterWake()
+        applyWindowBackground()
         webView.reload()
     }
+
+    func windowDidBecomeKey(_ notification: Notification) { applyWindowBackground() }
+    func windowDidEnterFullScreen(_ notification: Notification) { applyWindowBackground() }
+    func windowDidExitFullScreen(_ notification: Notification) { applyWindowBackground() }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         webView.reload()
@@ -152,6 +158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         controller.addUserScript(WKUserScript(
             source: "window.radarAppearance = { frostedBackgroundEnabled: \(enabled), frostedBackgroundOpacity: \(opacity) };",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    }
+
+    private func applyWindowBackground() {
+        windowBackground.apply(enabled: radar?.frostedBackgroundEnabled ?? true,
+                               opacity: radar?.frostedBackgroundOpacity ?? 0.3, to: window)
     }
 
     @objc private func checkForUpdatesNow() {
@@ -316,7 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 guard try radar.setFrostedBackground(enabled: enabled, opacity: opacity) else {
                     replyHandler(nil, "Background opacity must be between 0 and 1"); return
                 }
-                windowBackground.apply(enabled: radar.frostedBackgroundEnabled, to: window)
+                applyWindowBackground()
                 configureBackgroundScript(in: webView.configuration.userContentController)
             } catch {
                 replyHandler(nil, "Cannot save background settings: \(error.localizedDescription)"); return

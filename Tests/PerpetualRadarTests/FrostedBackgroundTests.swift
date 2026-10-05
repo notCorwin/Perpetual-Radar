@@ -143,23 +143,50 @@ final class FrostedBackgroundTests: XCTestCase {
         let content = NSView()
         let background = WindowBackgroundView(contentView: content)
         window.contentView = background
+        window.orderBack(nil)
         let effect = try XCTUnwrap(background.subviews.first as? NSVisualEffectView)
         XCTAssertEqual(effect.blendingMode, .behindWindow)
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = NSAppearance(named: appearance)
             for enabled in [true, false, true] {
-                background.apply(enabled: enabled, to: window)
-                window.setContentSize(NSSize(width: 900, height: 600))
-                background.layoutSubtreeIfNeeded()
-                XCTAssertEqual(window.isOpaque, !enabled)
-                XCTAssertEqual(window.backgroundColor?.alphaComponent, enabled ? 0 : 1)
-                XCTAssertEqual(effect.isHidden, !enabled)
-                XCTAssertEqual(effect.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]), appearance)
-                XCTAssertEqual(content.frame, background.bounds)
-                XCTAssertFalse(content.isHidden)
-                XCTAssertEqual(content.alphaValue, 1)
+                for opacity in [0.0, 0.3, 1.0] {
+                    // Exercise the actual WindowServer call, including removing blur at full opacity.
+                    XCTAssertTrue(background.apply(enabled: enabled, opacity: opacity, to: window))
+                    let transparent = enabled && opacity < 1
+                    window.setContentSize(NSSize(width: 900, height: 600))
+                    background.layoutSubtreeIfNeeded()
+                    XCTAssertEqual(window.isOpaque, !transparent)
+                    XCTAssertEqual(try XCTUnwrap(window.backgroundColor).alphaComponent, transparent ? 0.001 : 1, accuracy: 1e-6)
+                    XCTAssertTrue(effect.isHidden, "A second material tint must not cover the WindowServer blur")
+                    XCTAssertEqual(effect.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]), appearance)
+                    XCTAssertEqual(content.frame, background.bounds)
+                    XCTAssertFalse(content.isHidden)
+                    XCTAssertEqual(content.alphaValue, 1)
+                }
             }
         }
+    }
+
+    @MainActor
+    func testAppKitFallbackBeforeWindowBecomesVisibleIsReplacedByUntintedBlur() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = NSView()
+        let background = WindowBackgroundView(contentView: content)
+        window.contentView = background
+        let effect = try XCTUnwrap(background.subviews.first as? NSVisualEffectView)
+        XCTAssertFalse(background.apply(enabled: true, opacity: 0.3, to: window))
+        XCTAssertFalse(effect.isHidden)
+        window.orderBack(nil)
+        XCTAssertTrue(background.apply(enabled: true, opacity: 0.3, to: window))
+        XCTAssertTrue(effect.isHidden)
+        XCTAssertTrue(background.apply(enabled: false, opacity: 0.3, to: window))
+        XCTAssertTrue(effect.isHidden)
+        XCTAssertTrue(window.isOpaque)
+        XCTAssertEqual(content.alphaValue, 1)
     }
 }
