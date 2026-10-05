@@ -282,7 +282,7 @@ function App() {
                 </div>
               </TableHead>
               <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Change", "oiChange", String.raw`D=\begin{cases}\frac{\mathrm{OI}_t-\mathrm{OI}_{t-1}}{|\mathrm{OI}_{t-1}|}\times100\%,&\mathrm{OI}_{t-1}\ne0\\0\%,&\mathrm{OI}_{t-1}=\mathrm{OI}_t=0\\+\infty\%,&\mathrm{OI}_{t-1}=0,\,\mathrm{OI}_t>0\\-\infty\%,&\mathrm{OI}_{t-1}=0,\,\mathrm{OI}_t<0\end{cases}`, `Hourly OI change. ${PERCENT_CHANGE_DESCRIPTION}`)}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Relative Change", "oiChange", String.raw`\text{OI Relative Change}`, `Hourly OI relative change. ${PERCENT_CHANGE_DESCRIPTION}`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
                   {header(`ROC ${ROC_PERIOD}`, "roc", String.raw`\operatorname{ROC}_{${ROC_PERIOD}}\,(\%)`, `${ROC_PERIOD}-hour price change. ${PERCENT_CHANGE_DESCRIPTION}`)}
