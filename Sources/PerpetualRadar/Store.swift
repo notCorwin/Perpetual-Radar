@@ -7,6 +7,7 @@ final class Store {
     init(url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
+        try execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, open REAL, PRIMARY KEY(inst_id,hour))")
         try execute("CREATE TABLE IF NOT EXISTS ema200 (inst_id TEXT PRIMARY KEY, hour INTEGER, value REAL)")
         try execute("CREATE TABLE IF NOT EXISTS chart_stats (inst_id TEXT, hour INTEGER, oi REAL, sell REAL, buy REAL, PRIMARY KEY(inst_id,hour))")
@@ -54,6 +55,21 @@ final class Store {
         var names = Set<String>()
         while sqlite3_step(stmt) == SQLITE_ROW { names.insert(String(cString: sqlite3_column_text(stmt, 1))) }
         return names
+    }
+
+    func preference(forKey key: String) throws -> String? {
+        let stmt = try statement("SELECT value FROM preferences WHERE key=?")
+        defer { sqlite3_finalize(stmt) }
+        bind([key], to: stmt)
+        switch sqlite3_step(stmt) {
+        case SQLITE_ROW: return String(cString: sqlite3_column_text(stmt, 0))
+        case SQLITE_DONE: return nil
+        default: throw failure()
+        }
+    }
+
+    func setPreference(_ value: String, forKey key: String) throws {
+        try execute("INSERT INTO preferences (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, value])
     }
 
     func load(hour: Int64, ids: Set<String>) throws -> (candles: [String: [Int64: Candle]], ema: [String: (Int64, Double)]) {

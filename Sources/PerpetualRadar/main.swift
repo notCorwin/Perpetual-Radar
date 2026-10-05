@@ -311,8 +311,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             }
         }
         if let requested = parameters["marketFiltersJSON"] {
-            guard let filters = requested as? String, radar?.setMarketFiltersJSON(filters) == true else {
+            guard let filters = requested as? String, let radar else {
                 replyHandler(nil, "Invalid market filter configuration"); return
+            }
+            do {
+                guard try radar.setMarketFiltersJSON(filters) else {
+                    replyHandler(nil, "Invalid market filter configuration"); return
+                }
+            } catch {
+                replyHandler(nil, "Cannot save filters: \(error.localizedDescription)"); return
             }
         }
         if !startupError.isEmpty {

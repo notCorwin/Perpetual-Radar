@@ -9,6 +9,7 @@ private let maximumSpreadPercentKey = "maximumSpreadPercent"
 private let contractAgeFilterEnabledKey = "contractAgeFilterEnabled"
 private let minimumContractAgeMonthsKey = "minimumContractAgeMonths"
 private let marketFiltersKey = "marketFiltersJSON"
+private let emptyMarketFiltersJSON = "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
 
 func validMarketFiltersJSON(_ value: String) -> Bool {
     guard let data = value.data(using: .utf8),
@@ -109,8 +110,6 @@ final class Radar {
         contractAgeFilterEnabled = defaults.object(forKey: contractAgeFilterEnabledKey) as? Bool ?? true
         let savedAge = defaults.integer(forKey: minimumContractAgeMonthsKey)
         minimumContractAgeMonths = contractAgeMonthRange.contains(savedAge) ? savedAge : defaultMinimumContractAgeMonths
-        let savedFilters = defaults.string(forKey: marketFiltersKey) ?? ""
-        marketFiltersJSON = validMarketFiltersJSON(savedFilters) ? savedFilters : "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
         if let storeURL {
             store = try Store(url: storeURL)
         } else {
@@ -118,6 +117,14 @@ final class Radar {
                 .appendingPathComponent("PerpetualRadar", isDirectory: true)
             store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
         }
+        let storedFilters = try store.preference(forKey: marketFiltersKey)
+        let savedFilters = storedFilters ?? defaults.string(forKey: marketFiltersKey) ?? emptyMarketFiltersJSON
+        marketFiltersJSON = validMarketFiltersJSON(savedFilters) ? savedFilters : emptyMarketFiltersJSON
+        if storedFilters != marketFiltersJSON {
+            try store.setPreference(marketFiltersJSON, forKey: marketFiltersKey)
+        }
+        // Remove the legacy copy only after SQLite has committed the configuration.
+        defaults.removeObject(forKey: marketFiltersKey)
     }
 
     deinit {
@@ -167,10 +174,10 @@ final class Radar {
         return true
     }
 
-    func setMarketFiltersJSON(_ value: String) -> Bool {
+    func setMarketFiltersJSON(_ value: String) throws -> Bool {
         guard validMarketFiltersJSON(value) else { return false }
+        try store.setPreference(value, forKey: marketFiltersKey)
         marketFiltersJSON = value
-        defaults.set(value, forKey: marketFiltersKey)
         touch()
         return true
     }

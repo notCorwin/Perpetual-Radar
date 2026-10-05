@@ -77,7 +77,7 @@ final class MarketFilterTests: XCTestCase {
         let initial = radar.snapshot(rocPeriod: 9, marocPeriod: 9)
         let revision = try XCTUnwrap(initial["revision"] as? Int)
         let config = "{\"version\":1,\"match\":\"all\",\"rules\":[{\"id\":\"roc-1\",\"field\":\"roc\",\"operator\":\"abs-gte\",\"value\":\"2\",\"upper\":\"\"}]}"
-        XCTAssertTrue(radar.setMarketFiltersJSON(config))
+        XCTAssertTrue(try radar.setMarketFiltersJSON(config))
         let changed = radar.snapshot(rocPeriod: 9, marocPeriod: 9, sinceRevision: revision)
         XCTAssertNil(changed["unchanged"])
         XCTAssertEqual(changed["marketFiltersJSON"] as? String, config)
@@ -85,11 +85,11 @@ final class MarketFilterTests: XCTestCase {
         XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).marketFiltersJSON, config)
         XCTAssertEqual(radar.snapshot(rocPeriod: 0, marocPeriod: 9)["marketFiltersJSON"] as? String, config)
         for invalid in ["broken", "null", "[]", "{\"version\":2,\"match\":\"all\",\"rules\":[]}", "{\"version\":1,\"match\":\"unknown\",\"rules\":[]}", "{\"version\":1,\"match\":\"all\",\"rules\":[{}]}"] {
-            XCTAssertFalse(radar.setMarketFiltersJSON(invalid))
+            XCTAssertFalse(try radar.setMarketFiltersJSON(invalid))
             XCTAssertEqual(radar.marketFiltersJSON, config)
         }
         let cleared = "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
-        XCTAssertTrue(radar.setMarketFiltersJSON(cleared))
+        XCTAssertTrue(try radar.setMarketFiltersJSON(cleared))
         XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).marketFiltersJSON, cleared)
         defaults.set("broken", forKey: "marketFiltersJSON")
         XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).marketFiltersJSON, cleared)
