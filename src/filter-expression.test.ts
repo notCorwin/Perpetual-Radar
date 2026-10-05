@@ -36,4 +36,6 @@ test("categorical and numeric selections repair incompatible operators and prese
   const custom = { ...makeRule(), comparison: "eq", right: "emaTrend" }
   assert.equal(selectRuleLeft(custom, "oiTrend", [oi], {}, units).right, undefined)
   assert.equal(selectRuleLeft(custom, "EMA(200)", [oi], {}, units).right, "0")
+  const arithmetic = arithmeticExpression("+")
+  assert.equal(selectRuleLeft(custom, arithmetic.source, [oi], {}, units, arithmetic).right, "0")
 })

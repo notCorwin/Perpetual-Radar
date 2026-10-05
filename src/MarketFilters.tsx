@@ -92,7 +92,7 @@ function RuleCard({ node, parent, index = 0, tree }: { node: RuleNode; parent?: 
   const metric = metrics.find(item => item.key.toLowerCase() === node.left.trim().toLowerCase())
   const rightChoices = tree.expressions[node.left]?.choices ?? metric?.choices ?? []
   const categorical = metric ? !metric.numeric : ["category", "text"].includes(propsUnit(node.left) ?? "")
-  const selectLeft = (left: string) => change(selectRuleLeft(node, left, metrics, tree.expressions, tree.units))
+  const selectLeft = (left: string, expression?: EditorExpression) => change(selectRuleLeft(node, left, metrics, tree.expressions, tree.units, expression))
   const move = (direction: -1 | 1) => {
     if (!parent || !parent.children[index + direction]) return
     const root = moveRule(config.root, node.id, parent.id, direction > 0 ? index + 2 : index - 1)
@@ -118,7 +118,7 @@ function RuleCard({ node, parent, index = 0, tree }: { node: RuleNode; parent?: 
       <FieldLegend className="sr-only">{node.name || node.kind}</FieldLegend>
       <div className="flex items-center gap-2">
         {parent && <Button id={`move-${node.id}`} type="button" variant="ghost" size="icon" draggable={!tree.disabled} aria-label={`Move ${node.name || "rule"}`} title="Drag between groups, or use ArrowUp / ArrowDown" onDragStart={event => { event.stopPropagation(); event.dataTransfer.setData("text/plain", node.id); event.dataTransfer.effectAllowed = "move"; tree.setDragging(node.id) }} onDragEnd={() => { tree.setDragging(null); tree.setDrop(null) }} onKeyDown={event => { if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); move(event.key === "ArrowUp" ? -1 : 1) } }}><GripVertical aria-hidden="true" /></Button>}
-        <div className="w-48"><Picker label="Rule type" value={node.kind} choices={ruleKinds.filter(item => family.includes(item.value) && (!categorical || !item.value.startsWith("cross"))).map(item => [item.value, item.label])} onChange={kind => {
+        <div className="w-48"><Picker label="Rule type" value={node.kind} choices={ruleKinds.filter(item => family.includes(item.value) && (!categorical || !item.value.startsWith("cross") || item.value === node.kind)).map(item => [item.value, item.label])} onChange={kind => {
           const next: Partial<RuleNode> = { kind: kind as RuleKind, children: node.children }
           if (kind.startsWith("cross")) next.comparison = "gte"
           if (kind === "sequence") next.children = node.children.map((child, i) => ({ ...child, name: /^[A-Za-z_][A-Za-z0-9_]*$/.test(child.name) ? child.name : `stage${i + 1}` }))

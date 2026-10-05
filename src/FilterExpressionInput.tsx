@@ -12,7 +12,7 @@ import { arithmeticExpression, arithmeticOperations, expressionName, expressionS
 import type { EditorExpression, FilterMetric, NamedFormula } from "@/rule-engine"
 
 export type ExpressionInputProps = {
-  label: string; displayLabel?: string; value: string; onChange: (value: string, expression?: EditorExpression) => void; onSelectExpression?: (value: string) => void
+  label: string; displayLabel?: string; value: string; onChange: (value: string, expression?: EditorExpression) => void; onSelectExpression?: (value: string, expression?: EditorExpression) => void
   metrics: FilterMetric[]; definitions: NamedFormula[]; choices?: { value: string; label: string }[]; unit?: string
   units?: Record<string, string>; expressions?: Record<string, EditorExpression>; expression?: EditorExpression
 }
@@ -25,6 +25,7 @@ export function ExpressionInput({ label, displayLabel = label, value, onChange, 
   const [edited, setEdited] = useState<EditorExpression | null>(null)
   const fieldID = useId()
   const input = useRef<HTMLInputElement>(null)
+  const selectedExpression = useRef(false)
   const reading = metrics.find(metric => metric.key.toLowerCase() === value.trim().toLowerCase())
   const resolved = expressions[value] ?? expression
   const tree = resolved && resolved.kind !== "raw" ? resolved : edited?.source === value ? edited : resolved ?? rawExpression(value, reading?.unit ?? units[value] ?? "")
@@ -34,10 +35,10 @@ export function ExpressionInput({ label, displayLabel = label, value, onChange, 
   const description = numericConstant ? unit ? `${unit} (constant)` : "Numeric constant" : resolvedUnit || unit || "Enter an expression to resolve its unit"
   const changeTree = (next: EditorExpression, selecting = false) => {
     next = { ...next, source: expressionSource(next) }; setEdited(next); setPartsOpen(true)
-    if (selecting && onSelectExpression) onSelectExpression(next.source)
+    if (selecting && onSelectExpression) onSelectExpression(next.source, next)
     else onChange(next.source, next)
   }
-  const insert = (next: EditorExpression) => { changeTree(next, true); setOpen(false); window.requestAnimationFrame(() => input.current?.focus()) }
+  const insert = (next: EditorExpression) => { changeTree(next, true); selectedExpression.current = true; setOpen(false); input.current?.focus() }
   const shared = { metrics, definitions, units, expressions }
   const wrappers = expressionTemplates.filter(item => item.parameters[0].kind === "expression" && (!["category", "text"].includes(resolvedUnit) || ["closed", "live"].includes(item.name)))
   const hasParts = ["binary", "unary"].includes(tree.kind) || tree.kind === "call" && template
@@ -48,7 +49,7 @@ export function ExpressionInput({ label, displayLabel = label, value, onChange, 
         <Input id={fieldID} ref={input} value={value} onChange={event => { setEdited(null); onChange(event.target.value) }} onKeyDown={event => { if (event.key === " " && event.ctrlKey) { event.preventDefault(); setOpen(true) } }} aria-label={label} autoComplete="off" spellCheck={false} />
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild><Button type="button" variant="outline" size="icon" aria-label={`Choose ${label}`} title="Find a metric or function (Ctrl+Space)"><Search aria-hidden="true" /></Button></PopoverTrigger>
-          <PopoverContent className="w-[28rem] p-0" align="start"><Command>
+          <PopoverContent data-expression-picker={label} className="w-[28rem] p-0" align="start" onCloseAutoFocus={event => { if (selectedExpression.current) { event.preventDefault(); selectedExpression.current = false } }}><Command>
             <CommandInput placeholder="Find a metric, function, or named formula…" />
             <CommandList><CommandEmpty>No matching expressions.</CommandEmpty>
               {choices.length > 0 && <CommandGroup heading="Values">{choices.map(choice => <CommandItem key={choice.value} value={`value ${choice.label}`} onSelect={() => insert({ ...rawExpression(JSON.stringify(choice.value), "category"), kind: "text", value: choice.value })}>{choice.label}</CommandItem>)}</CommandGroup>}

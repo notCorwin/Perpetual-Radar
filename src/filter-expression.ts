@@ -60,11 +60,11 @@ export function functionCompletion(signature: string): string {
   }
   return rules[signature.split("(")[0].toLowerCase()] ?? signature
 }
-export function selectRuleLeft(node: RuleNode, left: string, metrics: FilterMetric[], expressions: Record<string, EditorExpression>, units: Record<string, string>): Partial<RuleNode> {
+export function selectRuleLeft(node: RuleNode, left: string, metrics: FilterMetric[], expressions: Record<string, EditorExpression>, units: Record<string, string>, selection?: EditorExpression): Partial<RuleNode> {
   const metric = metrics.find(item => item.key.toLowerCase() === left.trim().toLowerCase())
   const template = expressionTemplates.find(item => item.name.toLowerCase() === left.split("(")[0].toLowerCase())
-  const info = expressions[left], unit = info?.unit ?? units[left] ?? metric?.unit ?? template?.unit
-  const categorical = unit === "category" || unit === "text", numeric = metric?.numeric ?? (unit ? !categorical : undefined)
+  const info = expressions[left] ?? selection, unit = info?.unit || units[left] || metric?.unit || template?.unit
+  const categorical = unit === "category" || unit === "text", numeric = metric?.numeric ?? (["binary", "unary", "number"].includes(info?.kind ?? "") ? true : unit ? !categorical : undefined)
   const next: Partial<RuleNode> = { left }
   if (numeric === undefined) return next
   if (categorical && node.kind !== "condition") next.kind = "condition"

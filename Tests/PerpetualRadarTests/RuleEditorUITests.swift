@@ -108,7 +108,7 @@ final class RuleEditorUITests: XCTestCase {
 
     @MainActor
     private func openMenu(_ view: WKWebView, selector: String, popover: Bool = false) async throws -> Double {
-        let predicate = popover ? "document.querySelector('[data-slot=\"popover-content\"]')" : "document.querySelector('[data-slot=\"select-content\"]')"
+        let predicate = popover ? "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]')" : "document.querySelector('[data-slot=\"select-content\"][data-state=\"open\"]')"
         let script = """
         const trigger = document.querySelector(\(formulaQuote(selector)));
         if (!trigger) throw new Error('Missing menu trigger');
@@ -146,14 +146,17 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "Array.from(document.querySelectorAll('[cmdk-item]')).some(x => x.dataset.value?.endsWith(\(formulaQuote(" " + key))))")
         _ = try await js(view, "Array.from(document.querySelectorAll('[cmdk-item]')).find(x => x.dataset.value?.endsWith(\(formulaQuote(" " + key)))).click(); true")
         try await wait(view, "document.querySelector('[aria-label=\"Left expression\"]')?.value === \(formulaQuote(key))")
+        try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]') === null")
         return latency
     }
 
     @MainActor
     private func expression(_ view: WKWebView, field: String, choice: String) async throws {
         _ = try await openMenu(view, selector: "[aria-label=\(formulaQuote("Choose " + field))]", popover: true)
-        try await input(view, "[cmdk-input]", choice)
-        let predicate = "Array.from(document.querySelectorAll('[cmdk-item]')).find(x => x.dataset.value?.toLowerCase().endsWith(\(formulaQuote(" " + choice.lowercased()))))"
+        let picker = "[data-expression-picker=\(formulaQuote(field))][data-state=\"open\"]"
+        try await wait(view, "document.querySelector(\(formulaQuote(picker))) !== null")
+        try await input(view, "\(picker) [cmdk-input]", choice)
+        let predicate = "Array.from(document.querySelector(\(formulaQuote(picker))).querySelectorAll('[cmdk-item]')).find(x => x.dataset.value?.toLowerCase().endsWith(\(formulaQuote(" " + choice.lowercased()))))"
         try await wait(view, "Boolean(\(predicate))")
         _ = try await js(view, "\(predicate).click(); true")
         try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]') === null")
@@ -243,6 +246,13 @@ final class RuleEditorUITests: XCTestCase {
         try await validDraft(view)
         let risingControl = try await js(view, "document.querySelector('[aria-label=\"Right value\"]')?.textContent.includes('Rising')") as? Bool
         XCTAssertEqual(risingControl, true)
+        // Arithmetic selections replace incompatible category thresholds before compilation.
+        _ = try await openMenu(view, selector: "[aria-label=\"Choose Left expression\"]", popover: true)
+        try await input(view, "[cmdk-input]", "arithmetic Add")
+        _ = try await js(view, "Array.from(document.querySelectorAll('[cmdk-item]')).find(x => x.dataset.value === 'arithmetic Add +').click(); true")
+        try await validDraft(view)
+        let numericThreshold = try await js(view, "document.querySelector('[aria-label=\"Right expression\"]')?.value") as? String
+        XCTAssertEqual(numericThreshold, "0")
         // Symbols use a literal text control; named categories inherit their value choices.
         _ = try await metric(view, "Symbol")
         try await input(view, "[aria-label=\"Right text value\"]", "MKT000-USDT-SWAP")
