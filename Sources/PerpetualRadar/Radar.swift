@@ -10,6 +10,8 @@ private let contractAgeFilterEnabledKey = "contractAgeFilterEnabled"
 private let minimumContractAgeMonthsKey = "minimumContractAgeMonths"
 private let marketFiltersKey = "marketFiltersJSON"
 private let selectedMarketFilterCombinationKey = "selectedMarketFilterCombinationID"
+private let frostedBackgroundEnabledKey = "frostedBackgroundEnabled"
+private let frostedBackgroundOpacityKey = "frostedBackgroundOpacity"
 private let emptyMarketFiltersJSON = "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
 
 func validMarketFiltersJSON(_ value: String) -> Bool {
@@ -82,6 +84,8 @@ final class Radar {
     private(set) var marketFiltersJSON: String
     private(set) var marketFilterCombinations: [MarketFilterCombination]
     private(set) var selectedMarketFilterCombinationID = ""
+    private(set) var frostedBackgroundEnabled: Bool
+    private(set) var frostedBackgroundOpacity: Double
     private var rows: [String: Market] = [:]
     private var cachedRows: [String: [String: Any]] = [:]
     private var cachedPeriods: (roc: Int, maroc: Int)?
@@ -120,6 +124,9 @@ final class Radar {
                 .appendingPathComponent("PerpetualRadar", isDirectory: true)
             store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
         }
+        frostedBackgroundEnabled = try store.preference(forKey: frostedBackgroundEnabledKey) != "false"
+        let savedOpacity = (try store.preference(forKey: frostedBackgroundOpacityKey)).flatMap(Double.init) ?? 0.3
+        frostedBackgroundOpacity = savedOpacity.isFinite && (0...1).contains(savedOpacity) ? savedOpacity : 0.3
         let storedFilters = try store.preference(forKey: marketFiltersKey)
         let savedFilters = storedFilters ?? defaults.string(forKey: marketFiltersKey) ?? emptyMarketFiltersJSON
         marketFiltersJSON = validMarketFiltersJSON(savedFilters) ? savedFilters : emptyMarketFiltersJSON
@@ -195,6 +202,21 @@ final class Radar {
         guard validMarketFiltersJSON(value) else { return false }
         try store.setPreference(value, forKey: marketFiltersKey)
         marketFiltersJSON = value
+        touch()
+        return true
+    }
+
+    func setFrostedBackground(enabled: Bool? = nil, opacity: Double? = nil) throws -> Bool {
+        if let opacity, !opacity.isFinite || !(0...1).contains(opacity) { return false }
+        let enabled = enabled ?? frostedBackgroundEnabled
+        let opacity = opacity ?? frostedBackgroundOpacity
+        guard enabled != frostedBackgroundEnabled || opacity != frostedBackgroundOpacity else { return true }
+        try store.transaction {
+            try store.setPreference(String(enabled), forKey: frostedBackgroundEnabledKey)
+            try store.setPreference(String(opacity), forKey: frostedBackgroundOpacityKey)
+        }
+        frostedBackgroundEnabled = enabled
+        frostedBackgroundOpacity = opacity
         touch()
         return true
     }
@@ -749,6 +771,7 @@ final class Radar {
                     "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                     "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                     "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
+                    "frostedBackgroundEnabled": frostedBackgroundEnabled, "frostedBackgroundOpacity": frostedBackgroundOpacity,
                     "marketFiltersJSON": marketFiltersJSON,
                     "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
                     "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]
@@ -827,6 +850,7 @@ final class Radar {
                 "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                 "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
+                "frostedBackgroundEnabled": frostedBackgroundEnabled, "frostedBackgroundOpacity": frostedBackgroundOpacity,
                 "marketFiltersJSON": marketFiltersJSON,
                 "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
                 "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]

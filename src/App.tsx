@@ -1,11 +1,11 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, ArrowDownUp, ArrowUp, Radio, Search, Settings2 } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field"
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldSeparator, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -24,17 +24,18 @@ import { MarketFilters } from "@/MarketFilters"
 import { emptyMarketFilters, matchesMarketFilters, parseMarketFilters, previewMarketFilters, type MarketFilterCombination, type MarketFilters as FilterConfig } from "@/market-filters"
 import type { MarketRow } from "@/market-row"
 
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number; marketFiltersJSON: string; marketFilterCombinations: MarketFilterCombination[]; selectedMarketFilterCombinationID: string }
+type WindowAppearance = { frostedBackgroundEnabled: boolean; frostedBackgroundOpacity: number }
+type Snapshot = WindowAppearance & { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number; marketFiltersJSON: string; marketFilterCombinations: MarketFilterCombination[]; selectedMarketFilterCombinationID: string }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number; marketFiltersJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
+type SettingRequest = Partial<WindowAppearance> & { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number; marketFiltersJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
-  postMessage(request: { captureChart: { x: number; y: number; width: number; height: number } }): Promise<{ ok: boolean }>
+  postMessage(request: { captureChart: { x: number; y: number; width: number; height: number; backgroundRGB: number[] } }): Promise<{ ok: boolean }>
   postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number; chartEndHour?: number }): Promise<ChartPollResponse>
 }
 declare global {
-  interface Window { webkit: { messageHandlers: { radar: NativeBridge } } }
+  interface Window { radarAppearance?: WindowAppearance; webkit: { messageHandlers: { radar: NativeBridge } } }
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
@@ -72,6 +73,7 @@ function BreakReadings({ result, direction }: { result: BreakResult; direction: 
 function App() {
   const revision = useRef(-1)
   const contractAgeDraftDirty = useRef(false)
+  const backgroundOpacityDraftDirty = useRef(false)
   const filtersJSON = useRef<string | undefined>(undefined)
   const [listFilters, setListFilters] = useState<FilterConfig>(emptyMarketFilters)
   const [filterDraft, setFilterDraft] = useState<FilterConfig | null>(null)
@@ -90,9 +92,17 @@ function App() {
   const [minimumContractAgeMonths, setMinimumContractAgeMonths] = useState(6)
   const [contractAgeDraft, setContractAgeDraft] = useState("6")
   const [contractAgeError, setContractAgeError] = useState("")
+  const [frostedBackgroundEnabled, setFrostedBackgroundEnabled] = useState(window.radarAppearance?.frostedBackgroundEnabled ?? true)
+  const [frostedBackgroundOpacity, setFrostedBackgroundOpacity] = useState(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3)
+  const [backgroundOpacityDraft, setBackgroundOpacityDraft] = useState(String(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3))
+  const [backgroundOpacityError, setBackgroundOpacityError] = useState("")
   const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
+  useLayoutEffect(() => {
+    document.documentElement.dataset.frostedBackground = String(frostedBackgroundEnabled)
+    document.documentElement.style.setProperty("--window-background-opacity", String(frostedBackgroundEnabled ? frostedBackgroundOpacity : 1))
+  }, [frostedBackgroundEnabled, frostedBackgroundOpacity])
   const acceptSnapshot = (snapshot: Snapshot) => {
     if (snapshot.revision < revision.current) return
     revision.current = snapshot.revision
@@ -103,6 +113,9 @@ function App() {
     if (document.activeElement?.id !== "maximum-spread") setSpreadDraft(String(snapshot.maximumSpreadPercent))
     setContractAgeFilterEnabled(snapshot.contractAgeFilterEnabled)
     setMinimumContractAgeMonths(snapshot.minimumContractAgeMonths)
+    setFrostedBackgroundEnabled(snapshot.frostedBackgroundEnabled)
+    setFrostedBackgroundOpacity(snapshot.frostedBackgroundOpacity)
+    if (!backgroundOpacityDraftDirty.current && document.activeElement?.id !== "background-opacity") setBackgroundOpacityDraft(String(snapshot.frostedBackgroundOpacity))
     if (!contractAgeDraftDirty.current && document.activeElement?.id !== "minimum-contract-age") setContractAgeDraft(String(snapshot.minimumContractAgeMonths))
     if (filtersJSON.current !== snapshot.marketFiltersJSON) {
       filtersJSON.current = snapshot.marketFiltersJSON
@@ -201,6 +214,18 @@ function App() {
     if (value !== minimumContractAgeMonths) saveSetting({ minimumContractAgeMonths: value })
   }
 
+  const saveBackgroundOpacity = () => {
+    const value = Number(backgroundOpacityDraft)
+    if (!backgroundOpacityDraft.trim() || !Number.isFinite(value) || value < 0 || value > 1) {
+      setBackgroundOpacityError("Enter a number from 0 to 1.")
+      return
+    }
+    backgroundOpacityDraftDirty.current = false
+    setBackgroundOpacityError("")
+    setBackgroundOpacityDraft(String(value))
+    if (value !== frostedBackgroundOpacity) saveSetting({ frostedBackgroundOpacity: value })
+  }
+
   const header = (label: string, key: SortKey, formula: string, description?: string) => {
     const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
     return <Button variant="ghost" size="sm" className={cn("h-auto min-h-6 gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} aria-pressed={sort === key} title={description}>
@@ -217,12 +242,12 @@ function App() {
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT{spreadFilterEnabled ? ` · spread ≤ ${maximumSpreadPercent}%` : ""}{contractAgeFilterEnabled ? ` · age ≥ ${minimumContractAgeMonths} ${minimumContractAgeMonths === 1 ? "month" : "months"}` : ""}</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
-        <Popover onOpenChange={open => { if (!open && contractAgeDraftDirty.current) saveContractAge() }}>
+        <Popover onOpenChange={open => { if (!open) { if (contractAgeDraftDirty.current) saveContractAge(); if (backgroundOpacityDraftDirty.current) saveBackgroundOpacity() } }}>
           <PopoverTrigger asChild><Button variant="outline" size="sm"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
-          <PopoverContent align="end">
+          <PopoverContent align="end" className="max-h-(--radix-popover-content-available-height) overflow-y-auto">
             <PopoverHeader>
               <PopoverTitle>Settings</PopoverTitle>
-              <PopoverDescription>Filter swaps by turnover, spread, and listing age.</PopoverDescription>
+              <PopoverDescription>Filter swaps and customize the window background.</PopoverDescription>
             </PopoverHeader>
             <FieldGroup>
               <Field>
@@ -248,6 +273,17 @@ function App() {
                 </div>
                 <FieldDescription id="contract-age-description">Calendar months since OKX listing. Unknown dates are hidden while enabled.</FieldDescription>
                 {contractAgeError && <FieldError id="contract-age-error" role="alert">{contractAgeError}</FieldError>}
+              </Field>
+              <FieldSeparator />
+              <Field orientation="horizontal">
+                <FieldLabel htmlFor="frosted-background">Frosted background</FieldLabel>
+                <Toggle id="frosted-background" variant="outline" size="sm" pressed={frostedBackgroundEnabled} onPressedChange={enabled => saveSetting({ frostedBackgroundEnabled: enabled })} aria-label="Enable frosted background">{frostedBackgroundEnabled ? "On" : "Off"}</Toggle>
+              </Field>
+              <Field data-invalid={Boolean(backgroundOpacityError)} data-disabled={!frostedBackgroundEnabled}>
+                <FieldLabel htmlFor="background-opacity">Background opacity</FieldLabel>
+                <Input id="background-opacity" name="frostedBackgroundOpacity" type="number" min="0" max="1" step="0.05" inputMode="decimal" autoComplete="off" disabled={!frostedBackgroundEnabled} aria-describedby={backgroundOpacityError ? "background-opacity-description background-opacity-error" : "background-opacity-description"} aria-invalid={Boolean(backgroundOpacityError)} value={backgroundOpacityDraft} onChange={event => { backgroundOpacityDraftDirty.current = true; setBackgroundOpacityDraft(event.target.value); setBackgroundOpacityError("") }} onBlur={saveBackgroundOpacity} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur() }} />
+                <FieldDescription id="background-opacity-description">0 reveals more of the blurred desktop; 1 is solid. Text and charts stay opaque.</FieldDescription>
+                {backgroundOpacityError && <FieldError id="background-opacity-error" role="alert">{backgroundOpacityError}</FieldError>}
               </Field>
             </FieldGroup>
           </PopoverContent>

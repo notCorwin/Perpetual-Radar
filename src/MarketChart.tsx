@@ -386,7 +386,15 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
     if (!rect || rect.width <= 0 || rect.height <= 0) return
     setCapture({ id: instId, status: "copying", error: "" })
     try {
-      await window.webkit.messageHandlers.radar.postMessage({ captureChart: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } })
+      // Resolve the theme token to sRGB so native clipboard images retain an opaque chart background.
+      const swatch = document.createElement("canvas")
+      swatch.width = swatch.height = 1
+      const context = swatch.getContext("2d")
+      if (!context) throw new Error("Could not prepare the chart background")
+      context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--card")
+      context.fillRect(0, 0, 1, 1)
+      const backgroundRGB = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(value => value / 255)
+      await window.webkit.messageHandlers.radar.postMessage({ captureChart: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, backgroundRGB } })
       setCapture({ id: instId, status: "flashing", error: "" })
     } catch (cause) {
       setCapture({ id: instId, status: "failed", error: cause instanceof Error ? cause.message : "Could not copy chart screenshot" })
@@ -607,7 +615,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
       setHistoryRetry(value => value + 1)
     }}>Retry</Button>}</div>}
     {captureError && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{captureError}</p>}
-    <section ref={chartRef} aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-card">
+    <section ref={chartRef} aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-chart-surface">
       {active && <div className="grid shrink-0 grid-cols-[minmax(9rem,1.2fr)_repeat(4,minmax(0,1fr))] items-center border-b px-4 py-1.5" aria-live="off">
         <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{inspected === null ? historicalEnd === null ? "Latest" : "Window end" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
         {([ ["Open", active.open], ["High", active.high], ["Low", active.low], ["Close", active.close] ] as const).map(([label, value]) => <div key={label} className="min-w-0 px-3">

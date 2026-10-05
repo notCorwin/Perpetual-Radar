@@ -5,6 +5,7 @@ import WebKit
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKURLSchemeHandler {
     private var window: NSWindow!
     private var webView: WKWebView!
+    private var windowBackground: WindowBackgroundView!
     private var radar: Radar?
     private var startupError = ""
     private var webRoot: URL?
@@ -65,28 +66,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         NSApp.mainMenu = menu
         NSApp.windowsMenu = windowMenu
 
+        do { radar = try Radar() }
+        catch { startupError = "Cannot open local cache: \(error.localizedDescription)" }
+
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "radar")
+        let backgroundEnabled = radar?.frostedBackgroundEnabled ?? true
+        configureBackgroundScript(in: configuration.userContentController)
         configuration.setURLSchemeHandler(self, forURLScheme: "radar")
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = .clear
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "Perpetual Radar"
         applyAppearance(UserDefaults.standard.string(forKey: "appearance") ?? "system")
         window.minSize = NSSize(width: 400, height: 300)
-        window.contentView = webView
+        windowBackground = WindowBackgroundView(contentView: webView)
+        window.contentView = windowBackground
+        windowBackground.apply(enabled: backgroundEnabled, to: window)
         window.center(); window.makeKeyAndOrderFront(nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeAfterWake),
                                                         name: NSWorkspace.didWakeNotification, object: nil)
 
-        do {
-            radar = try Radar()
-            radar?.start()
-        } catch { startupError = "Cannot open local cache: \(error.localizedDescription)" }
+        radar?.start()
 
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("Web/index.html")
         let development = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("dist/index.html")
@@ -136,6 +142,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     private func applyAppearance(_ value: String) {
         window.appearance = value == "light" ? NSAppearance(named: .aqua) : value == "dark" ? NSAppearance(named: .darkAqua) : nil
         for item in appearanceMenu.items { item.state = (item.representedObject as? String == value) ? .on : .off }
+    }
+
+    private func configureBackgroundScript(in controller: WKUserContentController) {
+        let enabled = radar?.frostedBackgroundEnabled ?? true
+        let opacity = radar?.frostedBackgroundOpacity ?? 0.3
+        // Keep the document-start settings current for wake and WebKit process reloads.
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(
+            source: "window.radarAppearance = { frostedBackgroundEnabled: \(enabled), frostedBackgroundOpacity: \(opacity) };",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
     @objc private func checkForUpdatesNow() {
@@ -251,7 +267,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             guard let x = bounds["x"] as? Double, x.isFinite,
                   let y = bounds["y"] as? Double, y.isFinite,
                   let width = bounds["width"] as? Double, width.isFinite, width > 0,
-                  let height = bounds["height"] as? Double, height.isFinite, height > 0 else {
+                  let height = bounds["height"] as? Double, height.isFinite, height > 0,
+                  let backgroundRGB = bounds["backgroundRGB"] as? [Double], backgroundRGB.count == 3,
+                  backgroundRGB.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
                 replyHandler(nil, "Invalid chart bounds"); return
             }
             let rect = CGRect(x: x, y: y, width: width, height: height).intersection(webView.bounds)
@@ -264,6 +282,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             webView.takeSnapshot(with: configuration) { image, error in
                 guard let image else {
                     replyHandler(nil, error?.localizedDescription ?? "Could not capture chart screenshot"); return
+                }
+                guard let image = opaqueChartSnapshot(image, backgroundRGB: backgroundRGB) else {
+                    replyHandler(nil, "Could not prepare chart screenshot"); return
                 }
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
@@ -282,6 +303,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 Task { replyHandler(await radar.loadChart(id), nil) }
             } else { replyHandler(radar.chartSnapshot(id, sinceRevision: parameters["sinceRevision"] as? Int), nil) }
             return
+        }
+        if parameters["frostedBackgroundEnabled"] != nil || parameters["frostedBackgroundOpacity"] != nil {
+            guard let radar else { replyHandler(nil, startupError); return }
+            let enabled = parameters["frostedBackgroundEnabled"] as? Bool
+            let opacity = parameters["frostedBackgroundOpacity"] as? Double
+            guard parameters["frostedBackgroundEnabled"] == nil || enabled != nil,
+                  parameters["frostedBackgroundOpacity"] == nil || opacity != nil else {
+                replyHandler(nil, "Invalid frosted background setting"); return
+            }
+            do {
+                guard try radar.setFrostedBackground(enabled: enabled, opacity: opacity) else {
+                    replyHandler(nil, "Background opacity must be between 0 and 1"); return
+                }
+                windowBackground.apply(enabled: radar.frostedBackgroundEnabled, to: window)
+                configureBackgroundScript(in: webView.configuration.userContentController)
+            } catch {
+                replyHandler(nil, "Cannot save background settings: \(error.localizedDescription)"); return
+            }
         }
         if let requested = parameters["minimum24hTurnoverUSDT"] {
             guard let threshold = requested as? Int, radar?.setMinimum24hTurnoverUSDT(threshold) == true else {
@@ -360,15 +399,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             }
         }
         if !startupError.isEmpty {
-            replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
+            let snapshot: [String: Any] = ["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
                           "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
                           "spreadFilterEnabled": radar?.spreadFilterEnabled ?? true,
                           "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15,
                           "contractAgeFilterEnabled": radar?.contractAgeFilterEnabled ?? true,
                           "minimumContractAgeMonths": radar?.minimumContractAgeMonths ?? defaultMinimumContractAgeMonths,
+                          "frostedBackgroundEnabled": radar?.frostedBackgroundEnabled ?? true,
+                          "frostedBackgroundOpacity": radar?.frostedBackgroundOpacity ?? 0.3,
                           "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}",
                           "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? [],
-                          "selectedMarketFilterCombinationID": radar?.selectedMarketFilterCombinationID ?? ""], nil)
+                          "selectedMarketFilterCombinationID": radar?.selectedMarketFilterCombinationID ?? ""]
+            replyHandler(snapshot, nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9
