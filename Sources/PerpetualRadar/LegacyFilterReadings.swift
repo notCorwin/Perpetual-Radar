@@ -46,7 +46,7 @@ enum LegacyFilterReadings {
                 let status = event?["status"] as? String
                 result["recent\(title)\(suffix)"] = status == "event" ? .text("yes") : status == "none" ? .text("no") : .unknown("Breakout history is incomplete.")
                 result[title.lowercased() + suffix + "Age"] = scalar(status == "event" ? n(event?["hoursAgo"]) : nil, "Breakout age")
-                if high && hours == 48 { result["highPriorAge"] = scalar(status == "event" ? n(event?["priorAgeHours"]) : nil, "Previous high age") }
+                if hours == 48 { result[high ? "highPriorAge" : "lowPriorAge"] = scalar(status == "event" ? n(event?["priorAgeHours"]) : nil, "Previous \(title.lowercased()) age") }
             }
         }
         let opportunity = row["opportunity"] as? [String: Any]

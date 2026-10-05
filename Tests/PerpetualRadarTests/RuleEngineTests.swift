@@ -74,6 +74,20 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertTrue(compiled.units.values.contains("%"))
     }
 
+    func testNativeEditorExpressionsDescribeNestedMathAndInheritedCategoryChoices() throws {
+        let compiled = try FilterCompiler.compile(source: #"let trend = closed(oiTrend); let ratio = Volume / mean(lag(Volume, 1), 20); trend == "rising" AND ratio > 2 AND abs(-ROC(9)) > 0"#)
+        let ratio = try XCTUnwrap(compiled.editorExpressions["(Volume / mean(lag(Volume, 1), 20))"])
+        XCTAssertEqual(ratio.kind, "binary"); XCTAssertEqual(ratio.operation, "/"); XCTAssertEqual(ratio.unit, "ratio")
+        XCTAssertEqual(ratio.arguments[1].operation, "mean")
+        XCTAssertEqual(ratio.arguments[1].arguments[0].operation, "lag")
+        XCTAssertEqual(ratio.arguments[1].arguments[1].value, "20")
+        let trend = try XCTUnwrap(compiled.editorExpressions["trend"])
+        XCTAssertEqual(trend.unit, "category"); XCTAssertEqual(trend.choices.map(\.value), ["rising", "flat", "falling"])
+        let offset = try XCTUnwrap(compiled.editorExpressions["closed(oiTrend)"])
+        XCTAssertEqual(offset.choices.map(\.value), trend.choices.map(\.value))
+        XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: compiled.editorExpressions.mapValues(\.snapshot)))
+    }
+
     func testCrossingAllowsEqualityOnlyAtStartAndComparesBothSides() throws {
         XCTAssertEqual(try evaluate("crossUp(Close, Close)", market([101, 100]), explain: true).result, .no)
         XCTAssertEqual(try evaluate("crossDown(Close, Close)", market([101])).result, .unknown)
@@ -141,6 +155,18 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(try evaluate(source.replacingOccurrences(of: "sequence(6", with: "sequence(2"), context).result, .no)
         context.candles[hour] = Candle(hour: hour, high: 102, low: 99, close: 101, quoteVolume: 100, baseVolume: 1, open: 101, confirmed: false)
         XCTAssertEqual(try evaluate(source, context).result, .no)
+    }
+
+    func testPreviousLowAgeMatchesTheMarketReadingAndHistoricalBreakdown() throws {
+        let row: [String: Any] = ["lowBreakdown": ["status": "event", "hoursAgo": 2, "priorAgeHours": 17]]
+        XCTAssertEqual(LegacyFilterReadings.from(row)["lowPriorAge"]?.number, 17)
+        var context = market(Array(repeating: 100, count: 110))
+        context.candles[hour - 5 * hourMS] = Candle(hour: hour - 5 * hourMS, high: 101, low: 98, close: 100, quoteVolume: 100, baseVolume: 1, open: 100)
+        context.candles[hour] = Candle(hour: hour, high: 101, low: 97, close: 100, quoteVolume: 100, baseVolume: 1, open: 100, confirmed: false)
+        XCTAssertEqual(try scalar("lowPriorAge", context).number, 5)
+        XCTAssertEqual(try FilterCompiler.compile(source: "lowPriorAge >= 4").requiredHours, 96)
+        context.candles.removeValue(forKey: hour - 30 * hourMS)
+        XCTAssertEqual(try evaluate("lowPriorAge >= 4", context).result, .unknown)
     }
 
     func testSequenceExploresEarlierPathsAndDifferentCapturedValues() throws {

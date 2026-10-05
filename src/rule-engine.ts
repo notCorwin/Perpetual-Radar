@@ -12,7 +12,8 @@ export type FilterConfigV2 = { version: 2; root: RuleNode; definitions: NamedFor
 export type FilterMetricChoice = { value: string; label: string }
 export type FilterMetric = { key: string; label: string; group: string; description: string; unit: string; numeric: boolean; choices: FilterMetricChoice[] }
 export type FilterCombination = { id: string; name: string; filtersJSON: string; filterConfigJSON?: string }
-export type CompileResponse = { configJSON?: string; formula?: string; diagnostics: string[]; requiredHours?: number; units?: Record<string, string> }
+export type EditorExpression = { kind: "number" | "text" | "name" | "unary" | "binary" | "call" | "raw"; source: string; unit: string; value?: string; operation?: string; arguments: EditorExpression[]; choices: FilterMetricChoice[] }
+export type CompileResponse = { configJSON?: string; formula?: string; diagnostics: string[]; requiredHours?: number; units?: Record<string, string>; expressions?: Record<string, EditorExpression> }
 export type FilterTrace = { id: string; label: string; result: FilterTruth; hour: number; readings: Record<string, string>; reason: string; children: FilterTrace[]; eventHours: number[] }
 export type ExplainResponse = { instId: string; filterToken: string; revision: number; trace: FilterTrace }
 export type NativeMarketRow = MarketRow & { opportunity: OpportunityResult }
@@ -76,6 +77,22 @@ export function duplicateRule(root: RuleNode, id: string): RuleNode {
   }
   const index = parent.children.findIndex(child => child.id === id)
   return updateRule(root, parent.id, node => ({ ...node, children: [...node.children.slice(0, index + 1), clone, ...node.children.slice(index + 1)] }))
+}
+export function wrapRule(root: RuleNode, id: string, kind: RuleKind): RuleNode {
+  const stage = findParent(root, id)?.kind === "sequence"
+  return updateRule(root, id, node => ({
+    ...makeRule(kind), mode: node.mode, name: node.name, gapHours: node.gapHours, captures: stage ? node.captures : [],
+    children: [{ ...node, mode: "live", name: "", captures: stage ? [] : node.captures }],
+  }))
+}
+export function unwrapRule(root: RuleNode, id: string): RuleNode {
+  const node = findRule(root, id)
+  if (!node || node.children.length !== 1 || !["not", "every", "recent", "count", "all", "any"].includes(node.kind)) return root
+  const stage = findParent(root, id)?.kind === "sequence", child = node.children[0]
+  const replacement = { ...child, name: node.name || child.name, gapHours: node.gapHours, captures: stage ? [...node.captures, ...child.captures] : child.captures }
+  // Preserve both closed anchors when the child independently uses closed data.
+  if (node.mode === "closed" && child.mode === "closed") return updateRule(root, id, () => ({ ...makeRule("all"), mode: "closed", name: replacement.name, gapHours: replacement.gapHours, captures: replacement.captures, children: [{ ...child, name: "", captures: stage ? [] : child.captures }] }))
+  return updateRule(root, id, () => ({ ...replacement, mode: node.mode === "closed" ? "closed" : child.mode }))
 }
 export const ruleCount = (node: RuleNode): number => (node.kind === "condition" || node.kind.startsWith("cross") ? 1 : 0) + node.children.reduce((sum, child) => sum + ruleCount(child), 0)
 export const ruleKinds: { value: RuleKind; label: string }[] = [

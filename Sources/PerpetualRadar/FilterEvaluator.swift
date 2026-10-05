@@ -129,11 +129,11 @@ final class FilterEvaluator {
             let current = key.hasPrefix("close") ? b?.close : isHigh ? b?.high : b?.low
             guard let current, let prior = fn(isHigh ? "priorhigh" : "priorlow", [Double(n)]).number else { return number(nil, "Breakout reference history is unavailable.") }
             return .text((isHigh ? current > prior : current < prior) ? "yes" : "no")
-        case "recentHigh48", "recentHigh96", "recentLow48", "recentLow96", "high48Age", "high96Age", "low48Age", "low96Age", "highPriorAge":
+        case "recentHigh48", "recentHigh96", "recentLow48", "recentLow96", "high48Age", "high96Age", "low48Age", "low96Age", "highPriorAge", "lowPriorAge":
             let n = key.contains("96") ? 96 : 48, high = key.lowercased().contains("high"), result = extremes(at: hour, lookback: n, search: 48)
             let event = high ? result.highBreakout : result.lowBreakdown
             switch event {
-            case .event(let e): return key.hasPrefix("recent") ? .text("yes") : .number(Double(key == "highPriorAge" ? e.priorAgeHours : e.hoursAgo))
+            case .event(let e): return key.hasPrefix("recent") ? .text("yes") : .number(Double(key.hasSuffix("PriorAge") ? e.priorAgeHours : e.hoursAgo))
             case .none: return key.hasPrefix("recent") ? .text("no") : number(nil, "No breakout event in the search window.")
             case .loading: return number(nil, "Breakout history has a gap.")
             case .insufficientHistory: return number(nil, "Contract has insufficient listing history.")

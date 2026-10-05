@@ -312,7 +312,8 @@ final class Radar {
             if let source = request["source"] as? String { compiled = try FilterCompiler.compile(source: source, previous: (request["previousJSON"] as? String).flatMap { try? FilterConfigV2.decode($0) }) }
             else if let json = request["filtersJSON"] as? String { compiled = try compiledFilter(json) }
             else { throw FilterError("Provide a formula or filter configuration.") }
-            return ["configJSON": compiled.config.json, "formula": compiled.formula, "diagnostics": [], "requiredHours": compiled.requiredHours, "units": compiled.units]
+            return ["configJSON": compiled.config.json, "formula": compiled.formula, "diagnostics": [], "requiredHours": compiled.requiredHours,
+                    "units": compiled.units, "expressions": compiled.editorExpressions.mapValues(\.snapshot)]
         } catch { return ["diagnostics": [String(describing: error)]] }
     }
 

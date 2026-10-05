@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { cloneRule, duplicateRule, emptyFilterConfig, findRule, initialEditorState, makeRule, moveRule, previewResponseIsCurrent, removeRule, updateRule } from "./rule-engine.ts"
+import { cloneRule, duplicateRule, emptyFilterConfig, findRule, initialEditorState, makeRule, moveRule, previewResponseIsCurrent, removeRule, unwrapRule, updateRule, wrapRule } from "./rule-engine.ts"
 
 test("moving nested rules preserves identity and ordering and rejects cycles and invalid targets", () => {
   const root = makeRule("all"), a = makeRule(), b = makeRule(), group = makeRule("any")
@@ -35,6 +35,25 @@ test("sequence copies use independent stage names, and reset clears every univer
   const copied = duplicateRule(root, stage.id)
   assert.deepEqual(copied.children[0].children.map(child => child.name), ["break", "break_copy1"])
   assert.equal(emptyFilterConfig().root.children.length, 0)
+})
+
+test("wrapping a closed sequence stage keeps its capture at the same hour and unwrapping retains the condition", () => {
+  const root = makeRule("all"), sequence = makeRule("sequence"), stage = makeRule()
+  stage.mode = "closed"; stage.name = "break"; stage.gapHours = 4; stage.captures = [{ id: "level", name: "level", expression: "PriorHigh(48)" }]
+  sequence.children = [stage]; root.children = [sequence]
+  const wrapped = wrapRule(root, stage.id, "count"), wrapper = wrapped.children[0].children[0]
+  assert.equal(wrapper.mode, "closed")
+  assert.equal(wrapper.children[0].mode, "live")
+  assert.equal(wrapper.name, "break")
+  assert.deepEqual(wrapper.captures, stage.captures)
+  assert.deepEqual(wrapper.children[0].captures, [])
+  assert.deepEqual(unwrapRule(wrapped, wrapper.id).children[0].children[0], stage)
+  const nested = wrapRule(root, stage.id, "recent")
+  nested.children[0].children[0].children[0].mode = "closed"
+  const restored = unwrapRule(nested, nested.children[0].children[0].id).children[0].children[0]
+  assert.equal(restored.kind, "all")
+  assert.equal(restored.mode, "closed")
+  assert.equal(restored.children[0].mode, "closed")
 })
 
 test("preview responses must match the draft token and cannot replace a newer market version", () => {

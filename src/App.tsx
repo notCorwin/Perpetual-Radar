@@ -220,13 +220,13 @@ function App() {
         const request = editor.source === null ? { filtersJSON: draftJSON } : { source: editor.source, previousJSON: draftJSON }
         const response = await window.webkit.messageHandlers.radar.postMessage({ compileMarketFilters: request })
         if (stopped || epoch !== compileEpoch.current) return
-        setCompilation({ ...response, key: compileKey, pending: false })
+        setCompilation(current => ({ ...current, ...response, key: compileKey, pending: false }))
         if (response.diagnostics.length === 0 && response.configJSON) {
           setLastValidJSON(response.configJSON)
           if (editor.source !== null) setFilterDraft(parseFilterConfig(response.configJSON))
         }
       } catch (cause) {
-        if (!stopped && epoch === compileEpoch.current) setCompilation({ key: compileKey, pending: false, diagnostics: [cause instanceof Error ? cause.message : "Compilation failed."] })
+        if (!stopped && epoch === compileEpoch.current) setCompilation(current => ({ ...current, key: compileKey, pending: false, diagnostics: [cause instanceof Error ? cause.message : "Compilation failed."] }))
       }
     }, 150)
     return () => { stopped = true; window.clearTimeout(timer) }
@@ -348,7 +348,7 @@ function App() {
         </Badge>
         <span className="text-xs text-muted-foreground">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString("en-US")}` : "Waiting for data"}</span>
       </header>
-      <MarketFilters filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics} functions={functions} units={compilation.units ?? {}} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />
+      <MarketFilters filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics} functions={functions} units={compilation.units ?? {}} expressions={compilation.expressions ?? {}} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />
       <FilterExplanation open={explanationOpen} onOpenChange={setExplanationOpen} instId={explainingId} onSelect={setExplainingId} rows={rows} results={results} filtersJSON={previewJSON} revision={revision.current} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
       <section aria-label="Perpetual swap markets" className="flex-1">

@@ -198,7 +198,24 @@ struct CompiledFilter: Sendable {
     var needsStats = false
     var needsQuotes = false
     var units: [String: String] = [:]
+    var editorExpressions: [String: FilterEditorExpression] = [:]
     var formula: String { config.definitions.map { "let \($0.name) = \($0.expression);" }.joined(separator: "\n") + (config.definitions.isEmpty ? "" : "\n\n") + config.root.formula }
+}
+
+// WebKit edits this tree; parsing, type resolution and normalization remain native.
+struct FilterEditorExpression: Sendable {
+    var kind: String, source: String, unit: String
+    var value: String? = nil
+    var operation: String? = nil
+    var arguments: [Self] = []
+    var choices: [FilterCatalog.Choice] = []
+    var snapshot: [String: Any] {
+        var result: [String: Any] = ["kind": kind, "source": source, "unit": unit, "arguments": arguments.map(\.snapshot),
+                                   "choices": choices.map { ["value": $0.value, "label": $0.label] }]
+        if let value { result["value"] = value }
+        if let operation { result["operation"] = operation }
+        return result
+    }
 }
 
 struct FilterCompiler {
@@ -229,6 +246,11 @@ struct FilterCompiler {
         for (name, expr) in compiled.definitions { compiled.units[name] = expressionUnit(expr); compiled.units[expr.source] = expressionUnit(expr) }
         compiled.units.merge(captureUnits) { _, unit in unit }
         normalizeConfiguration()
+        for (source, expression) in compiled.expressions { compiled.editorExpressions[source] = editorExpression(expression) }
+        for (name, expression) in compiled.definitions {
+            compiled.editorExpressions[name] = editorExpression(.name(name))
+            compiled.editorExpressions[expression.source] = editorExpression(expression)
+        }
         return compiled
     }
     static func validName(_ name: String) -> Bool { name.range(of: "^[A-Za-z_][A-Za-z0-9_]*$", options: .regularExpression) != nil }
@@ -335,7 +357,7 @@ struct FilterCompiler {
             if key.hasPrefix("opportunity") || ["emaTrend", "emaSlope", "emaBody", "priceEMA", "emaDistance"].contains(key) { return 250 }
             if key.hasPrefix("rsi") { return 250 }
             if key.contains("96") { return 144 }
-            if key.contains("48") || key == "highPriorAge" { return 96 }
+            if key.contains("48") || ["highPriorAge", "lowPriorAge"].contains(key) { return 96 }
             if ["bbExpansion", "bbExpansionComplete"].contains(key) { return 250 }
             if ["maroc", "marocChange", "rocVsMaroc"].contains(key) { return 18 }
             if ["roc", "rocChange"].contains(key) { return 10 }
@@ -387,6 +409,32 @@ struct FilterCompiler {
             if ["ema", "vwap", "priorhigh", "priorlow"].contains(f) || f.hasPrefix("logbb") { return "USDT" }
             return args.first.map(unit) ?? "constant"
         }
+    }
+
+    private func expressionChoices(_ expression: FilterExpression, visiting: Set<String> = []) -> [FilterCatalog.Choice] {
+        switch expression {
+        case .name(let name):
+            if let definition = compiled.definitions[name], !visiting.contains(name) {
+                return expressionChoices(definition, visiting: visiting.union([name]))
+            }
+            return FilterCatalog.key(name).map(FilterCatalog.choices) ?? []
+        case .call(let name, let arguments) where ["closed", "live"].contains(name.lowercased()):
+            return arguments.first.map { expressionChoices($0, visiting: visiting) } ?? []
+        default: return []
+        }
+    }
+
+    private func editorExpression(_ expression: FilterExpression) -> FilterEditorExpression {
+        var result = FilterEditorExpression(kind: "", source: expression.source, unit: expressionUnit(expression), choices: expressionChoices(expression))
+        switch expression {
+        case .number: result.kind = "number"; result.value = expression.source
+        case .text(let value): result.kind = "text"; result.value = value
+        case .name(let value): result.kind = "name"; result.value = value
+        case .unary(let operation, let argument): result.kind = "unary"; result.operation = operation; result.arguments = [editorExpression(argument)]
+        case .binary(let operation, let left, let right): result.kind = "binary"; result.operation = operation; result.arguments = [editorExpression(left), editorExpression(right)]
+        case .call(let operation, let arguments): result.kind = "call"; result.operation = operation; result.arguments = arguments.map(editorExpression)
+        }
+        return result
     }
 
     private mutating func normalizeConfiguration() {
