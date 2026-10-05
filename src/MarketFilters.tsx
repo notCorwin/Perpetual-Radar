@@ -220,7 +220,7 @@ export function MarketFilters({ filters, draft: draftOverride, onDraftChange, on
   }
   return <Collapsible open={open} onOpenChange={setOpen} className="border-b">
     <div className="flex items-center gap-3 px-4 py-2">
-      <CollapsibleTrigger asChild><Button variant="outline" size="sm"><Filter data-icon="inline-start" aria-hidden="true" />Filters{preview.rules.length > 0 && <Badge variant="secondary">{preview.rules.length}</Badge>}</Button></CollapsibleTrigger>
+      <CollapsibleTrigger asChild><Button variant="outline"><Filter data-icon="inline-start" aria-hidden="true" />Filters{preview.rules.length > 0 && <Badge variant="secondary">{preview.rules.length}</Badge>}</Button></CollapsibleTrigger>
       <div className="flex min-w-0 flex-1 items-center gap-2">
         {preview.rules.length ? <>
           <span className="shrink-0 text-xs text-muted-foreground">Match {preview.match === "all" ? "all" : "any"}</span>
@@ -238,7 +238,7 @@ export function MarketFilters({ filters, draft: draftOverride, onDraftChange, on
             <FieldGroup className="grid w-[26rem] shrink-0 grid-cols-[auto_15rem] items-end gap-4">
               <Field>
                 <FieldLabel id="filter-match-label">Match conditions</FieldLabel>
-                <ToggleGroup type="single" variant="outline" size="sm" spacing={0} value={draft.match} onValueChange={match => { if (match) edit({ ...draft, match: match as "all" | "any" }) }} aria-labelledby="filter-match-label">
+                <ToggleGroup type="single" variant="outline" spacing={0} value={draft.match} onValueChange={match => { if (match) edit({ ...draft, match: match as "all" | "any" }) }} aria-labelledby="filter-match-label">
                   <ToggleGroupItem value="all">All (AND)</ToggleGroupItem><ToggleGroupItem value="any">Any (OR)</ToggleGroupItem>
                 </ToggleGroup>
               </Field>

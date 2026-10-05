@@ -27,7 +27,7 @@ export function MarketOpportunity({ instId, opportunity }: { instId: string; opp
         <Badge variant={variant}>{status}</Badge>
       </Button>
     </PopoverTrigger>
-    <PopoverContent className="max-h-[min(80vh,32rem)] w-80 overflow-y-auto" aria-labelledby={titleId} aria-describedby={descriptionId} onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+    <PopoverContent className="w-80" aria-labelledby={titleId} aria-describedby={descriptionId} onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
       <PopoverHeader>
         <PopoverTitle id={titleId}>{instId.replace(/-USDT-SWAP$/, "")} · Opportunity</PopoverTitle>
         <PopoverDescription id={descriptionId}>Live 1h indicators · {direction ?? "Direction unclear"} · {setup ?? "No setup"}. Scores may change before the hour closes.</PopoverDescription>

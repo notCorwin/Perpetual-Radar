@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { ArrowDown, ArrowDownUp, ArrowUp, Radio, Search, Settings2 } from "lucide-react"
 import katex from "katex"
 import "katex/dist/katex.min.css"
@@ -226,10 +226,10 @@ function App() {
     if (value !== frostedBackgroundOpacity) saveSetting({ frostedBackgroundOpacity: value })
   }
 
-  const header = (label: string, key: SortKey, formula: string, description?: string) => {
+  const header = (label: string, key: SortKey, content: ReactNode = label, description?: string) => {
     const SortIcon = sort !== key ? ArrowDownUp : descending ? ArrowDown : ArrowUp
-    return <Button variant="ghost" size="sm" className={cn("h-auto min-h-6 gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} aria-pressed={sort === key} title={description}>
-      {math(formula)}<SortIcon data-icon="inline-end" aria-hidden="true" />
+    return <Button variant="ghost" size="xs" className={cn("h-auto min-h-(--control-height-xs) gap-1", key === "turnover24hUSDT" && "border-l-0 pl-0")} onClick={() => changeSort(key)} aria-label={`Sort by ${label}`} aria-pressed={sort === key} title={description}>
+      {content}<SortIcon data-icon="inline-end" aria-hidden="true" />
     </Button>
   }
 
@@ -243,8 +243,8 @@ function App() {
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h · 24h turnover ≥ {minimum24hTurnoverUSDT / 1_000_000}M USDT{spreadFilterEnabled ? ` · spread ≤ ${maximumSpreadPercent}%` : ""}{contractAgeFilterEnabled ? ` · age ≥ ${minimumContractAgeMonths} ${minimumContractAgeMonths === 1 ? "month" : "months"}` : ""}</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
         <Popover onOpenChange={open => { if (!open) { if (contractAgeDraftDirty.current) saveContractAge(); if (backgroundOpacityDraftDirty.current) saveBackgroundOpacity() } }}>
-          <PopoverTrigger asChild><Button variant="outline" size="sm"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
-          <PopoverContent align="end" className="max-h-(--radix-popover-content-available-height) overflow-y-auto">
+          <PopoverTrigger asChild><Button variant="outline"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
+          <PopoverContent align="end">
             <PopoverHeader>
               <PopoverTitle>Settings</PopoverTitle>
               <PopoverDescription>Filter swaps and customize the window background.</PopoverDescription>
@@ -252,7 +252,7 @@ function App() {
             <FieldGroup>
               <Field>
                 <FieldTitle id="turnover-threshold-label">Minimum 24h turnover</FieldTitle>
-                <ToggleGroup type="single" variant="outline" size="sm" spacing={0} value={String(minimum24hTurnoverUSDT)} onValueChange={changeTurnoverThreshold} aria-labelledby="turnover-threshold-label">
+                <ToggleGroup type="single" variant="outline" spacing={0} value={String(minimum24hTurnoverUSDT)} onValueChange={changeTurnoverThreshold} aria-labelledby="turnover-threshold-label">
                   <ToggleGroupItem value="10000000" aria-label="10 million USDT">10M</ToggleGroupItem>
                   <ToggleGroupItem value="30000000" aria-label="30 million USDT">30M</ToggleGroupItem>
                   <ToggleGroupItem value="100000000" aria-label="100 million USDT">100M</ToggleGroupItem>
@@ -261,14 +261,14 @@ function App() {
               <Field>
                 <FieldTitle id="spread-limit-label">Maximum spread (%)</FieldTitle>
                 <div className="flex items-center gap-2">
-                  <Toggle variant="outline" size="sm" pressed={spreadFilterEnabled} onPressedChange={enabled => saveSetting({ spreadFilterEnabled: enabled })} aria-label="Enable maximum spread filter">{spreadFilterEnabled ? "On" : "Off"}</Toggle>
+                  <Toggle variant="outline" pressed={spreadFilterEnabled} onPressedChange={enabled => saveSetting({ spreadFilterEnabled: enabled })} aria-label="Enable maximum spread filter">{spreadFilterEnabled ? "On" : "Off"}</Toggle>
                   <Input id="maximum-spread" type="number" min="0" max="100" step="any" inputMode="decimal" aria-labelledby="spread-limit-label" value={spreadDraft} onChange={event => setSpreadDraft(event.target.value)} onBlur={saveSpread} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur() }} />
                 </div>
               </Field>
               <Field data-invalid={Boolean(contractAgeError)}>
                 <FieldLabel htmlFor="minimum-contract-age">Minimum contract age (months)</FieldLabel>
                 <div className="flex items-center gap-2">
-                  <Toggle variant="outline" size="sm" pressed={contractAgeFilterEnabled} onPressedChange={enabled => saveSetting({ contractAgeFilterEnabled: enabled })} aria-label="Enable minimum contract age filter">{contractAgeFilterEnabled ? "On" : "Off"}</Toggle>
+                  <Toggle variant="outline" pressed={contractAgeFilterEnabled} onPressedChange={enabled => saveSetting({ contractAgeFilterEnabled: enabled })} aria-label="Enable minimum contract age filter">{contractAgeFilterEnabled ? "On" : "Off"}</Toggle>
                   <Input id="minimum-contract-age" name="minimumContractAgeMonths" type="number" min="1" max="1200" step="1" inputMode="numeric" autoComplete="off" aria-describedby={contractAgeError ? "contract-age-description contract-age-error" : "contract-age-description"} aria-invalid={Boolean(contractAgeError)} value={contractAgeDraft} onChange={event => { contractAgeDraftDirty.current = true; setContractAgeDraft(event.target.value); setContractAgeError("") }} onBlur={saveContractAge} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur() }} />
                 </div>
                 <FieldDescription id="contract-age-description">Calendar months since OKX listing. Unknown dates are hidden while enabled.</FieldDescription>
@@ -277,7 +277,7 @@ function App() {
               <FieldSeparator />
               <Field orientation="horizontal">
                 <FieldLabel htmlFor="frosted-background">Frosted background</FieldLabel>
-                <Toggle id="frosted-background" variant="outline" size="sm" pressed={frostedBackgroundEnabled} onPressedChange={enabled => saveSetting({ frostedBackgroundEnabled: enabled })} aria-label="Enable frosted background">{frostedBackgroundEnabled ? "On" : "Off"}</Toggle>
+                <Toggle id="frosted-background" variant="outline" pressed={frostedBackgroundEnabled} onPressedChange={enabled => saveSetting({ frostedBackgroundEnabled: enabled })} aria-label="Enable frosted background">{frostedBackgroundEnabled ? "On" : "Off"}</Toggle>
               </Field>
               <Field data-invalid={Boolean(backgroundOpacityError)} data-disabled={!frostedBackgroundEnabled}>
                 <FieldLabel htmlFor="background-opacity">Background opacity</FieldLabel>
@@ -302,44 +302,44 @@ function App() {
       <section aria-label="Perpetual swap markets" className="flex-1">
         <Table className="table-auto">
           <TableHeader>
-            <TableRow className="bg-muted/30">
+            <TableRow>
               <TableHead className="py-1.5 pl-[var(--market-table-leading-inset)] text-left" aria-sort={sort === "turnover24hUSDT" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-start">
-                  {header("Turnover", "turnover24hUSDT", String.raw`\operatorname{Turnover}`)}
+                  {header("Turnover", "turnover24hUSDT")}
                 </div>
               </TableHead>
-              <TableHead className="text-center" aria-sort={sort === "opportunity" ? descending ? "descending" : "ascending" : "none"}>{header("Opportunity", "opportunity", String.raw`\operatorname{Opportunity}`, OPPORTUNITY_DESCRIPTION)}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "opportunity" ? descending ? "descending" : "ascending" : "none"}>{header("Opportunity", "opportunity", undefined, OPPORTUNITY_DESCRIPTION)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={["highBreakout", "highBreakoutPriorAge", "lowBreakdown", "lowBreakdownPriorAge"].includes(sort) ? descending ? "descending" : "ascending" : "none"}>
                 <div className="mx-auto grid w-max grid-cols-[max-content_max-content] items-center gap-x-3">
-                  {header("High breakout · 48h", "highBreakout", String.raw`\text{High breakout}\cdot48\,\mathrm{h}`, BREAK_DESCRIPTION)}
-                  {header("High age", "highBreakoutPriorAge", String.raw`\text{High age}`, "Sort by the previous high's age at the breakout, longest first. Tied highs use the most recent occurrence.")}
-                  {header("Low breakdown · 48h", "lowBreakdown", String.raw`\text{Low breakdown}\cdot48\,\mathrm{h}`, BREAK_DESCRIPTION)}
-                  {header("Low age", "lowBreakdownPriorAge", String.raw`\text{Low age}`, "Sort by the previous low's age at the breakdown, longest first. Tied lows use the most recent occurrence.")}
+                  {header("High breakout · 48h", "highBreakout", undefined, BREAK_DESCRIPTION)}
+                  {header("High age", "highBreakoutPriorAge", undefined, "Sort by the previous high's age at the breakout, longest first. Tied highs use the most recent occurrence.")}
+                  {header("Low breakdown · 48h", "lowBreakdown", undefined, BREAK_DESCRIPTION)}
+                  {header("Low age", "lowBreakdownPriorAge", undefined, "Sort by the previous low's age at the breakdown, longest first. Tied lows use the most recent occurrence.")}
                 </div>
               </TableHead>
-              <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`)}</TableHead>
-              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Relative Change", "oiChange", String.raw`\text{OI Relative Change}`, `Hourly OI relative change. ${PERCENT_CHANGE_DESCRIPTION}`)}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "takerRatio" ? descending ? "descending" : "ascending" : "none"}>{header("Taker buy-sell ratio", "takerRatio", math(String.raw`\frac{Buy_t-Sell_t}{Buy_t+Sell_t}\times100\%`))}</TableHead>
+              <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Relative Change", "oiChange", undefined, `Hourly OI relative change. ${PERCENT_CHANGE_DESCRIPTION}`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header(`ROC ${ROC_PERIOD}`, "roc", String.raw`\operatorname{ROC}_{${ROC_PERIOD}}\,(\%)`, `${ROC_PERIOD}-hour price change. ${PERCENT_CHANGE_DESCRIPTION}`)}
-                  {header(`MAROC ${MAROC_PERIOD}`, "maroc", String.raw`\operatorname{MAROC}_{${MAROC_PERIOD}}\,(\%)`, `Mean of the latest ${MAROC_PERIOD} hourly ROC readings, as a percentage.`)}
+                  {header(`ROC ${ROC_PERIOD}`, "roc", <span>ROC<sub>{ROC_PERIOD}</sub> (%)</span>, `${ROC_PERIOD}-hour price change. ${PERCENT_CHANGE_DESCRIPTION}`)}
+                  {header(`MAROC ${MAROC_PERIOD}`, "maroc", <span>MAROC<sub>{MAROC_PERIOD}</sub> (%)</span>, `Mean of the latest ${MAROC_PERIOD} hourly ROC readings, as a percentage.`)}
                 </div>
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("rsi") ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {RSI_PERIODS.map(period => <Fragment key={period}>{header(`RSI ${period}`, `rsi${period}`, String.raw`\operatorname{RSI}_{${period}}`)}</Fragment>)}
+                  {RSI_PERIODS.map(period => <Fragment key={period}>{header(`RSI ${period}`, `rsi${period}`, <span>RSI<sub>{period}</sub></span>)}</Fragment>)}
                 </div>
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("logBB") ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header("Log BB · Live", "logBBAboveBand", String.raw`\operatorname{LogBB}_{\mathrm{Live}}`, LOG_BB_DESCRIPTION)}
-                  {header("Bandwidth expansion", "logBBExpansion", String.raw`\text{Bandwidth expansion}`, BANDWIDTH_EXPANSION_DESCRIPTION)}
+                  {header("Log BB · Live", "logBBAboveBand", undefined, LOG_BB_DESCRIPTION)}
+                  {header("Bandwidth expansion", "logBBExpansion", undefined, BANDWIDTH_EXPANSION_DESCRIPTION)}
                 </div>
               </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {visible.length ? visible.map(row => <TableRow key={row.instId} className="cursor-pointer hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2" tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => setSelected(row.instId)} onKeyDown={event => {
+            {visible.length ? visible.map(row => <TableRow key={row.instId} interactive tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => setSelected(row.instId)} onKeyDown={event => {
               if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(row.instId) }
             }}>
               <TableCell className="pl-[var(--market-table-leading-inset)] text-left" title={row.instId}>

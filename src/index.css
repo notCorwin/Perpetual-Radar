@@ -37,6 +37,14 @@
     --color-secondary: var(--secondary);
     --color-primary-foreground: var(--primary-foreground);
     --color-primary: var(--primary);
+    --color-primary-hover: var(--primary-hover);
+    --color-control: var(--control);
+    --color-control-hover: var(--control-hover);
+    --color-selection: var(--selection);
+    --color-selection-border: var(--selection-border);
+    --color-destructive-surface: var(--destructive-surface);
+    --color-destructive-hover: var(--destructive-hover);
+    --color-table-header: var(--table-header);
     --color-popover-foreground: var(--popover-foreground);
     --color-popover: var(--popover);
     --color-card-foreground: var(--card-foreground);
@@ -45,6 +53,8 @@
     --color-background: var(--background);
     --color-window-background: var(--window-background);
     --color-chart-surface: var(--chart-surface);
+    --color-chart-annotation: var(--chart-annotation);
+    --shadow-floating: var(--floating-shadow);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -58,7 +68,28 @@
     color-scheme: light;
     --window-background-opacity: 0.3;
     --window-background: color-mix(in srgb, var(--background) calc(var(--window-background-opacity) * 100%), transparent);
+    --control-height: 32px;
+    --control-height-sm: 28px;
+    --control-height-xs: 24px;
+    --control-height-lg: 36px;
+    --control-radius: 6px;
+    --control-font-size: 13px;
+    --control-opacity: calc(0.2 + var(--window-background-opacity) * 0.8);
+    --control: color-mix(in srgb, var(--control-base) calc(var(--control-opacity) * 100%), transparent);
+    --control-hover: color-mix(in srgb, var(--control), var(--foreground) 5%);
+    --selection: color-mix(in srgb, var(--ring) 14%, var(--control));
+    --selection-border: color-mix(in srgb, var(--ring) 45%, var(--input));
+    --primary-hover: color-mix(in srgb, var(--primary), var(--foreground) 10%);
+    --destructive-surface: color-mix(in srgb, var(--destructive) 12%, transparent);
+    --destructive-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
+    --floating-opacity: calc(0.92 + var(--window-background-opacity) * 0.08);
+    --floating-blur: calc((1 - var(--window-background-opacity)) * 18px);
+    --popover: color-mix(in srgb, var(--popover-base) calc(var(--floating-opacity) * 100%), transparent);
+    --floating-shadow: 0 8px 24px rgb(0 0 0 / 14%), 0 2px 6px rgb(0 0 0 / 6%);
+    --table-header: color-mix(in srgb, var(--foreground) 3%, transparent);
     --chart-surface: transparent;
+    --chart-annotation: var(--control);
+    --chart-rsi-area: color-mix(in srgb, var(--foreground) 5%, transparent);
     --market-list-design-width: 1600px;
     --market-table-leading-inset: 24px;
     --chart-text-size: 10px;
@@ -67,7 +98,7 @@
     --chart-price-tag-padding-x: 12px;
     --chart-price-tag-padding-y: 7px;
     --chart-price-tag-row-gap: 2px;
-    --chart-price-tag-radius: 12px;
+    --chart-price-tag-radius: var(--control-radius);
     --chart-price-tag-text-size: 12px;
     --chart-price-tag-stroke-width: 1.5px;
     --chart-price-tag-line-height: 1.1;
@@ -77,22 +108,23 @@
     --foreground: oklch(0.2 0.012 260);
     --card: oklch(1 0 0);
     --card-foreground: oklch(0.2 0.012 260);
-    --popover: oklch(1 0 0);
+    --control-base: oklch(1 0 0);
+    --popover-base: oklch(1 0 0);
     --popover-foreground: oklch(0.2 0.012 260);
-    --primary: oklch(0.25 0.014 260);
+    --primary: #006da3;
     --primary-foreground: oklch(1 0 0);
-    --secondary: oklch(0.94 0.006 260);
+    --secondary: color-mix(in srgb, var(--foreground) 8%, transparent);
     --secondary-foreground: oklch(0.25 0.014 260);
-    --muted: oklch(0.94 0.006 260);
+    --muted: color-mix(in srgb, var(--foreground) 5%, transparent);
     --muted-foreground: oklch(0.45 0.014 260);
-    --accent: oklch(0.91 0.01 260);
+    --accent: color-mix(in srgb, var(--foreground) 10%, transparent);
     --accent-foreground: oklch(0.2 0.012 260);
     --positive: rgb(142 188 57);
     --destructive: rgb(232 85 168);
     --chart-roc-positive-area: color-mix(in srgb, var(--positive) 12%, transparent);
     --chart-roc-negative-area: color-mix(in srgb, var(--destructive) 12%, transparent);
-    --border: oklch(0.8 0.01 260 / 75%);
-    --input: oklch(0.8 0.01 260);
+    --border: oklch(0.65 0.01 260 / 35%);
+    --input: var(--border);
     --ring: #006da3;
     --chart-1: #9c5700;
     --chart-2: #006aab;
@@ -117,22 +149,20 @@
         --foreground: oklch(0.94 0.01 260);
         --card: oklch(0.125 0.012 260);
         --card-foreground: oklch(0.94 0.01 260);
-        --popover: oklch(0.17 0.014 260);
+        --control-base: oklch(0.3 0.012 260);
+        --popover-base: oklch(0.22 0.014 260);
         --popover-foreground: oklch(0.94 0.01 260);
-        --primary: oklch(0.94 0.01 260);
+        --primary: #56b4e9;
         --primary-foreground: oklch(0.13 0.012 260);
-        --secondary: oklch(0.2 0.014 260);
         --secondary-foreground: oklch(0.92 0.01 260);
-        --muted: oklch(0.19 0.014 260);
         --muted-foreground: oklch(0.67 0.014 260);
-        --accent: oklch(0.23 0.015 260);
         --accent-foreground: oklch(0.96 0.01 260);
         --positive: rgb(202 253 92);
         --destructive: rgb(232 85 168);
         --chart-roc-positive-area: color-mix(in srgb, var(--positive) 16%, transparent);
         --chart-roc-negative-area: color-mix(in srgb, var(--destructive) 16%, transparent);
-        --border: oklch(0.32 0.014 260 / 55%);
-        --input: oklch(0.3 0.014 260);
+        --border: oklch(0.85 0.01 260 / 20%);
+        --floating-shadow: 0 8px 24px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 16%);
         --ring: #56b4e9;
         --chart-1: #ffb84d;
         --chart-2: #69c5ff;
@@ -167,7 +197,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-slot="select-content"], [data-slot="spinner"] {
+  [data-slot="button"], [data-slot="input"], [data-slot="toggle"],
+  [data-slot="toggle-group-item"], [data-slot="badge"], [data-slot="table-row"],
+  [data-slot="select-trigger"], [data-slot="select-content"],
+  [data-slot="popover-content"], [data-slot="spinner"] {
     animation: none;
     transition: none;
   }
