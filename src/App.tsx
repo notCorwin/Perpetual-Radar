@@ -21,12 +21,12 @@ import { evaluateMarketOpportunity, OPPORTUNITY_DESCRIPTION } from "@/market-opp
 import { MarketOpportunity } from "@/MarketOpportunity"
 import { MarketListViewport } from "@/MarketListViewport"
 import { MarketFilters } from "@/MarketFilters"
-import { emptyMarketFilters, matchesMarketFilters, parseMarketFilters, type MarketFilters as FilterConfig } from "@/market-filters"
+import { emptyMarketFilters, matchesMarketFilters, parseMarketFilters, previewMarketFilters, type MarketFilterCombination, type MarketFilters as FilterConfig } from "@/market-filters"
 import type { MarketRow } from "@/market-row"
 
-type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number; marketFiltersJSON: string }
+type Snapshot = { rows: MarketRow[]; updatedAt: number | null; error: string; revision: number; minimum24hTurnoverUSDT: number; spreadFilterEnabled: boolean; maximumSpreadPercent: number; contractAgeFilterEnabled: boolean; minimumContractAgeMonths: number; marketFiltersJSON: string; marketFilterCombinations: MarketFilterCombination[] }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number; marketFiltersJSON?: string }
+type SettingRequest = { minimum24hTurnoverUSDT?: number; spreadFilterEnabled?: boolean; maximumSpreadPercent?: number; contractAgeFilterEnabled?: boolean; minimumContractAgeMonths?: number; marketFiltersJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
@@ -74,6 +74,8 @@ function App() {
   const contractAgeDraftDirty = useRef(false)
   const filtersJSON = useRef<string | undefined>(undefined)
   const [listFilters, setListFilters] = useState<FilterConfig>(emptyMarketFilters)
+  const [filterDraft, setFilterDraft] = useState<FilterConfig | null>(null)
+  const [filterCombinations, setFilterCombinations] = useState<MarketFilterCombination[]>([])
   const [rows, setRows] = useState<MarketRow[]>([])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
@@ -105,6 +107,7 @@ function App() {
       filtersJSON.current = snapshot.marketFiltersJSON
       setListFilters(parseMarketFilters(snapshot.marketFiltersJSON))
     }
+    setFilterCombinations(snapshot.marketFilterCombinations)
     setUpdatedAt(snapshot.updatedAt)
     setError(snapshot.error)
   }
@@ -132,16 +135,27 @@ function App() {
 
   const rankedRows = useMemo(() => rows.map(row => ({ ...row, opportunity: evaluateMarketOpportunity(row) })), [rows])
   const searchedRows = useMemo(() => rankedRows.filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase())), [rankedRows, query])
+  const displayFilters = useMemo(() => filterDraft === null ? listFilters : previewMarketFilters(filterDraft), [listFilters, filterDraft])
   const visible = useMemo(() => {
     return searchedRows
-      .filter(row => matchesMarketFilters(row, listFilters))
+      .filter(row => matchesMarketFilters(row, displayFilters))
       .sort((a, b) => compareMarketRows(a, b, sort, descending))
-  }, [searchedRows, listFilters, sort, descending])
+  }, [searchedRows, displayFilters, sort, descending])
   const listOrder = useMemo(() => visible.map(row => row.instId), [visible])
-  const turnoverOrder = useMemo(() => rankedRows.filter(row => matchesMarketFilters(row, listFilters)).sort(compareMarketTurnover).map(row => row.instId), [rankedRows, listFilters])
-  const countMatches = (filters: FilterConfig) => searchedRows.filter(row => matchesMarketFilters(row, filters)).length
+  const turnoverOrder = useMemo(() => rankedRows.filter(row => matchesMarketFilters(row, displayFilters)).sort(compareMarketTurnover).map(row => row.instId), [rankedRows, displayFilters])
   const saveFilters = async (filters: FilterConfig) => {
     acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ marketFiltersJSON: JSON.stringify(filters) }))
+    setFilterDraft(null)
+  }
+  const saveFilterCombination = async (name: string, filters: FilterConfig) => {
+    const snapshot = await window.webkit.messageHandlers.radar.postMessage({ saveMarketFilterCombination: { name, filtersJSON: JSON.stringify(filters) } })
+    acceptSnapshot(snapshot)
+    const saved = snapshot.marketFilterCombinations.find(combination => combination.name === name.trim())
+    if (!saved) throw new Error("Cannot find the saved combination. Try again.")
+    return saved
+  }
+  const deleteFilterCombination = async (id: string) => {
+    acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ deleteMarketFilterCombination: id }))
   }
 
   const changeSort = (key: SortKey) => {
@@ -242,7 +256,7 @@ function App() {
         </Badge>
         <span className="text-xs text-muted-foreground">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString("en-US")}` : "Waiting for data"}</span>
       </header>
-      <MarketFilters filters={listFilters} onApply={saveFilters} countMatches={countMatches} total={searchedRows.length} />
+      <MarketFilters filters={listFilters} draft={filterDraft} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} matches={visible.length} total={searchedRows.length} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
       <section aria-label="Perpetual swap markets" className="flex-1">
         <Table className="table-auto">
@@ -333,6 +347,7 @@ function App() {
               <Empty>
                 <EmptyHeader><EmptyTitle>{rows.length ? "No matching contracts" : "Waiting for eligible contracts"}</EmptyTitle><EmptyDescription>{rows.length ? "Adjust the indicator conditions or search to show more markets." : "OKX data is loading. Settings control the turnover, spread, and listing age of eligible markets."}</EmptyDescription></EmptyHeader>
                 <EmptyContent>
+                  {filterDraft !== null && <Button variant="outline" size="sm" onClick={() => setFilterDraft(null)}>Discard preview</Button>}
                   {listFilters.rules.length > 0 && <Button variant="outline" size="sm" onClick={() => { void saveFilters(emptyMarketFilters()).catch(cause => setError(cause instanceof Error ? cause.message : "Cannot clear filters")) }}>Clear indicator filters</Button>}
                   {query && <Button variant="ghost" size="sm" onClick={() => setQuery("")}>Clear search</Button>}
                 </EmptyContent>

@@ -322,6 +322,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 replyHandler(nil, "Cannot save filters: \(error.localizedDescription)"); return
             }
         }
+        if let requested = parameters["saveMarketFilterCombination"] {
+            guard let request = requested as? [String: Any], let name = request["name"] as? String,
+                  let filters = request["filtersJSON"] as? String, let radar else {
+                replyHandler(nil, "Invalid filter combination"); return
+            }
+            do {
+                guard try radar.saveMarketFilterCombination(name: name, filtersJSON: filters) else {
+                    replyHandler(nil, "Use a name from 1 to 80 characters and valid filter conditions"); return
+                }
+            } catch {
+                replyHandler(nil, "Cannot save combination: \(error.localizedDescription)"); return
+            }
+        }
+        if let requested = parameters["deleteMarketFilterCombination"] {
+            guard let id = requested as? String, let radar else {
+                replyHandler(nil, "Invalid filter combination"); return
+            }
+            do {
+                guard try radar.deleteMarketFilterCombination(id) else {
+                    replyHandler(nil, "The saved combination no longer exists"); return
+                }
+            } catch {
+                replyHandler(nil, "Cannot delete combination: \(error.localizedDescription)"); return
+            }
+        }
         if !startupError.isEmpty {
             replyHandler(["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
                           "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
@@ -329,7 +354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                           "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15,
                           "contractAgeFilterEnabled": radar?.contractAgeFilterEnabled ?? true,
                           "minimumContractAgeMonths": radar?.minimumContractAgeMonths ?? defaultMinimumContractAgeMonths,
-                          "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}"], nil)
+                          "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}",
+                          "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? []], nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9

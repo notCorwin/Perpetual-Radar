@@ -3,7 +3,7 @@ import test from "node:test"
 import { evaluateMarketOpportunity } from "./market-opportunity.ts"
 import { compareMarketRows, compareMarketTurnover, chartNavigationTarget } from "./market-sort.ts"
 import type { MarketRow } from "./market-row.ts"
-import { FILTER_FIELDS, FILTER_PRESETS, emptyMarketFilters, makeFilterRule, marketFilterPreset, matchesFilterRule, matchesMarketFilters, parseMarketFilters, validateFilterRule, type FilterField, type FilterOperator, type MarketFilters } from "./market-filters.ts"
+import { FILTER_FIELDS, FILTER_PRESETS, emptyMarketFilters, makeFilterRule, marketFilterPreset, matchesFilterRule, matchesMarketFilters, parseMarketFilters, previewMarketFilters, reorderFilterRules, validateFilterRule, type FilterField, type FilterOperator, type MarketFilters } from "./market-filters.ts"
 
 function market(patch: Partial<MarketRow> = {}, metrics: Partial<MarketRow["filterMetrics"]> = {}) {
   const row: MarketRow = {
@@ -129,6 +129,74 @@ test("numeric validation rejects blanks, infinities, inverted ranges and invalid
   }
   assert.equal(validateFilterRule(rule("rsi6", "between", "0", "100")), null)
   assert.equal(validateFilterRule(rule("roc", "gte", "-2.5")), null)
+})
+
+test("draft previews use complete conditions while leaving saved filters and unfinished inputs intact", () => {
+  const saved = config([rule("emaBody", "eq", "above")])
+  const originalSaved = structuredClone(saved)
+  const draft = config([rule("roc", "negative"), rule("rsi6", "between", "20", "")])
+  const originalDraft = structuredClone(draft)
+  const rows = [market(), market({ instId: "ETH-USDT-SWAP", roc: -3, rsi6: 28 }, { liveOpen: 90, liveClose: 80 })]
+  const ids = (filters: MarketFilters) => rows.filter(row => matchesMarketFilters(row, filters)).map(row => row.instId)
+
+  assert.deepEqual(ids(saved), ["BTC-USDT-SWAP"])
+  assert.deepEqual(ids(previewMarketFilters(draft)), ["ETH-USDT-SWAP"])
+  assert.ok(validateFilterRule(draft.rules[1]))
+  assert.deepEqual(saved, originalSaved)
+  assert.deepEqual(draft, originalDraft)
+
+  const completed = { ...draft, rules: draft.rules.map(r => r.operator === "between" ? { ...r, upper: "25" } : r) }
+  assert.deepEqual(ids(previewMarketFilters(completed)), [])
+  assert.deepEqual(ids(saved), ["BTC-USDT-SWAP"])
+})
+
+test("incomplete preview conditions preserve AND / OR semantics and an empty preview shows all markets", () => {
+  const row = market()
+  const conditions = [rule("roc", "negative"), rule("rsi6", "gte", "60"), rule("high48Age", "lte", "1.5")]
+  assert.equal(matchesMarketFilters(row, previewMarketFilters(config(conditions))), false)
+  assert.equal(matchesMarketFilters(row, previewMarketFilters(config(conditions, "any"))), true)
+
+  for (const match of ["all", "any"] as const) {
+    const preview = previewMarketFilters(config([rule("roc", "gte", "-"), rule("rsi6", "between", "70", "30")], match))
+    assert.equal(preview.match, match)
+    assert.deepEqual(preview.rules, [])
+    assert.equal(matchesMarketFilters(row, preview), true)
+  }
+  const live = previewMarketFilters(config([rule("roc", "positive")]))
+  assert.equal(matchesMarketFilters(market({ roc: 1 }), live), true)
+  assert.equal(matchesMarketFilters(market({ roc: -1 }), live), false)
+})
+
+test("conditions reorder in both directions without changing values, matching or the saved configuration", () => {
+  for (const match of ["all", "any"] as const) {
+    const saved = config([rule("emaBody", "eq", "above"), rule("rsi6", "between", "50", "70"), rule("roc", "negative")], match)
+    const original = structuredClone(saved)
+    const [first, second, third] = saved.rules
+    const forward = reorderFilterRules(saved, first.id, third.id)
+    assert.deepEqual(forward.rules, [second, third, first])
+    assert.equal(forward.match, match)
+    assert.deepEqual(parseMarketFilters(JSON.stringify(forward)), forward)
+    assert.deepEqual(saved, original)
+
+    const backward = reorderFilterRules(forward, first.id, second.id)
+    assert.deepEqual(backward, saved)
+    for (const row of [market(), market({ roc: -3, rsi6: 28 })]) {
+      assert.equal(matchesMarketFilters(row, forward), matchesMarketFilters(row, saved))
+      assert.equal(matchesMarketFilters(row, backward), matchesMarketFilters(row, saved))
+    }
+  }
+})
+
+test("unchanged or unavailable reorder targets leave the draft intact, including unfinished conditions", () => {
+  const draft = config([rule("rsi6", "between", "30", ""), rule("roc", "positive")])
+  const [first, second] = draft.rules
+  assert.equal(reorderFilterRules(draft, first.id, first.id), draft)
+  assert.equal(reorderFilterRules(draft, "missing", second.id), draft)
+  assert.equal(reorderFilterRules(draft, first.id, "missing"), draft)
+  const reordered = reorderFilterRules(draft, first.id, second.id)
+  assert.deepEqual(reordered.rules, [second, first])
+  assert.ok(validateFilterRule(reordered.rules[1]))
+  assert.deepEqual(previewMarketFilters(reordered).rules, [second])
 })
 
 test("configuration roundtrips, discards unknown or invalid rules, and deduplicates ids", () => {

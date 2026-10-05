@@ -160,6 +160,7 @@ export type FilterField = keyof typeof FILTER_FIELDS
 export type FilterOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "between" | "abs-gte" | "abs-lte" | "positive" | "negative" | "zero" | "present" | "missing"
 export type FilterRule = { id: string; field: FilterField; operator: FilterOperator; value: string; upper: string }
 export type MarketFilters = { version: 1; match: "all" | "any"; rules: FilterRule[] }
+export type MarketFilterCombination = { id: string; name: string; filtersJSON: string }
 export const emptyMarketFilters = (): MarketFilters => ({ version: 1, match: "all", rules: [] })
 export const FILTER_GROUPS = [...new Set(Object.values(FILTER_FIELDS).map(field => field.group))]
 export const FILTER_OPERATOR_LABELS: Record<FilterOperator, string> = {
@@ -224,6 +225,18 @@ export function matchesFilterRule(row: FilterRow, rule: FilterRule): boolean {
 export function matchesMarketFilters(row: FilterRow, filters: MarketFilters): boolean {
   if (!filters.rules.length) return true
   return filters.match === "all" ? filters.rules.every(rule => matchesFilterRule(row, rule)) : filters.rules.some(rule => matchesFilterRule(row, rule))
+}
+export function previewMarketFilters(draft: MarketFilters): MarketFilters {
+  return { ...draft, rules: draft.rules.filter(rule => validateFilterRule(rule) === null) }
+}
+export function reorderFilterRules(filters: MarketFilters, sourceId: string, targetId: string): MarketFilters {
+  const source = filters.rules.findIndex(rule => rule.id === sourceId)
+  const target = filters.rules.findIndex(rule => rule.id === targetId)
+  if (source < 0 || target < 0 || source === target) return filters
+  const rules = [...filters.rules]
+  const [moved] = rules.splice(source, 1)
+  rules.splice(target, 0, moved)
+  return { ...filters, rules }
 }
 export function describeFilterRule(rule: FilterRule): string {
   const field = FILTER_FIELDS[rule.field]

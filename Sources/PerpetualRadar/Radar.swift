@@ -79,6 +79,7 @@ final class Radar {
     private(set) var contractAgeFilterEnabled: Bool
     private(set) var minimumContractAgeMonths: Int
     private(set) var marketFiltersJSON: String
+    private(set) var marketFilterCombinations: [MarketFilterCombination]
     private var rows: [String: Market] = [:]
     private var cachedRows: [String: [String: Any]] = [:]
     private var cachedPeriods: (roc: Int, maroc: Int)?
@@ -125,6 +126,9 @@ final class Radar {
         }
         // Remove the legacy copy only after SQLite has committed the configuration.
         defaults.removeObject(forKey: marketFiltersKey)
+        marketFilterCombinations = try store.marketFilterCombinations()
+            .filter { validMarketFiltersJSON($0.filtersJSON) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     deinit {
@@ -178,6 +182,23 @@ final class Radar {
         guard validMarketFiltersJSON(value) else { return false }
         try store.setPreference(value, forKey: marketFiltersKey)
         marketFiltersJSON = value
+        touch()
+        return true
+    }
+
+    func saveMarketFilterCombination(name: String, filtersJSON: String) throws -> Bool {
+        guard let name = normalizedMarketFilterCombinationName(name), validMarketFiltersJSON(filtersJSON) else { return false }
+        let combination = try store.saveMarketFilterCombination(name: name, filtersJSON: filtersJSON)
+        marketFilterCombinations.removeAll { $0.id == combination.id }
+        marketFilterCombinations.append(combination)
+        marketFilterCombinations.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        touch()
+        return true
+    }
+
+    func deleteMarketFilterCombination(_ id: String) throws -> Bool {
+        guard try store.deleteMarketFilterCombination(id) else { return false }
+        marketFilterCombinations.removeAll { $0.id == id }
         touch()
         return true
     }
@@ -693,7 +714,8 @@ final class Radar {
                     "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                     "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                     "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
-                    "marketFiltersJSON": marketFiltersJSON]
+                    "marketFiltersJSON": marketFiltersJSON,
+                    "marketFilterCombinations": marketFilterCombinations.map(\.snapshot)]
         }
         if cachedPeriods?.roc != rocPeriod || cachedPeriods?.maroc != marocPeriod {
             cachedRows.removeAll()
@@ -769,6 +791,7 @@ final class Radar {
                 "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                 "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
-                "marketFiltersJSON": marketFiltersJSON]
+                "marketFiltersJSON": marketFiltersJSON,
+                "marketFilterCombinations": marketFilterCombinations.map(\.snapshot)]
     }
 }

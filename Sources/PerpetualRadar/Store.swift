@@ -8,6 +8,7 @@ final class Store {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
         try execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        try execute("CREATE TABLE IF NOT EXISTS market_filter_combinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE, filters_json TEXT NOT NULL)")
         try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, open REAL, PRIMARY KEY(inst_id,hour))")
         try execute("CREATE TABLE IF NOT EXISTS ema200 (inst_id TEXT PRIMARY KEY, hour INTEGER, value REAL)")
         try execute("CREATE TABLE IF NOT EXISTS chart_stats (inst_id TEXT, hour INTEGER, oi REAL, sell REAL, buy REAL, PRIMARY KEY(inst_id,hour))")
@@ -70,6 +71,39 @@ final class Store {
 
     func setPreference(_ value: String, forKey key: String) throws {
         try execute("INSERT INTO preferences (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, value])
+    }
+
+    func marketFilterCombinations() throws -> [MarketFilterCombination] {
+        let stmt = try statement("SELECT id,name,filters_json FROM market_filter_combinations ORDER BY name COLLATE NOCASE")
+        defer { sqlite3_finalize(stmt) }
+        var result: [MarketFilterCombination] = []
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            result.append(MarketFilterCombination(id: String(cString: sqlite3_column_text(stmt, 0)),
+                                                 name: String(cString: sqlite3_column_text(stmt, 1)),
+                                                 filtersJSON: String(cString: sqlite3_column_text(stmt, 2))))
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        return result
+    }
+
+    func saveMarketFilterCombination(name: String, filtersJSON: String) throws -> MarketFilterCombination {
+        let stmt = try statement("INSERT INTO market_filter_combinations (id,name,name_key,filters_json) VALUES (?,?,?,?) ON CONFLICT(name_key) DO UPDATE SET name=excluded.name,filters_json=excluded.filters_json RETURNING id,name,filters_json")
+        defer { sqlite3_finalize(stmt) }
+        bind([UUID().uuidString, name, name.lowercased(), filtersJSON], to: stmt)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }
+        let result = MarketFilterCombination(id: String(cString: sqlite3_column_text(stmt, 0)),
+                                             name: String(cString: sqlite3_column_text(stmt, 1)),
+                                             filtersJSON: String(cString: sqlite3_column_text(stmt, 2)))
+        // Finish the statement so the write commits before acknowledging the save.
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
+        return result
+    }
+
+    func deleteMarketFilterCombination(_ id: String) throws -> Bool {
+        try execute("DELETE FROM market_filter_combinations WHERE id=?", [id])
+        return sqlite3_changes(db) > 0
     }
 
     func load(hour: Int64, ids: Set<String>) throws -> (candles: [String: [Int64: Candle]], ema: [String: (Int64, Double)]) {
