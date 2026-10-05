@@ -74,7 +74,7 @@ function FilterCondition({ rule, index, onChange, onRemove, showError }: {
 }
 
 export function MarketFilters({ filters, onApply, countMatches, total }: Props) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   const [draftOverride, setDraft] = useState<FilterConfig | null>(null)
   const draft = draftOverride ?? filters
   const [showErrors, setShowErrors] = useState(false)
