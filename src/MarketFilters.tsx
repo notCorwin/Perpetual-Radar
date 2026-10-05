@@ -30,14 +30,14 @@ type Props = {
 
 type ReorderControls = {
   draggingId: string | null
-  targetId: string | null
   disabled: boolean
   start: (id: string) => void
   end: () => void
-  over: (id: string) => void
-  leave: (id: string) => void
-  drop: (id: string) => void
   move: (id: string, direction: -1 | 1) => void
+}
+
+function FilterInsertionLine({ atEnd = false }: { atEnd?: boolean }) {
+  return <div aria-hidden="true" data-filter-insertion-line className={cn("pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded-full bg-primary", atEnd ? "-bottom-1 translate-y-1/2" : "-top-1 -translate-y-1/2")} />
 }
 
 function FilterCondition({ rule, index, onChange, onRemove, showError, reorder }: {
@@ -47,18 +47,8 @@ function FilterCondition({ rule, index, onChange, onRemove, showError, reorder }
   const error = showError ? validateFilterRule(rule) : null
   const valueId = `filter-value-${rule.id}`
   const errorId = `filter-error-${rule.id}`
-  return <FieldSet className={cn("rounded-lg border p-3", reorder.draggingId === rule.id && "opacity-50", reorder.targetId === rule.id && "border-primary bg-accent/50")} aria-label={`Condition ${index + 1}`} onDragOver={event => {
-    if (reorder.disabled || !reorder.draggingId || reorder.draggingId === rule.id) return
-    event.preventDefault()
-    event.dataTransfer.dropEffect = "move"
-    reorder.over(rule.id)
-  }} onDragLeave={event => {
-    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) reorder.leave(rule.id)
-  }} onDrop={event => {
-    if (reorder.disabled || !reorder.draggingId) return
-    event.preventDefault()
-    reorder.drop(rule.id)
-  }}>
+  const dragging = reorder.draggingId === rule.id
+  return <FieldSet data-filter-condition className={cn("rounded-lg border p-3", dragging && "opacity-50")} aria-label={`Condition ${index + 1}`}>
     <FieldLegend className="sr-only">Condition {index + 1}</FieldLegend>
     <FieldGroup className="grid grid-cols-[auto_18rem_13rem_20rem_minmax(0,1fr)_auto] items-start gap-3">
       <Button id={`filter-reorder-${rule.id}`} type="button" variant="ghost" size="icon" className="mt-6 cursor-grab active:cursor-grabbing" draggable={!reorder.disabled} aria-label={`Reorder condition ${index + 1}`} aria-describedby="filter-reorder-help" title="Drag to reorder. ArrowUp / ArrowDown moves the focused condition." onDragStart={event => {
@@ -74,7 +64,7 @@ function FilterCondition({ rule, index, onChange, onRemove, showError, reorder }
         event.stopPropagation()
         reorder.move(rule.id, event.key === "ArrowUp" ? -1 : 1)
       }}><GripVertical aria-hidden="true" /></Button>
-      <Field>
+      <Field inert={dragging}>
         <FieldLabel htmlFor={`filter-field-${rule.id}`}>Indicator</FieldLabel>
         <Select value={rule.field} onValueChange={field => { if (Object.hasOwn(FILTER_FIELDS, field)) onChange(makeFilterRule(field as FilterField, rule.id)) }}>
           <SelectTrigger id={`filter-field-${rule.id}`} className="w-full" aria-label={`Indicator for condition ${index + 1}`}><SelectValue /></SelectTrigger>
@@ -86,7 +76,7 @@ function FilterCondition({ rule, index, onChange, onRemove, showError, reorder }
           </SelectContent>
         </Select>
       </Field>
-      <Field>
+      <Field inert={dragging}>
         <FieldLabel htmlFor={`filter-operator-${rule.id}`}>Comparison</FieldLabel>
         <Select value={rule.operator} onValueChange={operator => { if (operatorsFor(rule.field).includes(operator as FilterOperator)) onChange({ ...rule, operator: operator as FilterOperator }) }}>
           <SelectTrigger id={`filter-operator-${rule.id}`} className="w-full" aria-label={`Comparison for condition ${index + 1}`}><SelectValue /></SelectTrigger>
@@ -95,7 +85,7 @@ function FilterCondition({ rule, index, onChange, onRemove, showError, reorder }
           </SelectGroup></SelectContent>
         </Select>
       </Field>
-      <Field data-invalid={Boolean(error)}>
+      <Field data-invalid={Boolean(error)} inert={dragging}>
         <FieldLabel htmlFor={requiresFilterValue(rule.operator) ? valueId : undefined}>{rule.operator === "between" ? "Minimum / maximum" : "Value"}</FieldLabel>
         {requiresFilterValue(rule.operator) ? definition.kind === "choice" ?
           <Select value={rule.value} onValueChange={value => { if (definition.choices?.some(choice => choice.value === value)) onChange({ ...rule, value }) }}>
@@ -109,8 +99,8 @@ function FilterCondition({ rule, index, onChange, onRemove, showError, reorder }
           </div> : <FieldDescription>No value needed.</FieldDescription>}
         {error && <FieldError id={errorId}>{error}</FieldError>}
       </Field>
-      <FieldDescription className="pt-7">{definition.description}</FieldDescription>
-      <Button type="button" variant="ghost" size="icon" className="mt-6" onClick={onRemove} aria-label={`Remove condition ${index + 1}`}><X aria-hidden="true" /></Button>
+      <FieldDescription className="pt-7" inert={dragging}>{definition.description}</FieldDescription>
+      <Button type="button" variant="ghost" size="icon" className="mt-6" inert={dragging} onClick={onRemove} aria-label={`Remove condition ${index + 1}`}><X aria-hidden="true" /></Button>
     </FieldGroup>
   </FieldSet>
 }
@@ -127,32 +117,38 @@ export function MarketFilters({ filters, draft: draftOverride, onDraftChange, on
   const [combinationName, setCombinationName] = useState("")
   const [nameError, setNameError] = useState("")
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
   const selectedCombination = combinations.find(combination => combination.id === combinationId)
   const existingCombination = combinations.find(combination => combination.name.toLowerCase() === combinationName.trim().toLowerCase())
   const formRef = useRef<HTMLFormElement>(null)
   const dirty = JSON.stringify(filters) !== JSON.stringify(draft)
   const invalid = draft.rules.some(rule => validateFilterRule(rule) !== null)
   const edit = (next: FilterConfig) => { onDraftChange(next); setSaveError(""); setFeedback("") }
-  const reorderRule = (sourceId: string, targetId: string, focus = false) => {
+  const reorderRule = (sourceId: string, insertionIndex: number, focus = false) => {
     if (saving) return
-    const next = reorderFilterRules(draft, sourceId, targetId)
+    const next = reorderFilterRules(draft, sourceId, insertionIndex)
     if (next === draft) return
     edit(next)
     setFeedback(`Condition moved to position ${next.rules.findIndex(rule => rule.id === sourceId) + 1}.`)
     if (focus) window.requestAnimationFrame(() => document.getElementById(`filter-reorder-${sourceId}`)?.focus())
   }
-  const endDrag = () => { setDraggingId(null); setDropTargetId(null) }
+  const insertionIndexAt = (container: HTMLElement, pointerY: number) => {
+    const conditions = [...container.querySelectorAll<HTMLElement>("[data-filter-condition]")]
+    const index = conditions.findIndex(condition => {
+      const bounds = condition.getBoundingClientRect()
+      return pointerY < bounds.top + bounds.height / 2
+    })
+    const insertionIndex = index < 0 ? conditions.length : index
+    const source = draft.rules.findIndex(rule => rule.id === draggingId)
+    return insertionIndex === source || insertionIndex === source + 1 ? null : insertionIndex
+  }
+  const endDrag = () => { setDraggingId(null); setDropIndex(null) }
   const reorder: ReorderControls = {
-    draggingId, targetId: dropTargetId, disabled: Boolean(saving),
-    start: id => { setDraggingId(id); setDropTargetId(null) }, end: endDrag,
-    over: setDropTargetId,
-    leave: id => setDropTargetId(current => current === id ? null : current),
-    drop: targetId => { if (draggingId) reorderRule(draggingId, targetId); endDrag() },
+    draggingId, disabled: Boolean(saving),
+    start: id => { setDraggingId(id); setDropIndex(null) }, end: endDrag,
     move: (id, direction) => {
       const index = draft.rules.findIndex(rule => rule.id === id)
-      const target = index >= 0 ? draft.rules[index + direction] : undefined
-      if (target) reorderRule(id, target.id, true)
+      if (index >= 0 && draft.rules[index + direction]) reorderRule(id, direction > 0 ? index + 2 : index - 1, true)
     },
   }
   const validate = (next: FilterConfig) => {
@@ -269,8 +265,26 @@ export function MarketFilters({ filters, draft: draftOverride, onDraftChange, on
             <FieldDescription className="pb-1">Saved combinations load into the draft. Apply filters to confirm.</FieldDescription>
           </FieldGroup>
           <p className="text-xs text-muted-foreground">Draft changes preview the list immediately. Complete all conditions before applying. Numeric ranges include both endpoints. Combine sign with an absolute threshold for ROC/MAROC. Missing data matches only “Unavailable”; all conditions use live 1h readings.</p>
-          <FieldGroup className="gap-2">
-            {draft.rules.map((rule, index) => <FilterCondition key={rule.id} rule={rule} index={index} showError={showErrors} reorder={reorder} onChange={next => edit({ ...draft, rules: draft.rules.map(r => r.id === rule.id ? next : r) })} onRemove={() => edit({ ...draft, rules: draft.rules.filter(r => r.id !== rule.id) })} />)}
+          <FieldGroup className={cn("gap-2", draggingId && "select-none")} onDragOver={event => {
+            if (saving || !draggingId) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = "move"
+            setDropIndex(insertionIndexAt(event.currentTarget, event.clientY))
+          }} onDragLeave={event => {
+            const bounds = event.currentTarget.getBoundingClientRect()
+            if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) setDropIndex(null)
+          }} onDrop={event => {
+            if (saving || !draggingId) return
+            event.preventDefault()
+            const insertionIndex = insertionIndexAt(event.currentTarget, event.clientY)
+            if (insertionIndex !== null) reorderRule(draggingId, insertionIndex)
+            endDrag()
+          }}>
+            {draft.rules.map((rule, index) => <div key={rule.id} className="relative">
+              {dropIndex === index && <FilterInsertionLine />}
+              <FilterCondition rule={rule} index={index} showError={showErrors} reorder={reorder} onChange={next => edit({ ...draft, rules: draft.rules.map(r => r.id === rule.id ? next : r) })} onRemove={() => edit({ ...draft, rules: draft.rules.filter(r => r.id !== rule.id) })} />
+              {index === draft.rules.length - 1 && dropIndex === draft.rules.length && <FilterInsertionLine atEnd />}
+            </div>)}
           </FieldGroup>
           {!draft.rules.length && <Empty>
             <EmptyHeader><EmptyTitle>No indicator conditions</EmptyTitle><EmptyDescription>Add a condition or choose a preset. Settings still control turnover, spread, and listing age.</EmptyDescription></EmptyHeader>

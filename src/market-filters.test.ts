@@ -172,13 +172,13 @@ test("conditions reorder in both directions without changing values, matching or
     const saved = config([rule("emaBody", "eq", "above"), rule("rsi6", "between", "50", "70"), rule("roc", "negative")], match)
     const original = structuredClone(saved)
     const [first, second, third] = saved.rules
-    const forward = reorderFilterRules(saved, first.id, third.id)
+    const forward = reorderFilterRules(saved, first.id, saved.rules.length)
     assert.deepEqual(forward.rules, [second, third, first])
     assert.equal(forward.match, match)
     assert.deepEqual(parseMarketFilters(JSON.stringify(forward)), forward)
     assert.deepEqual(saved, original)
 
-    const backward = reorderFilterRules(forward, first.id, second.id)
+    const backward = reorderFilterRules(forward, first.id, 0)
     assert.deepEqual(backward, saved)
     for (const row of [market(), market({ roc: -3, rsi6: 28 })]) {
       assert.equal(matchesMarketFilters(row, forward), matchesMarketFilters(row, saved))
@@ -190,13 +190,27 @@ test("conditions reorder in both directions without changing values, matching or
 test("unchanged or unavailable reorder targets leave the draft intact, including unfinished conditions", () => {
   const draft = config([rule("rsi6", "between", "30", ""), rule("roc", "positive")])
   const [first, second] = draft.rules
-  assert.equal(reorderFilterRules(draft, first.id, first.id), draft)
-  assert.equal(reorderFilterRules(draft, "missing", second.id), draft)
-  assert.equal(reorderFilterRules(draft, first.id, "missing"), draft)
-  const reordered = reorderFilterRules(draft, first.id, second.id)
+  assert.equal(reorderFilterRules(draft, first.id, 0), draft)
+  assert.equal(reorderFilterRules(draft, first.id, 1), draft)
+  assert.equal(reorderFilterRules(draft, "missing", 2), draft)
+  for (const index of [-1, 3, 1.5, NaN, Infinity]) assert.equal(reorderFilterRules(draft, first.id, index), draft)
+  const reordered = reorderFilterRules(draft, first.id, 2)
   assert.deepEqual(reordered.rules, [second, first])
   assert.ok(validateFilterRule(reordered.rules[1]))
   assert.deepEqual(previewMarketFilters(reordered).rules, [second])
+})
+
+test("drop gaps insert before or after a condition consistently when moving up or down", () => {
+  const filters = config([rule("emaBody", "eq", "above"), rule("rsi6", "between", "50", "70"), rule("roc", "negative"), rule("maroc", "positive")])
+  const [a, b, c, d] = filters.rules
+  for (const [source, gap, expected] of [
+    [a.id, 2, [b, a, c, d]], [a.id, 3, [b, c, a, d]],
+    [d.id, 1, [a, d, b, c]], [d.id, 2, [a, b, d, c]],
+    [b.id, 4, [a, c, d, b]], [c.id, 0, [c, a, b, d]],
+  ] as const) assert.deepEqual(reorderFilterRules(filters, source, gap).rules, expected)
+  assert.equal(reorderFilterRules(filters, b.id, 1), filters)
+  assert.equal(reorderFilterRules(filters, b.id, 2), filters)
+  assert.deepEqual(filters.rules, [a, b, c, d])
 })
 
 test("configuration roundtrips, discards unknown or invalid rules, and deduplicates ids", () => {

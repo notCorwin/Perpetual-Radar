@@ -229,10 +229,12 @@ export function matchesMarketFilters(row: FilterRow, filters: MarketFilters): bo
 export function previewMarketFilters(draft: MarketFilters): MarketFilters {
   return { ...draft, rules: draft.rules.filter(rule => validateFilterRule(rule) === null) }
 }
-export function reorderFilterRules(filters: MarketFilters, sourceId: string, targetId: string): MarketFilters {
+// insertionIndex identifies a gap in the original list, from before the first rule to after the last.
+export function reorderFilterRules(filters: MarketFilters, sourceId: string, insertionIndex: number): MarketFilters {
   const source = filters.rules.findIndex(rule => rule.id === sourceId)
-  const target = filters.rules.findIndex(rule => rule.id === targetId)
-  if (source < 0 || target < 0 || source === target) return filters
+  if (source < 0 || !Number.isInteger(insertionIndex) || insertionIndex < 0 || insertionIndex > filters.rules.length) return filters
+  const target = insertionIndex > source ? insertionIndex - 1 : insertionIndex
+  if (source === target) return filters
   const rules = [...filters.rules]
   const [moved] = rules.splice(source, 1)
   rules.splice(target, 0, moved)
