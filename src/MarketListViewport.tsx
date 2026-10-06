@@ -26,6 +26,11 @@ export function MarketListViewport({ children }: { children: ReactNode }) {
         content.style.width = `${designWidth}px`
       }
       scale = Math.min(1, available / designWidth)
+      // Portaled dialogs retain the same design layout and typography scale.
+      const root = document.documentElement.style
+      root.setProperty('--market-list-scale', String(scale))
+      root.setProperty('--market-list-layout-width', `${window.innerWidth / scale}px`)
+      root.setProperty('--market-list-layout-height', `${window.innerHeight / scale}px`)
       content.style.minHeight = `${window.innerHeight / scale}px`
       // Keep table and KaTeX layout at their original size; scale only the finished rendering.
       content.style.transform = `scale(${scale})`
@@ -46,6 +51,7 @@ export function MarketListViewport({ children }: { children: ReactNode }) {
       observer.disconnect()
       window.removeEventListener("resize", schedule)
       if (frame !== null) window.cancelAnimationFrame(frame)
+      for (const token of ['--market-list-scale', '--market-list-layout-width', '--market-list-layout-height']) document.documentElement.style.removeProperty(token)
     }
   }, [])
 

@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import ScreenCaptureKit
 import XCTest
 @testable import PerpetualRadar
 
@@ -17,6 +18,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var previewDelay: UInt64 = 0
     var pulseRows = false
     var pulse = 0.0
+    var includeChartBars = false
+    var chartSnapshotRGB: [Double] = []
     weak var windowBackground: WindowBackgroundView?
     var windowTintRGB: [Double] = []
     let worker = FilterEvaluationWorker()
@@ -67,7 +70,24 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
             do { let filter = try FilterCompiler.compile(FilterConfigV2.decode(explain["filtersJSON"]!)); replyHandler(["instId": market.id, "filterToken": explain["token"]!, "revision": revision, "trace": FilterEvaluator(market: market, filter: filter).evaluate(explain: true).snapshot], nil) }
             catch { replyHandler(nil, String(describing: error)) }; return
         }
-        if request["chartInstId"] != nil { replyHandler(["bars": [], "revision": revision, "error": "Fixture chart"], nil); return }
+        if let capture = request["captureChart"] as? [String: Any], let rgb = capture["backgroundRGB"] as? [Double] {
+            chartSnapshotRGB = rgb
+            replyHandler(["ok": true], nil)
+            return
+        }
+        if request["chartInstId"] != nil {
+            guard includeChartBars else { replyHandler(["bars": [], "revision": revision, "error": "Fixture chart"], nil); return }
+            let hour = contexts[0].hour
+            let bars: [[String: Any]] = (0..<96).map { index in
+                let close = 105 + Double(index) * 0.05 + sin(Double(index) / 5)
+                return ["hour": hour - Int64(95 - index) * hourMS, "open": close - 0.3, "high": close + 0.8, "low": close - 0.7, "close": close, "confirmed": index != 95,
+                        "vwap": close - 0.4, "ema": 105.0, "logBBUpper": close + 1.5, "logBBMiddle": close, "logBBLower": close - 1.5,
+                        "roc": sin(Double(index) / 5) * 2, "maroc": sin(Double(index) / 7), "rsi6": 50 + sin(Double(index) / 5) * 20,
+                        "rsi12": 50 + sin(Double(index) / 7) * 10, "rsi24": 50 + sin(Double(index) / 9) * 5, "oi": 100_000_000 + index * 100_000, "buy": 1000 + index * 5, "sell": 800 + index * 3]
+            }
+            replyHandler(["bars": bars, "revision": revision, "error": "", "endHour": hour], nil)
+            return
+        }
         do {
             if request["frostedBackgroundEnabled"] != nil || request["frostedBackgroundOpacity"] != nil {
                 _ = try radar.setFrostedBackground(enabled: request["frostedBackgroundEnabled"] as? Bool, opacity: request["frostedBackgroundOpacity"] as? Double)
@@ -95,11 +115,36 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
 }
 
 final class RuleEditorUITests: XCTestCase {
+    private var visualUI: Bool { ProcessInfo.processInfo.environment["RADAR_VISUAL_TESTS"] == "1" }
+
+    @MainActor
+    private func uiConfiguration() -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.preferences.inactiveSchedulingPolicy = .none
+        return configuration
+    }
+
+    @MainActor
+    private func present(_ window: NSWindow) {
+        NSApp.setActivationPolicy(.accessory)
+        if visualUI {
+            window.level = .floating
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            // Keep a real laid-out WebKit window without occupying the user's
+            // screen, changing focus, or creating a Dock icon during local CI.
+            let edge = NSScreen.screens.map { $0.frame.maxX }.max() ?? 1440
+            window.setFrameOrigin(NSPoint(x: edge + 1000, y: 0))
+            window.orderBack(nil)
+        }
+    }
+
     @MainActor
     func testGlassTintAndAppearanceChangesKeepTheBackgroundAndContentSeparate() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         configuration.userContentController.addUserScript(WKUserScript(source: "window.radarAppearance = { frostedBackgroundEnabled: true, frostedBackgroundOpacity: 0.3, nativeWindowBackground: true };", injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -111,8 +156,7 @@ final class RuleEditorUITests: XCTestCase {
         bridge.windowBackground = background
         window.contentView = background
         window.appearance = NSAppearance(named: .darkAqua)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        present(window)
         background.apply(enabled: true, opacity: 0.3, to: window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
@@ -123,7 +167,7 @@ final class RuleEditorUITests: XCTestCase {
           const context = canvas.getContext('2d');
           const read = color => { context.clearRect(0,0,1,1); context.fillStyle = color; context.fillRect(0,0,1,1); return Array.from(context.getImageData(0,0,1,1).data); };
           const style = getComputedStyle(document.body);
-          return { tint: read(getComputedStyle(document.documentElement).getPropertyValue('--window-background-tint')), bodyFill: read(style.backgroundColor), text: read(style.color), contentOpacity: style.opacity, card: read(getComputedStyle(document.documentElement).getPropertyValue('--card')) };
+          return { tint: read(getComputedStyle(document.documentElement).getPropertyValue('--window-background-tint')), bodyFill: read(style.backgroundColor), text: read(style.color), contentOpacity: style.opacity, snapshotBackground: read(getComputedStyle(document.documentElement).getPropertyValue('--chart-snapshot-background')) };
         })()
         """
         let glassResult = try await js(view, pixels)
@@ -139,9 +183,26 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertEqual(nativeFill.alphaComponent, 0.3, accuracy: 1e-6)
         XCTAssertEqual(glass["text"] as? [Int], [255, 255, 255, 255])
         XCTAssertEqual(glass["contentOpacity"] as? String, "1")
-        XCTAssertEqual(glass["card"] as? [Int], [40, 44, 52, 255], "Copied charts must have a matching opaque tint behind white text.")
+        XCTAssertEqual(glass["snapshotBackground"] as? [Int], [40, 44, 52, 255], "Copied charts must have a matching opaque tint behind white text.")
         try await click(view, "Settings")
         try await wait(view, "document.querySelector('#background-opacity') !== null")
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            window.appearance = NSAppearance(named: appearance)
+            try await wait(view, "window.matchMedia('(prefers-color-scheme: dark)').matches === \(appearance == .darkAqua)")
+            for opacity in [0.0, 0.3, 0.65, 1.0] {
+                try await input(view, "#background-opacity", String(opacity))
+                _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
+                try await wait(view, "Number(document.documentElement.style.getPropertyValue('--window-background-opacity')) === \(opacity)")
+                try await assertSharedSurfaces(view, opacity: opacity)
+            }
+            _ = try await js(view, "document.querySelector('#frosted-background').click(); true")
+            try await wait(view, "document.documentElement.dataset.frostedBackground === 'false'")
+            try await assertSharedSurfaces(view, opacity: 1)
+            let disabledInput = try await js(view, "document.querySelector('#background-opacity').disabled") as? Bool
+            XCTAssertEqual(disabledInput, true)
+            _ = try await js(view, "document.querySelector('#frosted-background').click(); true")
+            try await wait(view, "document.documentElement.dataset.frostedBackground === 'true'")
+        }
         try await input(view, "#background-opacity", "1")
         _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
         try await wait(view, "document.documentElement.dataset.translucentBackground === 'false' && document.documentElement.style.getPropertyValue('--window-background-opacity') === '1'")
@@ -180,6 +241,260 @@ final class RuleEditorUITests: XCTestCase {
         let reloaded = try await js(view, pixels) as? [String: Any]
         XCTAssertEqual(reloaded?["bodyFill"] as? [Int], [0, 0, 0, 0])
         try await waitForTint(bridge, rgb: [40 / 255.0, 44 / 255.0, 52 / 255.0])
+    }
+
+    @MainActor
+    private func assertSharedSurfaces(_ view: WKWebView, opacity: Double) async throws {
+        // Wait for control color transitions; inspect the renderer rather than
+        // matching generated classes or the source token formulas.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let result = try await js(view, """
+        (() => {
+          const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+          const context = canvas.getContext('2d'), root = getComputedStyle(document.documentElement);
+          const read = color => { context.clearRect(0,0,1,1); context.fillStyle = color; context.fillRect(0,0,1,1); return Array.from(context.getImageData(0,0,1,1).data); };
+          const p = Number(root.getPropertyValue('--window-background-opacity')), issues = [];
+          for (const element of document.querySelectorAll('[data-surface]')) {
+            if (!(element instanceof HTMLElement) || element.closest('[data-state="closed"]') || !element.getBoundingClientRect().width || !element.getBoundingClientRect().height) continue;
+            const style = getComputedStyle(element), role = element.dataset.surface;
+            const filter = style.backdropFilter || style.webkitBackdropFilter || 'none';
+            const radius = Number(filter.match(/blur\\(([\\d.]+)px\\)/)?.[1] ?? 0);
+            const parent = element.parentElement?.closest('[data-surface="control"], [data-surface="panel"], [data-surface="floating"]');
+            const nativeTable = document.documentElement.dataset.nativeWindowBackground === 'true' && element.closest('[data-slot="table-container"]');
+            const inherited = role === 'inherited' || role !== 'floating' && (parent || nativeTable && role === 'control');
+            const expected = p === 1 || inherited ? 0 : ({control:12,panel:16,floating:24}[role] ?? 0) * (1-p);
+            if (Math.abs(radius - expected) > 0.05 || expected === 0 && filter !== 'none') issues.push(`${element.dataset.slot ?? element.tagName} ${role}: filter=${filter}, expected=${expected}`);
+            if (role === 'floating' && style.transitionProperty !== 'none') issues.push(`${element.dataset.slot ?? element.tagName}: implicit material transition`);
+            if (p < 1 && role !== 'inherited' && read(style.backgroundColor)[3] === 255) issues.push(`${element.dataset.slot ?? element.tagName}: opaque component paint`);
+            if (style.opacity !== '1' || read(style.color)[3] !== 255) issues.push(`${element.dataset.slot ?? element.tagName}: faded content`);
+            if (!style.fontVariantNumeric.includes('tabular-nums')) issues.push(`${element.dataset.slot ?? element.tagName}: non-tabular numbers`);
+          }
+          const input = document.querySelector('#background-opacity');
+          if (input && (getComputedStyle(input).backdropFilter || getComputedStyle(input).webkitBackdropFilter) !== 'none') issues.push('Settings input must reuse its floating owner');
+          return { issues, alphas: ['--control','--card','--popover','--primary-surface','--chart-snapshot-background'].map(name => read(root.getPropertyValue(name))[3]/255), positive: read(root.getPropertyValue('--positive')), destructive: read(root.getPropertyValue('--destructive')) };
+        })()
+        """) as? [String: Any]
+        let values = try XCTUnwrap(result)
+        XCTAssertEqual(values["issues"] as? [String], [], "Surface rendering contract: \(values)")
+        let alphas = try XCTUnwrap(values["alphas"] as? [Double])
+        for (actual, expected) in zip(alphas, [0.2 + 0.8 * opacity, 0.3 + 0.7 * opacity, 0.55 + 0.45 * opacity, 0.2 + 0.8 * opacity, 1]) {
+            XCTAssertEqual(actual, expected, accuracy: 1 / 255.0)
+        }
+        XCTAssertEqual(values["destructive"] as? [Int], [232, 85, 168, 255])
+        let dark = try await js(view, "window.matchMedia('(prefers-color-scheme: dark)').matches") as? Bool
+        XCTAssertEqual(values["positive"] as? [Int], dark == true ? [202, 253, 92, 255] : [142, 188, 57, 255])
+    }
+
+    @MainActor
+    func testAllSurfaceFamiliesAndChartCaptureInNativeWebKit() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        if visualUI {
+            guard #available(macOS 14.4, *) else { throw XCTSkip("Current-process window capture requires macOS 14.4.") }
+        }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        bridge.includeChartBars = true
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        configuration.userContentController.addUserScript(WKUserScript(source: "window.radarAppearance = { frostedBackgroundEnabled: true, frostedBackgroundOpacity: 0.3, nativeWindowBackground: true };", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.setValue(false, forKey: "drawsBackground"); view.underPageBackgroundColor = .clear
+        let background = WindowBackgroundView(contentView: view)
+        bridge.windowBackground = background; window.contentView = background
+        // Keep WebKit's compositor/exit animations running when terminal or
+        // editor windows become active during local CI.
+        present(window)
+        background.apply(enabled: true, opacity: 0.3, to: window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375 && document.documentElement.dataset.nativeWindowBackground === 'true'")
+
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let theme = appearance == .darkAqua ? "dark" : "light"
+            window.appearance = NSAppearance(named: appearance)
+            try await wait(view, "window.matchMedia('(prefers-color-scheme: dark)').matches === \(appearance == .darkAqua)")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await click(view, "Settings")
+            try await wait(view, "document.querySelector('#background-opacity') !== null")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await glassScreenshots(view, window: window, project: project, name: "settings-\(theme)")
+            try await dismissFloating(view)
+
+            try await click(view, "Filters")
+            try await wait(view, "document.querySelector('[data-rule-layout]') !== null")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await glassScreenshots(view, window: window, project: project, name: "filters-\(theme)")
+            _ = try await js(view, "document.querySelector('[aria-label=\"Add condition\"]').click(); true")
+            try await wait(view, "document.querySelector('[data-rule-library]') !== null")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await glassScreenshots(view, window: window, project: project, name: "library-\(theme)")
+            if visualUI { try await assertBackdropPixels(view, project: project, theme: theme) }
+            try await input(view, "[data-rule-library] [cmdk-input]", "Price")
+            _ = try await js(view, "document.querySelector('[data-library-id=\"metric:price\"]').click(); true")
+            try await wait(view, "document.querySelector('[data-rule-library][data-state=\"open\"]') === null")
+            try await validDraft(view)
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            let timing = try await openMenu(view, selector: "[aria-label=\"Choose Left expression\"]", popover: true)
+            XCTAssertLessThan(timing, 250)
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await dismissFloating(view)
+
+            try await click(view, "Formula")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await glassScreenshots(view, window: window, project: project, name: "formula-\(theme)")
+            try await click(view, "Explain markets")
+            try await wait(view, "document.querySelector('[role=dialog]') !== null")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await glassScreenshots(view, window: window, project: project, name: "explanation-\(theme)")
+            try await click(view, "Done")
+            try await wait(view, "document.querySelector('[role=dialog]') === null")
+            try await click(view, "Filters")
+
+            _ = try await js(view, "Array.from(document.querySelectorAll('button')).find(x => x.getAttribute('aria-label')?.startsWith('View ') && x.getAttribute('aria-label').includes('opportunity details')).click(); true")
+            try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]')?.innerText.includes('Opportunity')")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await glassScreenshots(view, window: window, project: project, name: "opportunity-\(theme)")
+            try await dismissFloating(view)
+            _ = try await js(view, "document.querySelector('tbody tr[tabindex]').click(); true")
+            try await wait(view, "document.querySelector('section[aria-label$=\" chart\"] svg[role=img]') !== null")
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await glassScreenshots(view, window: window, project: project, name: "chart-\(theme)")
+            bridge.chartSnapshotRGB = []
+            try await click(view, "Copy chart")
+            let deadline = Date().addingTimeInterval(2)
+            while bridge.chartSnapshotRGB.isEmpty && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+            XCTAssertEqual(bridge.chartSnapshotRGB, appearance == .darkAqua ? [40 / 255.0, 44 / 255.0, 52 / 255.0] : [1, 1, 1])
+            let image = try await view.takeSnapshot(configuration: nil)
+            let opaque = try XCTUnwrap(opaqueChartSnapshot(image, backgroundRGB: bridge.chartSnapshotRGB))
+            XCTAssertEqual(NSBitmapImageRep(data: opaque.tiffRepresentation!)?.colorAt(x: 0, y: 0)?.alphaComponent, 1)
+            try await click(view, "Markets")
+            try await wait(view, "document.querySelector('table[data-market-count]') !== null")
+            try await click(view, "Filters"); try await click(view, "Rules"); try await click(view, "Filters")
+        }
+    }
+
+    @MainActor
+    private func dismissFloating(_ view: WKWebView) async throws {
+        _ = try await js(view, "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]')?.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); true")
+        try await wait(view, "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]') === null")
+        try await Task.sleep(nanoseconds: 150_000_000)
+    }
+
+    @MainActor
+    private func glassScreenshots(_ view: WKWebView, window: NSWindow, project: URL, name: String) async throws {
+        for width in [1440, 720] {
+            window.setContentSize(NSSize(width: width, height: 900))
+            present(window)
+            try await wait(view, "innerWidth === \(width)")
+            try await Task.sleep(nanoseconds: 200_000_000)
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            let overflow = try await js(view, "document.documentElement.scrollWidth > innerWidth + 1") as? Bool
+            XCTAssertEqual(overflow, false)
+            let squeezedLabels = try await js(view, "(() => { const scale=Number(getComputedStyle(document.documentElement).getPropertyValue('--market-list-scale')); return Array.from(document.querySelectorAll('[aria-label=\"Rule decision details\"] summary > span.flex-1')).some(x=>x.getBoundingClientRect().width < 100*scale); })()") as? Bool
+            XCTAssertEqual(squeezedLabels, false, "Portaled rule details must retain readable label widths when the window scales.")
+            if !visualUI && name.starts(with: "explanation-") {
+                try await screenshot(view, project.appendingPathComponent(".build/ui-qa/glass-dialog-layout-\(name)-\(width).png"))
+            }
+            if !visualUI { continue }
+            let file = project.appendingPathComponent(".build/ui-qa/glass-\(name)-\(width).png")
+            let image = try await nativeRendererSnapshot(view)
+            // Flatten the native window capture for portable QA artifacts.
+            let resolvedRGB = try await js(view, "(() => { const c = document.createElement('canvas'); c.width = c.height = 1; const x = c.getContext('2d'); x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--chart-snapshot-background'); x.fillRect(0,0,1,1); return Array.from(x.getImageData(0,0,1,1).data).slice(0,3).map(v=>v/255); })()") as? [Double]
+            let rgb = try XCTUnwrap(resolvedRGB)
+            let opaque = try XCTUnwrap(opaqueChartSnapshot(image, backgroundRGB: rgb))
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: opaque.tiffRepresentation!))
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: file)
+        }
+        window.setContentSize(NSSize(width: 1440, height: 900))
+        try await wait(view, "innerWidth === 1440")
+        try await Task.sleep(nanoseconds: 400_000_000)
+    }
+
+    @MainActor
+    private func assertBackdropPixels(_ view: WKWebView, project: URL, theme: String) async throws {
+        let content = try await nativeRendererSnapshot(view)
+        _ = try await js(view, "(() => { const source=document.querySelector('[data-rule-library]'); window.radarOriginalFilter={source,filter:source.style.backdropFilter,webkit:source.style.webkitBackdropFilter}; source.style.backdropFilter='none'; source.style.webkitBackdropFilter='none'; return true; })()")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let unfilteredContent = try await nativeRendererSnapshot(view)
+        _ = try await js(view, "(() => { const {source,filter,webkit}=window.radarOriginalFilter; source.style.backdropFilter=filter; source.style.webkitBackdropFilter=webkit; delete window.radarOriginalFilter; return true; })()")
+        let normal = try XCTUnwrap(NSBitmapImageRep(data: content.tiffRepresentation!)), unfiltered = try XCTUnwrap(NSBitmapImageRep(data: unfilteredContent.tiffRepresentation!))
+        let contentBounds = try await js(view, "document.querySelector('[data-rule-library]').getBoundingClientRect().toJSON()") as? [String: Double]
+        let contentRect = try XCTUnwrap(contentBounds), contentScale = Double(normal.pixelsWide) / view.bounds.width
+        var difference = 0.0, samples = 0
+        for y in stride(from: contentRect["y"]! + 32, to: contentRect["bottom"]! - 32, by: 3) {
+            for x in stride(from: contentRect["x"]! + 32, to: contentRect["right"]! - 32, by: 3) {
+                let a = try XCTUnwrap(normal.colorAt(x: Int(x * contentScale), y: Int(y * contentScale))?.usingColorSpace(.sRGB)), b = try XCTUnwrap(unfiltered.colorAt(x: Int(x * contentScale), y: Int(y * contentScale))?.usingColorSpace(.sRGB))
+                difference += abs(a.redComponent-b.redComponent) + abs(a.greenComponent-b.greenComponent) + abs(a.blueComponent-b.blueComponent); samples += 3
+            }
+        }
+        print("Glass actual app background pixel difference \(theme): \(difference / Double(samples))")
+        XCTAssertGreaterThan(difference / Double(samples), 0.002, "The floating blur must affect the real scaled app content, not just a standalone backing fixture.")
+        let bounds = try await js(view, """
+        (() => {
+          const fixture = document.createElement('div'); fixture.id = 'glass-pixel-fixture';
+          fixture.style.cssText = 'position:absolute;inset:0;z-index:49;pointer-events:none;background:repeating-linear-gradient(90deg,#000 0px,#000 4px,#fff 4px,#fff 8px)';
+          const source = document.querySelector('[data-rule-library]');
+          source.dataset.qaGlassTest = 'true';
+          const hideContent = document.createElement('style'); hideContent.id = 'glass-pixel-style';
+          hideContent.textContent = '[data-qa-glass-test] > * { visibility:hidden!important }';
+          document.querySelector('[data-market-list-content]').append(fixture);
+          document.body.append(hideContent);
+          window.radarSurfaceFixture = { source, filter:source.style.backdropFilter, webkit:source.style.webkitBackdropFilter };
+          return source.getBoundingClientRect().toJSON();
+        })()
+        """) as? [String: Double]
+        let rect = try XCTUnwrap(bounds)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let image = try await nativeRendererSnapshot(view)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: image.tiffRepresentation!))
+        let scaleX = Double(bitmap.pixelsWide) / view.bounds.width, scaleY = Double(bitmap.pixelsHigh) / view.bounds.height
+        func contrast(_ bitmap: NSBitmapImageRep) throws -> Double {
+            let values = try (24..<216).map { offset -> Double in
+                let color = try XCTUnwrap(bitmap.colorAt(x: Int((rect["x"]! + Double(offset)) * scaleX), y: Int((rect["y"]! + 120) * scaleY))?.usingColorSpace(.sRGB))
+                return (color.redComponent + color.greenComponent + color.blueComponent) / 3
+            }
+            return values.max()! - values.min()!
+        }
+        let blurred = try contrast(bitmap)
+        _ = try await js(view, "window.radarSurfaceFixture.source.style.backdropFilter='none'; window.radarSurfaceFixture.source.style.webkitBackdropFilter='none'; true")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let reference = try await nativeRendererSnapshot(view)
+        let referenceBitmap = try XCTUnwrap(NSBitmapImageRep(data: reference.tiffRepresentation!))
+        let sharp = try contrast(referenceBitmap)
+        _ = try await js(view, "(() => { const {source,filter,webkit}=window.radarSurfaceFixture; source.style.backdropFilter=filter; source.style.webkitBackdropFilter=webkit; delete source.dataset.qaGlassTest; delete window.radarSurfaceFixture; document.querySelector('#glass-pixel-fixture').remove(); document.querySelector('#glass-pixel-style').remove(); return true; })()")
+        print("Glass backdrop pixel contrast \(theme): blurred=\(blurred), unfiltered=\(sharp)")
+        XCTAssertGreaterThan(sharp, 0.15, "The reference must contain visible stripes with the same tint alpha.")
+        XCTAssertLessThan(blurred, sharp * 0.25, "The real floating material must blur app pixels, not merely paint a translucent tint.")
+        try FileManager.default.createDirectory(at: project.appendingPathComponent(".build/ui-qa"), withIntermediateDirectories: true)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: project.appendingPathComponent(".build/ui-qa/glass-backdrop-pixels-\(theme).png"))
+    }
+
+    @MainActor
+    private func nativeRendererSnapshot(_ view: WKWebView) async throws -> NSImage {
+        guard #available(macOS 14.4, *), let window = view.window, let contentView = window.contentView else { throw FilterError("Native window capture is unavailable.") }
+        // This API enumerates only this process's capturable windows and needs
+        // no screen recording consent. WK takeSnapshot omits backdrop filters.
+        let scale = window.backingScaleFactor
+        let capture = try await Self.nativeWindowImage(id: CGWindowID(window.windowNumber), width: Int(window.frame.width * scale), height: Int(window.frame.height * scale))
+        let rect = view.convert(view.bounds, to: contentView)
+        let sx = CGFloat(capture.width) / window.frame.width, sy = CGFloat(capture.height) / window.frame.height
+        let crop = CGRect(x: rect.minX * sx, y: (window.frame.height - rect.maxY) * sy, width: rect.width * sx, height: rect.height * sy)
+        let image = try XCTUnwrap(capture.cropping(to: crop))
+        return NSImage(cgImage: image, size: view.bounds.size)
+    }
+
+    private nonisolated static func nativeWindowImage(id: CGWindowID, width: Int, height: Int) async throws -> CGImage {
+        guard #available(macOS 14.4, *) else { throw FilterError("Current-process window capture is unavailable.") }
+        // Keep ScreenCaptureKit's legacy non-Sendable objects in one executor;
+        // only the immutable CGImage crosses back into AppKit's main actor.
+        let content = try await SCShareableContent.currentProcess
+        let ownWindow = try XCTUnwrap(content.windows.first(where: { $0.windowID == id }))
+        let filter = SCContentFilter(desktopIndependentWindow: ownWindow), config = SCStreamConfiguration()
+        config.width = width; config.height = height
+        config.ignoreShadowsSingleWindow = true; config.showsCursor = false
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
 
     @MainActor
@@ -293,13 +608,13 @@ final class RuleEditorUITests: XCTestCase {
     func testVisualFunctionCoverageRelativeVolumeCountTextAndCrossingControls() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         bridge.pulseRows = true
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 1100), configuration: configuration)
-        window.contentView = view; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
@@ -435,13 +750,13 @@ final class RuleEditorUITests: XCTestCase {
     func testConditionLibraryTemplatesGuidedCardsUndoBulkAndInlineReadings() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         bridge.pulseRows = true
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 1100), configuration: configuration)
-        window.contentView = view; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
@@ -517,7 +832,7 @@ final class RuleEditorUITests: XCTestCase {
     func testCategoricalMenusAndFormulaRoundTripStayResponsiveWithFiveHundredMarkets() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         bridge.pulseRows = true
         for index in bridge.contexts.indices {
             let hour = bridge.contexts[index].hour
@@ -528,7 +843,7 @@ final class RuleEditorUITests: XCTestCase {
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
-        window.contentView = view; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
@@ -633,12 +948,12 @@ final class RuleEditorUITests: XCTestCase {
     func testNativeRulesFormulaDraftRecoveryExplanationsAndLargeMarketResponsiveness() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
-        window.contentView = view; window.appearance = NSAppearance(named: .aqua); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.contentView = view; window.appearance = NSAppearance(named: .aqua); present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")

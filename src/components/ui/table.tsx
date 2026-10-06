@@ -5,6 +5,7 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
       data-slot="table-container"
+      data-surface="inherited"
       className="relative w-full overflow-x-clip"
     >
       <table
@@ -20,6 +21,7 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
+      data-surface="inherited"
       className={cn("bg-table-header [&_tr]:border-b", className)}
       {...props}
     />
@@ -40,6 +42,7 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
   return (
     <tfoot
       data-slot="table-footer"
+      data-surface="inherited"
       className={cn(
         "border-t bg-table-header font-medium [&>tr]:last:border-b-0",
         className
@@ -53,9 +56,10 @@ function TableRow({ className, interactive = false, ...props }: React.ComponentP
   return (
     <tr
       data-slot="table-row"
+      data-surface="inherited"
       className={cn(
-        "border-b transition-colors data-[state=selected]:bg-selection",
-        interactive && "cursor-default outline-none hover:bg-accent has-aria-expanded:bg-accent focus-visible:bg-selection focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2",
+        "border-b transition-colors data-[state=selected]:bg-state-selection",
+        interactive && "cursor-default outline-none hover:bg-state-accent has-aria-expanded:bg-state-accent focus-visible:bg-state-selection focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2",
         className
       )}
       {...props}

@@ -47,6 +47,7 @@ function EmptyMedia({
   return (
     <div
       data-slot="empty-icon"
+      data-surface={variant === "icon" ? "control" : "inherited"}
       data-variant={variant}
       className={cn(emptyMediaVariants({ variant, className }))}
       {...props}

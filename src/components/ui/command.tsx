@@ -24,6 +24,7 @@ function Command({
   return (
     <CommandPrimitive
       data-slot="command"
+      data-surface="inherited"
       className={cn(
         "flex size-full flex-col overflow-hidden rounded-lg bg-transparent p-1 text-popover-foreground",
         className
@@ -71,11 +72,12 @@ function CommandInput({
 }: React.ComponentProps<typeof CommandPrimitive.Input>) {
   return (
     <div data-slot="command-input-wrapper" className="p-1 pb-0">
-      <InputGroup className="h-(--control-height)! rounded-(--control-radius)! border-input bg-control shadow-none! *:data-[slot=input-group-addon]:pl-2!">
+      <InputGroup className="shadow-none! *:data-[slot=input-group-addon]:pl-2!">
         <CommandPrimitive.Input
           data-slot="command-input"
+          data-surface="inherited"
           className={cn(
-            "w-full text-[length:var(--control-font-size)] outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
+            "w-full text-[length:var(--control-font-size)] outline-hidden disabled:cursor-not-allowed disabled:text-disabled-foreground",
             className
           )}
           {...props}
@@ -140,6 +142,7 @@ function CommandSeparator({
   return (
     <CommandPrimitive.Separator
       data-slot="command-separator"
+      data-surface="inherited"
       className={cn("-mx-1 h-px bg-border", className)}
       {...props}
     />
@@ -154,8 +157,9 @@ function CommandItem({
   return (
     <CommandPrimitive.Item
       data-slot="command-item"
+      data-surface="inherited"
       className={cn(
-        "group/command-item relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-[length:var(--control-font-size)] outline-hidden select-none in-data-[slot=dialog-content]:rounded-lg! data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-selected:bg-selection data-selected:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 data-selected:*:[svg]:text-foreground",
+        "group/command-item relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-[length:var(--control-font-size)] outline-hidden select-none in-data-[slot=dialog-content]:rounded-lg! data-[disabled=true]:pointer-events-none data-[disabled=true]:text-disabled-foreground data-selected:bg-state-selection data-[current=true]:bg-state-accent data-selected:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 data-selected:*:[svg]:text-foreground",
         className
       )}
       {...props}

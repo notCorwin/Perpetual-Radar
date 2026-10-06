@@ -309,7 +309,7 @@ const Plot = memo(function Plot({ bars, liveBar, inspected, width, height, now, 
         {lineLabel(start, priceY(value), label, "var(--foreground)")}
       </g>
     })}
-    <g transform={`translate(${tagX},${priceTagY}) scale(${tagScale})`}>
+    <g data-surface="inherited" transform={`translate(${tagX},${priceTagY}) scale(${tagScale})`}>
       <rect width={tagWidth} height={tagHeight} rx={tagRadius} fill="var(--chart-annotation)" stroke={latestColor} strokeWidth="var(--chart-price-tag-stroke-width)" />
       <text x={tagWidth / 2} y={tagPaddingY + tagLineHeight / 2} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{latestPrice}</text>
       {showCountdown && <text x={tagWidth / 2} y={tagPaddingY + tagLineHeight * 1.5 + tagRowGap} textAnchor="middle" dominantBaseline="middle" fill="var(--foreground)" fontSize={tagFontSize}>{countdown}</text>}
@@ -391,7 +391,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
       swatch.width = swatch.height = 1
       const context = swatch.getContext("2d")
       if (!context) throw new Error("Could not prepare the chart background")
-      context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--card")
+      context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--chart-snapshot-background")
       context.fillRect(0, 0, 1, 1)
       const backgroundRGB = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(value => value / 255)
       await window.webkit.messageHandlers.radar.postMessage({ captureChart: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, backgroundRGB } })
@@ -616,7 +616,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
       setHistoryRetry(value => value + 1)
     }}>Retry</Button>}</div>}
     {captureError && <p role="alert" className="shrink-0 border-b px-5 py-2 text-destructive">{captureError}</p>}
-    <section ref={chartRef} aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-chart-surface">
+    <section ref={chartRef} data-surface="panel" aria-label={`${instId} chart`} className="relative flex min-h-0 flex-1 flex-col bg-chart-surface">
       {active && <div className="grid shrink-0 grid-cols-[minmax(9rem,1.2fr)_repeat(4,minmax(0,1fr))] items-center border-b px-4 py-1.5 text-[length:var(--chart-text-size)]" aria-live="off">
         <p className="min-w-0 truncate border-r pr-3"><span className="font-medium">{instId.replace(/-SWAP$/, "")}</span> · <span className="text-muted-foreground">{inspected === null ? historicalEnd === null ? "Latest" : "Window end" : "Selected"}</span> {time(active.hour)}{active.confirmed ? "" : " · Live"}</p>
         {([ ["Open", active.open], ["High", active.high], ["Low", active.low], ["Close", active.close] ] as const).map(([label, value]) => <div key={label} className="min-w-0 px-3">
@@ -655,11 +655,11 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
         }}>
           <Plot bars={data.bars} liveBar={id === instId ? chart?.bars.at(-1) ?? data.bars.at(-1)! : data.bars.at(-1)!} inspected={id === instId ? inspected : null} width={plotSize.width} height={plotSize.height} now={id === instId ? now : 0} endHour={data.endHour ?? data.bars.at(-1)!.hour} />
         </svg>) : <p className="flex h-full items-center justify-center text-muted-foreground">{chart ? "No candle data available yet" : "Loading chart…"}</p>}
-        {historicalEnd !== null && historyLoading === `${instId}:${historicalEnd}` && <span role="status" className="pointer-events-none absolute right-4 top-2 rounded-(--control-radius) border bg-chart-annotation px-2 py-1 text-xs text-muted-foreground">Loading history…</span>}
-        {atHistoryBoundary && <span role="status" className="pointer-events-none absolute right-4 top-2 rounded-(--control-radius) border bg-chart-annotation px-2 py-1 text-xs text-muted-foreground">Start of available history</span>}
+        {historicalEnd !== null && historyLoading === `${instId}:${historicalEnd}` && <span role="status" data-surface="control" className="pointer-events-none absolute right-4 top-2 rounded-(--control-radius) border bg-chart-annotation px-2 py-1 text-xs text-muted-foreground">Loading history…</span>}
+        {atHistoryBoundary && <span role="status" data-surface="control" className="pointer-events-none absolute right-4 top-2 rounded-(--control-radius) border bg-chart-annotation px-2 py-1 text-xs text-muted-foreground">Start of available history</span>}
         </div>
       </div>
-      {captureStatus === "flashing" && <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 bg-[var(--chart-capture-flash)] motion-safe:animate-[chart-capture-flash_550ms_ease-out_both] motion-reduce:hidden" />}
+      {captureStatus === "flashing" && <div aria-hidden="true" data-surface="inherited" className="pointer-events-none absolute inset-0 z-10 bg-[var(--chart-capture-flash)] motion-safe:animate-[chart-capture-flash_550ms_ease-out_both] motion-reduce:hidden" />}
     </section>
   </main>
 }

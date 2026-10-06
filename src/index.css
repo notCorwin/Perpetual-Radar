@@ -38,10 +38,18 @@
     --color-primary-foreground: var(--primary-foreground);
     --color-primary: var(--primary);
     --color-primary-hover: var(--primary-hover);
+    --color-primary-surface: var(--primary-surface);
+    --color-primary-surface-hover: var(--primary-surface-hover);
+    --color-primary-surface-foreground: var(--primary-surface-foreground);
+    --color-disabled-foreground: var(--disabled-foreground);
     --color-control: var(--control);
     --color-control-hover: var(--control-hover);
     --color-selection: var(--selection);
     --color-selection-border: var(--selection-border);
+    --color-state-hover: var(--state-hover);
+    --color-state-selection: var(--state-selection);
+    --color-state-accent: var(--state-accent);
+    --color-state-secondary: var(--state-secondary);
     --color-destructive-surface: var(--destructive-surface);
     --color-destructive-hover: var(--destructive-hover);
     --color-table-header: var(--table-header);
@@ -55,6 +63,7 @@
     --color-window-background: var(--window-background);
     --color-chart-surface: var(--chart-surface);
     --color-chart-annotation: var(--chart-annotation);
+    --shadow-control: var(--control-shadow);
     --shadow-floating: var(--floating-shadow);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
@@ -78,22 +87,42 @@
     --control-radius: 6px;
     --control-font-size: 13px;
     --control-opacity: calc(0.2 + var(--window-background-opacity) * 0.8);
+    --panel-opacity: calc(0.3 + var(--window-background-opacity) * 0.7);
+    --floating-opacity: calc(0.55 + var(--window-background-opacity) * 0.45);
+    --control-blur: calc((1 - var(--window-background-opacity)) * 12px);
+    --panel-blur: calc((1 - var(--window-background-opacity)) * 16px);
+    --floating-blur: calc((1 - var(--window-background-opacity)) * 24px);
+    --control-filter: none;
+    --panel-filter: none;
+    --floating-filter: none;
     --control: color-mix(in srgb, var(--control-base) calc(var(--control-opacity) * 100%), transparent);
     --control-hover: color-mix(in srgb, var(--control), var(--foreground) 5%);
     --selection: color-mix(in srgb, var(--ring) 14%, var(--control));
     --selection-border: color-mix(in srgb, var(--ring) 45%, var(--input));
+    --state-hover: color-mix(in srgb, var(--foreground) 5%, transparent);
+    --state-selection: color-mix(in srgb, var(--ring) 14%, transparent);
+    --state-accent: color-mix(in srgb, var(--foreground) 10%, transparent);
+    --state-secondary: color-mix(in srgb, var(--foreground) 8%, transparent);
     --primary-hover: color-mix(in srgb, var(--primary), var(--foreground) 10%);
-    --destructive-surface: color-mix(in srgb, var(--destructive) 12%, transparent);
-    --destructive-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
-    --floating-opacity: calc(0.92 + var(--window-background-opacity) * 0.08);
-    --floating-blur: calc((1 - var(--window-background-opacity)) * 18px);
+    --primary-surface: color-mix(in srgb, var(--primary) calc(var(--control-opacity) * 100%), transparent);
+    --primary-surface-hover: color-mix(in srgb, var(--primary-hover) calc(var(--control-opacity) * 100%), transparent);
+    --primary-surface-foreground: var(--primary-foreground);
+    --disabled-foreground: color-mix(in srgb, var(--foreground) 55%, var(--control-base));
+    --destructive-surface: color-mix(in srgb, color-mix(in srgb, var(--destructive) 12%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
+    --destructive-hover: color-mix(in srgb, color-mix(in srgb, var(--destructive) 20%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
     --popover: color-mix(in srgb, var(--popover-base) calc(var(--floating-opacity) * 100%), transparent);
+    --card: color-mix(in srgb, var(--card-base) calc(var(--panel-opacity) * 100%), transparent);
+    --chart-snapshot-background: var(--card-base);
+    --control-shadow: 0 1px 2px rgb(0 0 0 / 10%);
     --floating-shadow: 0 8px 24px rgb(0 0 0 / 14%), 0 2px 6px rgb(0 0 0 / 6%);
     --table-header: color-mix(in srgb, var(--foreground) 3%, transparent);
     --chart-surface: transparent;
     --chart-annotation: var(--control);
     --chart-rsi-area: color-mix(in srgb, var(--foreground) 5%, transparent);
     --market-list-design-width: 1600px;
+    --market-list-scale: 1;
+    --market-list-layout-width: 100vw;
+    --market-list-layout-height: 100vh;
     --market-row-estimate: 96px;
     --market-table-leading-inset: 24px;
     --chart-text-size: 10px;
@@ -110,7 +139,7 @@
     --chart-indicator-line-width: 1px;
     --background: oklch(0.98 0.004 260);
     --foreground: oklch(0.2 0.012 260);
-    --card: oklch(1 0 0);
+    --card-base: oklch(1 0 0);
     --card-foreground: oklch(0.2 0.012 260);
     --control-base: oklch(1 0 0);
     --popover-base: oklch(1 0 0);
@@ -118,11 +147,11 @@
     --popover-foreground: oklch(0.2 0.012 260);
     --primary: #006da3;
     --primary-foreground: oklch(1 0 0);
-    --secondary: color-mix(in srgb, var(--foreground) 8%, transparent);
+    --secondary: color-mix(in srgb, color-mix(in srgb, var(--foreground) 8%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
     --secondary-foreground: oklch(0.25 0.014 260);
-    --muted: color-mix(in srgb, var(--foreground) 5%, transparent);
+    --muted: color-mix(in srgb, color-mix(in srgb, var(--foreground) 5%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
     --muted-foreground: oklch(0.45 0.014 260);
-    --accent: color-mix(in srgb, var(--foreground) 10%, transparent);
+    --accent: color-mix(in srgb, color-mix(in srgb, var(--foreground) 10%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
     --accent-foreground: oklch(0.2 0.012 260);
     --positive: rgb(142 188 57);
     --destructive: rgb(232 85 168);
@@ -137,11 +166,12 @@
     --chart-4: #7352a0;
     --chart-5: #8c5260;
     --radius: 0.625rem;
-    --sidebar: oklch(0.96 0.006 260);
+    --sidebar-base: oklch(0.96 0.006 260);
+    --sidebar: color-mix(in srgb, var(--sidebar-base) calc(var(--panel-opacity) * 100%), transparent);
     --sidebar-foreground: oklch(0.2 0.012 260);
     --sidebar-primary: #006da3;
     --sidebar-primary-foreground: oklch(1 0 0);
-    --sidebar-accent: oklch(0.91 0.01 260);
+    --sidebar-accent: var(--accent);
     --sidebar-accent-foreground: oklch(0.2 0.012 260);
     --sidebar-border: oklch(0.8 0.01 260 / 75%);
     --sidebar-ring: #006da3;
@@ -152,7 +182,7 @@
         color-scheme: dark;
         --background: oklch(0.11 0.012 260);
         --foreground: oklch(0.94 0.01 260);
-        --card: oklch(0.125 0.012 260);
+        --card-base: oklch(0.125 0.012 260);
         --card-foreground: oklch(0.94 0.01 260);
         --control-base: oklch(0.3 0.012 260);
         --popover-base: oklch(0.22 0.014 260);
@@ -175,11 +205,10 @@
         --chart-3: #f28cc7;
         --chart-4: oklch(0.58 0.08 280);
         --chart-5: oklch(0.65 0.06 30);
-        --sidebar: oklch(0.14 0.012 260);
+        --sidebar-base: oklch(0.14 0.012 260);
         --sidebar-foreground: oklch(0.94 0.01 260);
         --sidebar-primary: #56b4e9;
         --sidebar-primary-foreground: oklch(0.11 0.012 260);
-        --sidebar-accent: oklch(0.22 0.014 260);
         --sidebar-accent-foreground: oklch(0.94 0.01 260);
         --sidebar-border: oklch(0.32 0.014 260 / 55%);
         --sidebar-ring: #56b4e9;
@@ -188,10 +217,17 @@
     :root[data-translucent-background="true"] {
         --window-background-tint: var(--frosted-background-tint);
         --foreground: #fff;
-        --card: var(--frosted-background-tint);
+        --card-base: var(--frosted-background-tint);
         --card-foreground: var(--foreground);
         --muted-foreground: oklch(0.82 0.01 260);
     }
+}
+
+:root[data-translucent-background="true"] {
+    --control-filter: blur(var(--control-blur));
+    --panel-filter: blur(var(--panel-blur));
+    --floating-filter: blur(var(--floating-blur));
+    --primary-surface-foreground: var(--foreground);
 }
 
 :root[data-frosted-background="false"] {
@@ -200,6 +236,53 @@
 
 :root[data-native-window-background="true"] {
     --window-background: transparent;
+}
+
+/* These utilities are also available to future components. Surface roles apply
+   them centrally, so a component cannot forget its material's WebKit filter. */
+@utility surface-control {
+    -webkit-backdrop-filter: var(--control-filter);
+    backdrop-filter: var(--control-filter);
+}
+
+@utility surface-panel {
+    -webkit-backdrop-filter: var(--panel-filter);
+    backdrop-filter: var(--panel-filter);
+}
+
+@utility surface-floating {
+    -webkit-backdrop-filter: var(--floating-filter);
+    backdrop-filter: var(--floating-filter);
+}
+
+@utility surface-inherited {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+
+@layer components {
+    [data-surface="control"] { @apply surface-control; }
+    [data-surface="panel"] { @apply surface-panel; }
+    /* duration-* drives the entry/exit animation, but otherwise enables an
+       implicit transition of every property, including backdrop-filter.
+       Material settings must settle immediately even in a background window. */
+    [data-surface="floating"] { @apply surface-floating transition-none; }
+    [data-surface="inherited"] { @apply surface-inherited; }
+
+    /* A physical surface owns the blur once. Portaled menus start a new owner;
+       its input/search controls and nested panels reuse that already-blurred
+       backdrop. State overlays remain translucent without a filter per row. */
+    :is([data-surface="control"], [data-surface="panel"], [data-surface="floating"]) :is([data-surface="control"], [data-surface="panel"]) {
+        @apply surface-inherited;
+    }
+    :where([data-surface="panel"], [data-surface="floating"]) [data-surface="panel"] {
+        --card: transparent;
+    }
+    /* The native window already blurs the desktop beneath the long virtualized
+       table. Reuse it rather than allocating a filter for each market badge. */
+    :root[data-native-window-background="true"] [data-slot="table-container"] [data-surface="control"] {
+        @apply surface-inherited;
+    }
 }
 
 @layer base {
@@ -220,6 +303,7 @@
   [data-slot="select-trigger"], [data-slot="select-content"],
   [data-slot="popover-content"], [data-slot="spinner"], [data-slot="textarea"],
   [data-slot="input-group"], [data-slot="tabs-trigger"],
+  [data-slot="input-group-control"], [data-slot="command-input"],
   [data-slot="dialog-overlay"], [data-slot="dialog-content"] {
     animation: none;
     transition: none;

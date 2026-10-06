@@ -11,6 +11,7 @@ function Separator({
   return (
     <SeparatorPrimitive.Root
       data-slot="separator"
+      data-surface="inherited"
       decorative={decorative}
       orientation={orientation}
       className={cn(
