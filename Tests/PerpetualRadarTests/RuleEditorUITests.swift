@@ -24,6 +24,11 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var chartSnapshotRGB: [Double] = []
     weak var windowBackground: WindowBackgroundView?
     var windowTintRGB: [Double] = []
+    var notificationAuthorization = "authorized"
+    var notificationTestCount = 0
+    var notificationSettingsOpenCount = 0
+    var notificationPermissionRequests = 0
+    var notificationError = ""
     let worker = FilterEvaluationWorker()
     init(root: URL) throws {
         self.root = root; suite = "RuleUI-\(UUID())"
@@ -44,9 +49,27 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         super.init()
     }
     func cleanUp() { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
-    func snapshot() -> [String: Any] { var result = radar.snapshot(rocPeriod: 9, marocPeriod: 9); result["rows"] = rows; result["revision"] = revision; return result }
+    func snapshot() -> [String: Any] {
+        var result = radar.snapshot(rocPeriod: 9, marocPeriod: 9)
+        result["rows"] = rows; result["revision"] = revision
+        result["notificationAuthorization"] = notificationAuthorization
+        result["notificationError"] = notificationError; result["backgroundMonitoringError"] = ""
+        return result
+    }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let request = message.body as! [String: Any]
+        if request["notificationsEnabled"] != nil || request["notificationAction"] != nil {
+            do {
+                if let enabled = request["notificationsEnabled"] as? Bool { try radar.setNotificationsEnabled(enabled); revision += 1 }
+                if request["notificationAction"] as? String == "test" { notificationTestCount += 1 }
+                if request["notificationAction"] as? String == "openSettings" { notificationSettingsOpenCount += 1 }
+                if (request["notificationAction"] as? String == "requestPermission" || request["notificationsEnabled"] as? Bool == true), notificationAuthorization == "notDetermined" {
+                    notificationPermissionRequests += 1; notificationAuthorization = "authorized"
+                }
+                replyHandler(snapshot(), nil)
+            } catch { replyHandler(nil, String(describing: error)) }
+            return
+        }
         if let rgb = request["windowTintRGB"] as? [Double] {
             guard windowBackground?.setTint(rgb: rgb) == true else { replyHandler(nil, "Invalid window tint"); return }
             windowTintRGB = rgb
@@ -151,6 +174,55 @@ final class RuleEditorUITests: XCTestCase {
             window.setFrameOrigin(NSPoint(x: edge + 1000, y: 0))
             window.orderBack(nil)
         }
+    }
+
+    @MainActor
+    func testNotificationSettingsPermissionRecoveryAndContractRoutingInNativeWebKit() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        let background = WindowBackgroundView(contentView: view); bridge.windowBackground = background
+        window.contentView = background
+        present(window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        try await click(view, "Settings")
+        try await wait(view, "document.body.innerText.includes('macOS notifications are allowed.')")
+        try await click(view, "Test notification")
+        try await wait(view, "document.querySelector('#filter-notifications')?.disabled === false")
+        XCTAssertEqual(bridge.notificationTestCount, 1)
+        try await click(view, "Enable filter notifications")
+        try await wait(view, "document.querySelector('#filter-notifications')?.dataset.state === 'off'")
+        XCTAssertFalse(bridge.radar.notificationsEnabled)
+        let testDisabled = try await js(view, "Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === 'Test notification').disabled") as? Bool
+        XCTAssertEqual(testDisabled, true)
+        bridge.notificationAuthorization = "denied"
+        try await click(view, "Enable filter notifications")
+        try await wait(view, "document.body.innerText.includes('Notifications are blocked.') && document.querySelector('#filter-notifications')?.dataset.state === 'on'")
+        XCTAssertTrue(bridge.radar.notificationsEnabled)
+        XCTAssertEqual(bridge.notificationPermissionRequests, 0)
+        try await click(view, "Notification Settings")
+        try await wait(view, "document.querySelector('#filter-notifications')?.disabled === false")
+        XCTAssertEqual(bridge.notificationSettingsOpenCount, 1)
+        bridge.notificationAuthorization = "notDetermined"
+        try await click(view, "Settings"); try await click(view, "Settings")
+        try await wait(view, "Array.from(document.querySelectorAll('button')).some(x => x.textContent.trim() === 'Allow notifications')")
+        try await click(view, "Allow notifications")
+        try await wait(view, "document.body.innerText.includes('macOS notifications are allowed.')")
+        XCTAssertEqual(bridge.notificationPermissionRequests, 1)
+        bridge.notificationError = "Cannot send notification: fixture failure"
+        try await click(view, "Settings"); try await click(view, "Settings")
+        try await wait(view, "document.querySelector('[role=alert]')?.textContent.includes('fixture failure')")
+        try await click(view, "Settings")
+        _ = try await js(view, "window.radarNotificationContract = 'MKT499-USDT-SWAP'; window.dispatchEvent(new Event('radar-open-contract')); true")
+        try await wait(view, "document.querySelector('h1[title=\"MKT499-USDT-SWAP\"]') !== null")
+        let consumed = try await js(view, "window.radarNotificationContract === undefined") as? Bool
+        XCTAssertEqual(consumed, true)
     }
 
     @MainActor

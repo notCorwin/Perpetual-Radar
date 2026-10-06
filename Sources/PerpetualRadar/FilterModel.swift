@@ -90,11 +90,12 @@ struct FilterConfigV2: Codable, Equatable, Sendable {
     }
 }
 
-struct FilterError: Error, CustomStringConvertible, Sendable {
+struct FilterError: Error, CustomStringConvertible, LocalizedError, Sendable {
     var message: String
     var offset: Int?
     init(_ message: String, offset: Int? = nil) { self.message = message; self.offset = offset }
     var description: String { offset.map { "\(message) (character \($0 + 1))" } ?? message }
+    var errorDescription: String? { description }
 }
 
 func formulaQuote(_ text: String) -> String {

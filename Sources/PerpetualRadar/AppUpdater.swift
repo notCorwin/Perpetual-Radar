@@ -91,6 +91,9 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
 // task is protected independently; operationGeneration and installationInProgress share generationLock.
 // Installation work stays off the main actor.
 final class AppUpdater: @unchecked Sendable {
+    // Window visibility is a UI preference; the installer reads it off the main
+    // actor and forwards it only for update relaunches, not ordinary launches.
+    static let backgroundRelaunchKey = "RelaunchUpdatedRadarInBackground"
     typealias CheckCompletion = @MainActor @Sendable (Result<AppUpdate?, AppUpdateError>) -> Void
     typealias InstallCompletion = @MainActor @Sendable (Result<Void, AppUpdateError>) -> Void
     typealias Relauncher = @Sendable (URL, URL) throws -> Void
@@ -991,7 +994,16 @@ final class AppUpdater: @unchecked Sendable {
         /bin/sleep 0.1
     done
     opener="${4:-/usr/bin/open}"
-    "$opener" -a "$1" --env "PERPETUAL_RADAR_PID_FILE=$pid_file" --env "PERPETUAL_RADAR_READY_FILE=$ready_file"
+    open_app() {
+        app_to_open="$1"
+        shift
+        if [ "${PERPETUAL_RADAR_BACKGROUND:-0}" = 1 ]; then
+            "$opener" -g -a "$app_to_open" --env "PERPETUAL_RADAR_BACKGROUND=1" "$@"
+        else
+            "$opener" -a "$app_to_open" --env "PERPETUAL_RADAR_BACKGROUND=0" "$@"
+        fi
+    }
+    open_app "$1" --env "PERPETUAL_RADAR_PID_FILE=$pid_file" --env "PERPETUAL_RADAR_READY_FILE=$ready_file"
     launched=$?
     new_pid=
     attempt=0
@@ -1024,7 +1036,7 @@ final class AppUpdater: @unchecked Sendable {
             exit 1
         fi
         if [ -e "$failed_app" ]; then /bin/rm -rf "$failed_app"; fi
-        "$opener" -a "$1" --env "PERPETUAL_RADAR_UPDATE_ROLLBACK=1" || true
+        open_app "$1" --env "PERPETUAL_RADAR_UPDATE_ROLLBACK=1" || true
     fi
     exit 1
     """#
@@ -1041,6 +1053,9 @@ final class AppUpdater: @unchecked Sendable {
             backupURL.path,
             "/usr/bin/open"
         ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PERPETUAL_RADAR_BACKGROUND"] = UserDefaults.standard.bool(forKey: backgroundRelaunchKey) ? "1" : "0"
+        process.environment = environment
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {

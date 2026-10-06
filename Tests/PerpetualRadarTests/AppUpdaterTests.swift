@@ -171,6 +171,7 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(helper.terminationStatus, 0)
         let arguments = try String(contentsOf: log, encoding: .utf8)
         XCTAssertTrue(arguments.contains("-a\n\(app.path)\n"))
+        XCTAssertFalse(arguments.contains("-g\n"), "A visible app should reopen normally after updating")
         XCTAssertFalse(arguments.contains("-n\n"), "A forced new instance creates a second Dock tile")
         XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
     }
@@ -198,6 +199,24 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: log, encoding: .utf8).contains("PERPETUAL_RADAR_UPDATE_ROLLBACK=1"))
     }
 
+    func testBackgroundRelaunchAndRollbackPreserveHiddenWindowWithoutActivation() throws {
+        for fail in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarBackgroundRelaunchTests-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let app = root.appendingPathComponent("Perpetual Radar.app"), backup = root.appendingPathComponent("backup.app"), log = root.appendingPathComponent("open.log")
+            try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+            let opener = try makeFakeOpener(in: root, fail: fail)
+            let helper = try runRelaunchHelper(app: app, oldPID: Int32.max, backup: backup, opener: opener, log: log, background: true)
+            helper.waitUntilExit()
+            let arguments = try String(contentsOf: log, encoding: .utf8)
+            XCTAssertTrue(arguments.contains("-g\n-a\n\(app.path)\n--env\nPERPETUAL_RADAR_BACKGROUND=1\n"))
+            XCTAssertEqual(arguments.components(separatedBy: "\(app.path)\n").count - 1, fail ? 2 : 1, "Each attempt opens the app once")
+            if fail { XCTAssertTrue(arguments.contains("PERPETUAL_RADAR_UPDATE_ROLLBACK=1")) }
+            XCTAssertEqual(helper.terminationStatus == 0, !fail)
+        }
+    }
+
     private func makeFakeOpener(in root: URL, fail: Bool) throws -> URL {
         let opener = root.appendingPathComponent("open")
         let body = fail ? "exit 1" : """
@@ -216,7 +235,7 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     private func runRelaunchHelper(
-        app: URL, oldPID: Int32, backup: URL, opener: URL, log: URL
+        app: URL, oldPID: Int32, backup: URL, opener: URL, log: URL, background: Bool = false
     ) throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -227,6 +246,7 @@ final class AppUpdaterTests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["PERPETUAL_RADAR_TEST_LOG"] = log.path
         environment["PERPETUAL_RADAR_TEST_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        environment["PERPETUAL_RADAR_BACKGROUND"] = background ? "1" : "0"
         process.environment = environment
         try process.run()
         return process

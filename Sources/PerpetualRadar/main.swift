@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKURLSchemeHandler {
@@ -7,6 +8,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var webView: WKWebView!
     private var windowBackground: WindowBackgroundView!
     private var radar: Radar?
+    private var filterMonitor: FilterMonitor?
+    private var notifications: MarketNotifications?
+    private var monitoringActivity: NSObjectProtocol?
+    private var statusItem: NSStatusItem?
+    private let monitoringStatusItem = NSMenuItem(title: "Starting monitoring…", action: nil, keyEquivalent: "")
+    private let notificationStatusItem = NSMenuItem(title: "Notifications: Permission needed", action: nil, keyEquivalent: "")
+    private lazy var notificationsItem = NSMenuItem(title: "Filter Notifications", action: #selector(toggleFilterNotifications), keyEquivalent: "")
+    private lazy var testNotificationItem = NSMenuItem(title: "Send Test Notification", action: #selector(sendTestNotification), keyEquivalent: "")
+    private var monitoringError = ""
+    private var pendingNotificationInstId: String?
     private var filterPreviewTask: Task<Void, Never>?
     private var filterExplainTask: Task<Void, Never>?
     private var startupError = ""
@@ -33,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let launchInBackground = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_BACKGROUND"] == "1"
         if ProcessInfo.processInfo.environment["PERPETUAL_RADAR_UPDATE_ROLLBACK"] == "1" {
             automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60)
         }
@@ -63,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         appMenu.addItem(withTitle: "Quit Perpetual Radar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         application.submenu = appMenu; menu.addItem(application)
         let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
@@ -88,18 +101,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.title = "Perpetual Radar"
+        window.isReleasedWhenClosed = false
         applyAppearance(Self.preferredAppearance())
         window.minSize = NSSize(width: 400, height: 300)
         windowBackground = WindowBackgroundView(contentView: webView)
         window.contentView = windowBackground
         window.delegate = self
         applyWindowBackground()
-        window.center(); window.makeKeyAndOrderFront(nil)
+        window.center()
+        if !launchInBackground { window.makeKeyAndOrderFront(nil) }
+        updateRelaunchPresentation()
         applyWindowBackground()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeAfterWake),
                                                         name: NSWorkspace.didWakeNotification, object: nil)
 
         radar?.start()
+        configureMonitoring()
 
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("Web/index.html")
         let development = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("dist/index.html")
@@ -113,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             let message = "Build the interface with npm run build, then launch the app again."
             webView.loadHTMLString("<html><body style='font:14px system-ui;padding:40px'>\(message)</body></html>", baseURL: nil)
         }
-        NSApp.activate(ignoringOtherApps: true)
+        if !launchInBackground { NSApp.activate(ignoringOtherApps: true) }
         if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_READY_FILE"], !path.isEmpty {
             FileManager.default.createFile(atPath: path, contents: Data())
         }
@@ -126,8 +143,143 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationWillTerminate(_ notification: Notification) {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         updateTimer?.invalidate()
+        filterMonitor?.stop()
+        radar?.stop()
+        if let monitoringActivity { ProcessInfo.processInfo.endActivity(monitoringActivity) }
+        if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
         updater.cancel()
     }
+
+    private func configureMonitoring() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: "Perpetual Radar")
+        item.button?.toolTip = "Perpetual Radar · Background monitoring"
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
+        monitoringStatusItem.isEnabled = false; notificationStatusItem.isEnabled = false
+        let show = NSMenuItem(title: "Show Perpetual Radar", action: #selector(showWindow), keyEquivalent: "")
+        show.target = self; menu.addItem(show)
+        menu.addItem(.separator())
+        menu.addItem(monitoringStatusItem); menu.addItem(notificationStatusItem)
+        notificationsItem.target = self; menu.addItem(notificationsItem)
+        testNotificationItem.target = self; menu.addItem(testNotificationItem)
+        let settings = NSMenuItem(title: "Notification Settings…", action: #selector(openNotificationSettings), keyEquivalent: "")
+        settings.target = self; menu.addItem(settings)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Perpetual Radar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        item.menu = menu; statusItem = item
+
+        // UNUserNotificationCenter requires an application bundle. Keep the
+        // collector usable under `swift run`, with a visible settings explanation.
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            let center = UNUserNotificationCenter.current()
+            let service = MarketNotifications(transport: SystemMarketNotificationTransport(center: center),
+                                              enabled: { [weak self] in self?.radar?.notificationsEnabled == true })
+            service.onOpen = { [weak self] id in
+                self?.pendingNotificationInstId = id
+                self?.showWindow()
+                self?.openNotificationContract()
+            }
+            service.onStateChanged = { [weak self] in self?.renderMonitoringItems() }
+            center.delegate = service
+            notifications = service
+            Task { await service.refresh(requestPermission: radar?.notificationsEnabled == true && window.isVisible) }
+        }
+        monitoringActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Monitor OKX contracts and deliver saved-filter notifications while the window is closed")
+        filterMonitor = FilterMonitor(sample: { [weak self] in try await self?.radar?.observeSavedFilters() },
+            onChanges: { [weak self] changes in await self?.notifications?.send(changes) },
+            onError: { [weak self] error in self?.monitoringError = error; self?.renderMonitoringItems() })
+        filterMonitor?.start()
+        renderMonitoringItems()
+    }
+
+    private func renderMonitoringItems() {
+        monitoringStatusItem.title = !startupError.isEmpty || !monitoringError.isEmpty ? "Monitoring unavailable; retrying" : "Monitoring saved filters · 1h"
+        let state = notifications?.authorization ?? .unavailable
+        let label: String
+        switch state {
+        case .notDetermined: label = "Permission needed"
+        case .denied: label = "Blocked in System Settings"
+        case .authorized: label = "Allowed"
+        case .quiet: label = "Banners disabled in System Settings"
+        case .unavailable: label = "Launch the packaged app"
+        }
+        notificationStatusItem.title = "Notifications: \(label)"
+        notificationsItem.state = radar?.notificationsEnabled == true ? .on : .off
+        notificationsItem.isEnabled = radar != nil
+        testNotificationItem.isEnabled = state.canDeliver
+    }
+
+    private func withNotificationStatus(_ snapshot: [String: Any]) -> [String: Any] {
+        var result = snapshot
+        result["notificationsEnabled"] = radar?.notificationsEnabled ?? true
+        result["notificationAuthorization"] = (notifications?.authorization ?? .unavailable).rawValue
+        result["notificationError"] = notifications?.error ?? "Launch the packaged macOS app to enable notifications."
+        result["backgroundMonitoringError"] = monitoringError
+        return result
+    }
+
+    @objc private func showWindow() {
+        guard let window else { return }
+        NSApp.setActivationPolicy(.regular)
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        updateRelaunchPresentation()
+        applyWindowBackground()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        UserDefaults.standard.set(true, forKey: AppUpdater.backgroundRelaunchKey)
+        NSApp.setActivationPolicy(.accessory)
+        return false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow()
+        return false
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { await notifications?.refresh() }
+    }
+
+    private func updateRelaunchPresentation() {
+        guard let window else { return }
+        UserDefaults.standard.set(!window.isVisible || window.isMiniaturized || NSApp.isHidden, forKey: AppUpdater.backgroundRelaunchKey)
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) { updateRelaunchPresentation() }
+    func windowDidDeminiaturize(_ notification: Notification) { updateRelaunchPresentation() }
+    func applicationDidHide(_ notification: Notification) { updateRelaunchPresentation() }
+    func applicationDidUnhide(_ notification: Notification) { updateRelaunchPresentation() }
+
+    @objc private func toggleFilterNotifications() {
+        guard let radar else { return }
+        do {
+            try radar.setNotificationsEnabled(!radar.notificationsEnabled)
+            renderMonitoringItems()
+            Task { await notifications?.refresh(requestPermission: radar.notificationsEnabled) }
+        } catch { showUpdateAlert("Cannot Save Notifications", error.localizedDescription) }
+    }
+
+    @objc private func sendTestNotification() { Task { await notifications?.sendTest() } }
+
+    @objc private func openNotificationSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
+    }
+
+    private func openNotificationContract() {
+        guard let id = pendingNotificationInstId, let webView, !webView.isLoading else { return }
+        pendingNotificationInstId = nil
+        webView.callAsyncJavaScript("window.radarNotificationContract = instId; window.dispatchEvent(new Event('radar-open-contract'));",
+            arguments: ["instId": id], in: nil, in: .page, completionHandler: nil)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { openNotificationContract() }
 
     @objc private func resumeAfterWake(_ notification: Notification) {
         radar?.resumeAfterWake()
@@ -143,7 +295,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         webView.reload()
     }
 
-    func menuWillOpen(_ menu: NSMenu) { renderUpdateItem() }
+    func menuWillOpen(_ menu: NSMenu) {
+        renderUpdateItem(); renderMonitoringItems()
+        Task { await notifications?.refresh() }
+    }
 
     @objc private func changeAppearance(_ sender: NSMenuItem) {
         guard let value = sender.representedObject as? String else { return }
@@ -280,6 +435,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let parameters = message.body as? [String: Any] else { replyHandler(nil, "Invalid request"); return }
+        if parameters["notificationsEnabled"] != nil || parameters["notificationAction"] != nil {
+            guard let radar else { replyHandler(nil, startupError); return }
+            if let requested = parameters["notificationsEnabled"] {
+                guard let enabled = requested as? Bool else { replyHandler(nil, "Invalid notification setting"); return }
+                do { try radar.setNotificationsEnabled(enabled) }
+                catch { replyHandler(nil, "Cannot save notification setting: \(error.localizedDescription)"); return }
+            }
+            guard parameters["notificationAction"] == nil || ["refresh", "requestPermission", "test", "openSettings"].contains(parameters["notificationAction"] as? String ?? "") else {
+                replyHandler(nil, "Invalid notification action"); return
+            }
+            Task {
+                let action = parameters["notificationAction"] as? String
+                if action == "openSettings" { openNotificationSettings() }
+                if action == "test" { await notifications?.sendTest() }
+                else { await notifications?.refresh(requestPermission: action == "requestPermission" || parameters["notificationsEnabled"] as? Bool == true) }
+                renderMonitoringItems()
+                do { replyHandler(withNotificationStatus(try await radar.asyncSnapshot(rocPeriod: 9, marocPeriod: 9)), nil) }
+                catch { replyHandler(nil, String(describing: error)) }
+            }
+            return
+        }
         if let requested = parameters["windowTintRGB"] {
             guard let rgb = requested as? [Double], windowBackground.setTint(rgb: rgb) else { replyHandler(nil, "Invalid window tint"); return }
             replyHandler(["ok": true], nil)
@@ -293,7 +469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             guard let radar else { replyHandler(nil, startupError); return }
             filterPreviewTask?.cancel()
             filterPreviewTask = Task {
-                do { replyHandler(try await radar.previewMarketFilters(filtersJSON: json, token: token), nil) }
+                do { replyHandler(withNotificationStatus(try await radar.previewMarketFilters(filtersJSON: json, token: token)), nil) }
                 catch { replyHandler(nil, String(describing: error)) }
             }
             return
@@ -463,7 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                           "filterFunctionCatalog": FilterCatalog.scalarFunctions.map(\.snapshot), "filterLibraryPreferences": radar?.filterLibraryPreferences.snapshot ?? FilterLibraryPreferences().snapshot,
                           "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? [],
                           "selectedMarketFilterCombinationID": radar?.selectedMarketFilterCombinationID ?? ""]
-            replyHandler(failureSnapshot, nil)
+            replyHandler(withNotificationStatus(failureSnapshot), nil)
             return
         }
         let roc = parameters["rocPeriod"] as? Int ?? 9
@@ -471,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let since = parameters["sinceRevision"] as? Int
         guard let radar else { replyHandler(nil, "Collector is starting."); return }
         Task {
-            do { replyHandler(try await radar.asyncSnapshot(rocPeriod: roc, marocPeriod: maroc, sinceRevision: since), nil) }
+            do { replyHandler(withNotificationStatus(try await radar.asyncSnapshot(rocPeriod: roc, marocPeriod: maroc, sinceRevision: since)), nil) }
             catch { replyHandler(nil, String(describing: error)) }
         }
     }
@@ -511,11 +687,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         } else { decisionHandler(.allow) }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 let application = NSApplication.shared
-application.setActivationPolicy(.regular)
+application.setActivationPolicy(ProcessInfo.processInfo.environment["PERPETUAL_RADAR_BACKGROUND"] == "1" ? .accessory : .regular)
 let delegate = AppDelegate()
 application.delegate = delegate
 application.run()

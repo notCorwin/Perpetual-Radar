@@ -27,11 +27,12 @@ import { emptyFilterConfig, initialEditorState, initialLibraryPreferences, parse
 import { expressionTemplates, type ExpressionTemplate } from "@/filter-expression"
 
 type WindowAppearance = { frostedBackgroundEnabled: boolean; frostedBackgroundOpacity: number }
+type NotificationSettings = { notificationsEnabled: boolean; notificationAuthorization: "notDetermined" | "denied" | "authorized" | "quiet" | "unavailable"; notificationError: string; backgroundMonitoringError: string }
 type HistoryProgress = { pending: number; completed: number; error: string }
-type Snapshot = WindowAppearance & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; filterFunctionCatalog: ExpressionTemplate[]; filterLibraryPreferences: FilterLibraryPreferences; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
+type Snapshot = WindowAppearance & NotificationSettings & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; filterFunctionCatalog: ExpressionTemplate[]; filterLibraryPreferences: FilterLibraryPreferences; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
 type PreviewSnapshot = Snapshot & { filterResults: Record<string, FilterTruth>; filterToken: string; historyProgress: HistoryProgress }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = Partial<WindowAppearance> & { marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
+type SettingRequest = Partial<WindowAppearance> & { notificationsEnabled?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string } }): Promise<CompileResponse>
@@ -43,7 +44,7 @@ type NativeBridge = {
   postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number; chartEndHour?: number }): Promise<ChartPollResponse>
 }
 declare global {
-  interface Window { radarAppearance?: WindowAppearance & { nativeWindowBackground?: boolean }; webkit: { messageHandlers: { radar: NativeBridge } } }
+  interface Window { radarNotificationContract?: string; radarAppearance?: WindowAppearance & { nativeWindowBackground?: boolean }; webkit: { messageHandlers: { radar: NativeBridge } } }
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
@@ -161,9 +162,22 @@ function App() {
   const [frostedBackgroundOpacity, setFrostedBackgroundOpacity] = useState(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3)
   const [backgroundOpacityDraft, setBackgroundOpacityDraft] = useState(String(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3))
   const [backgroundOpacityError, setBackgroundOpacityError] = useState("")
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ notificationsEnabled: true, notificationAuthorization: "notDetermined", notificationError: "", backgroundMonitoringError: "" })
+  const [notificationPending, setNotificationPending] = useState(false)
   const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
+  useEffect(() => {
+    const openContract = () => {
+      if (window.radarNotificationContract) {
+        setSelected(window.radarNotificationContract)
+        delete window.radarNotificationContract
+      }
+    }
+    window.addEventListener("radar-open-contract", openContract)
+    openContract()
+    return () => window.removeEventListener("radar-open-contract", openContract)
+  }, [])
   const [explanationOpen, setExplanationOpen] = useState(false)
   const [explainingId, setExplainingId] = useState<string | null>(null)
   const explainMarket = useCallback((id: string) => { setExplainingId(id); setExplanationOpen(true) }, [])
@@ -199,6 +213,12 @@ function App() {
     if (includeData) setRows(current => reconcileMarketRows(current, snapshot.rows))
     setFrostedBackgroundEnabled(snapshot.frostedBackgroundEnabled)
     setFrostedBackgroundOpacity(snapshot.frostedBackgroundOpacity)
+    setNotificationSettings(current => keepSnapshotValue(current, {
+      notificationsEnabled: snapshot.notificationsEnabled ?? true,
+      notificationAuthorization: snapshot.notificationAuthorization ?? "notDetermined",
+      notificationError: snapshot.notificationError ?? "",
+      backgroundMonitoringError: snapshot.backgroundMonitoringError ?? "",
+    }))
     if (!backgroundOpacityDraftDirty.current && document.activeElement?.id !== "background-opacity") setBackgroundOpacityDraft(String(snapshot.frostedBackgroundOpacity))
     if (appliedJSON.current !== snapshot.filterConfigJSON) {
       appliedJSON.current = snapshot.filterConfigJSON
@@ -328,6 +348,20 @@ function App() {
       .catch(cause => setError(cause instanceof Error ? cause.message : "Cannot save setting"))
   }
 
+  const updateNotifications = async (request: SettingRequest) => {
+    setNotificationPending(true)
+    try { acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage(request)) }
+    catch (cause) { setNotificationSettings(current => ({ ...current, notificationError: cause instanceof Error ? cause.message : "Cannot update notifications" })) }
+    finally { setNotificationPending(false) }
+  }
+  const notificationDescription = {
+    notDetermined: "Allow macOS notifications to receive filter alerts.",
+    denied: "Notifications are blocked. Enable Perpetual Radar in System Settings.",
+    authorized: "macOS notifications are allowed.",
+    quiet: "Notification banners are disabled. Enable alerts in System Settings.",
+    unavailable: "Launch the packaged macOS app to enable notifications.",
+  }[notificationSettings.notificationAuthorization]
+
   const saveBackgroundOpacity = () => {
     const value = Number(backgroundOpacityDraft)
     if (!backgroundOpacityDraft.trim() || !Number.isFinite(value) || value < 0 || value > 1) {
@@ -356,11 +390,26 @@ function App() {
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
-        <Popover onOpenChange={open => { if (!open && backgroundOpacityDraftDirty.current) saveBackgroundOpacity() }}>
+        <Popover onOpenChange={open => { if (!open && backgroundOpacityDraftDirty.current) saveBackgroundOpacity(); if (open) void updateNotifications({ notificationAction: "refresh" }) }}>
           <PopoverTrigger asChild><Button variant="outline"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
           <PopoverContent align="end">
-            <PopoverHeader><PopoverTitle>Settings</PopoverTitle><PopoverDescription>Customize the window background.</PopoverDescription></PopoverHeader>
+            <PopoverHeader><PopoverTitle>Settings</PopoverTitle><PopoverDescription>Customize notifications and the window background.</PopoverDescription></PopoverHeader>
             <FieldGroup>
+              <Field>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="filter-notifications">Filter notifications</FieldLabel>
+                  <Toggle id="filter-notifications" variant="outline" pressed={notificationSettings.notificationsEnabled} disabled={notificationPending} onPressedChange={enabled => void updateNotifications({ notificationsEnabled: enabled })} aria-label="Enable filter notifications" aria-describedby="notification-description">{notificationSettings.notificationsEnabled ? "On" : "Off"}</Toggle>
+                </Field>
+                <FieldDescription id="notification-description">Notify when contracts enter or exit your saved filters. Drafts and search do not affect alerts.</FieldDescription>
+                <FieldDescription role="status">{notificationDescription}</FieldDescription>
+                <div className="flex flex-wrap gap-2">
+                  {notificationSettings.notificationAuthorization === "notDetermined" && <Button variant="outline" size="sm" disabled={notificationPending} onClick={() => void updateNotifications({ notificationAction: "requestPermission" })}>Allow notifications</Button>}
+                  <Button variant="outline" size="sm" disabled={notificationPending || !notificationSettings.notificationsEnabled || !["authorized", "quiet"].includes(notificationSettings.notificationAuthorization)} onClick={() => void updateNotifications({ notificationAction: "test" })}>Test notification</Button>
+                  <Button variant="ghost" size="sm" disabled={notificationPending} onClick={() => void updateNotifications({ notificationAction: "openSettings" })}>Notification Settings</Button>
+                </div>
+                <FieldDescription>Closing the window keeps monitoring in the menu bar. Choose Quit to stop.</FieldDescription>
+                {(notificationSettings.notificationError || notificationSettings.backgroundMonitoringError) && <FieldError role="alert">{notificationSettings.notificationError || notificationSettings.backgroundMonitoringError}</FieldError>}
+              </Field>
               <Field orientation="horizontal">
                 <FieldLabel htmlFor="frosted-background">Frosted background</FieldLabel>
                 <Toggle id="frosted-background" variant="outline" pressed={frostedBackgroundEnabled} onPressedChange={enabled => saveSetting({ frostedBackgroundEnabled: enabled })} aria-label="Enable frosted background">{frostedBackgroundEnabled ? "On" : "Off"}</Toggle>

@@ -13,6 +13,7 @@ private let marketFiltersV2Key = "marketFiltersV2JSON"
 private let selectedMarketFilterCombinationKey = "selectedMarketFilterCombinationID"
 private let frostedBackgroundEnabledKey = "frostedBackgroundEnabled"
 private let frostedBackgroundOpacityKey = "frostedBackgroundOpacity"
+private let notificationsEnabledKey = "filterNotificationsEnabled"
 private let emptyMarketFiltersJSON = "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
 
 func validMarketFiltersJSON(_ value: String) -> Bool {
@@ -88,6 +89,8 @@ final class Radar {
     private(set) var marketFiltersV2JSON = FilterConfigV2().json
     private(set) var marketFilterCombinations: [MarketFilterCombination] = []
     private let historyLoader: FilterHistoryLoader
+    private let monitorHistoryLoader: FilterHistoryLoader
+    private let monitorFilterWorker = FilterEvaluationWorker()
     private let filterWorker = FilterEvaluationWorker()
     private let snapshotWorker = MarketSnapshotWorker()
     private var snapshotGenerations: [String: Int] = [:]
@@ -98,6 +101,7 @@ final class Radar {
     private(set) var filterLibraryPreferences = FilterLibraryPreferences()
     private(set) var frostedBackgroundEnabled: Bool
     private(set) var frostedBackgroundOpacity: Double
+    private(set) var notificationsEnabled: Bool
     private var rows: [String: Market] = [:]
     private var cachedRows: [String: [String: Any]] = [:]
     private var cachedPeriods: (roc: Int, maroc: Int)?
@@ -117,6 +121,7 @@ final class Radar {
     private var historyTasks: [Task<Void, Never>] = []
     private var sockets: [URLSessionWebSocketTask] = []
     private var running = false
+    private var refreshingInstruments = false
     private var startupError = ""
 
     init(defaults: UserDefaults = .standard, storeURL: URL? = nil) throws {
@@ -139,7 +144,9 @@ final class Radar {
         frostedBackgroundEnabled = try store.preference(forKey: frostedBackgroundEnabledKey) != "false"
         let savedOpacity = (try store.preference(forKey: frostedBackgroundOpacityKey)).flatMap(Double.init) ?? 0.3
         frostedBackgroundOpacity = savedOpacity.isFinite && (0...1).contains(savedOpacity) ? savedOpacity : 0.3
+        notificationsEnabled = try store.preference(forKey: notificationsEnabledKey) != "false"
         historyLoader = FilterHistoryLoader(url: store.url)
+        monitorHistoryLoader = FilterHistoryLoader(url: store.url)
         if let saved = try store.preference(forKey: "filterLibraryPreferences") {
             filterLibraryPreferences = (try? FilterLibraryPreferences.decode(saved)) ?? FilterLibraryPreferences()
         }
@@ -258,6 +265,13 @@ final class Radar {
         return true
     }
 
+    func setNotificationsEnabled(_ enabled: Bool) throws {
+        guard enabled != notificationsEnabled else { return }
+        try store.setPreference(String(enabled), forKey: notificationsEnabledKey)
+        notificationsEnabled = enabled
+        touch()
+    }
+
     func saveMarketFilterCombination(name: String, filtersJSON: String) throws -> Bool {
         guard let name = normalizedMarketFilterCombinationName(name), validMarketFiltersJSON(filtersJSON) else { return false }
         let config = try FilterCompiler.compile(migratedFilter(filtersJSON)).config
@@ -348,6 +362,28 @@ final class Radar {
         return response
     }
 
+    // Runs independently of WebKit, including while the window is closed or a
+    // draft is being edited. Separate history demand prevents drafts from
+    // cancelling the saved filters' background hydration.
+    func observeSavedFilters() async throws -> FilterObservation? {
+        guard running else { return nil }
+        let configuration = marketFiltersV2JSON, capturedHour = hour
+        let compiled = try compiledFilter(configuration)
+        for (id, closed) in try await monitorHistoryLoader.consumeUpdatedHistory(through: hour - hourMS) where rows[id] != nil {
+            candles[id, default: [:]].merge(closed) { _, observed in observed }
+            invalidateSnapshot(id); touch(id)
+        }
+        let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
+        let prepared = try await monitorHistoryLoader.prepare(captured.markets, filter: compiled)
+        try Task.checkCancellation()
+        await monitorHistoryLoader.schedule(prepared, filter: compiled)
+        let results = await monitorFilterWorker.evaluate(prepared, filter: compiled)
+        try Task.checkCancellation()
+        guard configuration == marketFiltersV2JSON, capturedHour == hour,
+              Set(prepared.map(\.id)) == Set(rows.keys) else { return nil }
+        return FilterObservation(configuration: configuration, universe: Set(prepared.map(\.id)), results: results)
+    }
+
     func explainMarketFilters(instId: String, filtersJSON: String, token: String) async throws -> [String: Any] {
         let compiled = try compiledFilter(filtersJSON)
         let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
@@ -382,7 +418,16 @@ final class Radar {
     }
 
     func start() {
+        guard tasks.isEmpty else { return }
         tasks.append(Task { [weak self] in await self?.bootstrap() })
+    }
+
+    func stop() {
+        tasks.forEach { $0.cancel() }; tasks.removeAll()
+        historyTasks.forEach { $0.cancel() }; historyTasks.removeAll()
+        sockets.forEach { $0.cancel(with: .goingAway, reason: nil) }; sockets.removeAll()
+        running = false
+        Task { await historyLoader.cancel(); await monitorHistoryLoader.cancel() }
     }
 
     func resumeAfterWake() {
@@ -391,7 +436,7 @@ final class Radar {
         disconnectedChannels.formUnion(["open-interest", "candle1H"])
         advanceHourIfNeeded()
         startHistoryScans()
-        Task { [weak self] in await self?.refreshTickers() }
+        Task { [weak self] in await self?.refreshInstruments(); await self?.refreshTickers() }
     }
 
     private func bootstrap() async {
@@ -402,13 +447,7 @@ final class Radar {
                 let (instrumentData, tickerData) = try await (instruments, marketTickers)
                 let items = try decodeRows(instrumentData, path: "/public/instruments")
                 let tickers = try decodeRows(tickerData, path: "/market/tickers")
-                for case let item as [String: Any] in items {
-                    guard item["state"] as? String == "live", item["instCategory"] as? String == "1",
-                          item["settleCcy"] as? String == "USDT", let id = item["instId"] as? String,
-                          id.hasSuffix("-USDT-SWAP") else { continue }
-                    let listedAt = (item["listTime"] as? String).flatMap(Int64.init).flatMap { $0 > 0 ? $0 : nil }
-                    rows[id] = Market(id: id, listedAt: listedAt)
-                }
+                rows = liveUSDTInstruments(items).mapValues { Market(id: $0.id, listedAt: $0.listedAt) }
                 guard !rows.isEmpty else { throw NSError(domain: "OKX", code: 2, userInfo: [NSLocalizedDescriptionKey: "No live USDT perpetual swaps found"]) }
                 try updateTickers(tickers)
                 let cached = try store.load(hour: hour, ids: Set(rows.keys))
@@ -425,6 +464,7 @@ final class Radar {
                 tasks.append(Task { [weak self] in await self?.websocket(publicWS, channel: "open-interest") })
                 tasks.append(Task { [weak self] in await self?.websocket(businessWS, channel: "candle1H") })
                 tasks.append(Task { [weak self] in await self?.pollTickers() })
+                tasks.append(Task { [weak self] in await self?.pollInstruments() })
                 tasks.append(Task { [weak self] in await self?.clock() })
                 running = true
                 return
@@ -471,6 +511,55 @@ final class Radar {
             try? await Task.sleep(nanoseconds: 30_000_000_000)
             if Task.isCancelled { return }
             await refreshTickers()
+        }
+    }
+
+    private func pollInstruments() async {
+        while !Task.isCancelled {
+            do { try await Task.sleep(for: .seconds(300)) } catch { return }
+            await refreshInstruments()
+        }
+    }
+
+    private func refreshInstruments() async {
+        guard running, !refreshingInstruments else { return }
+        refreshingInstruments = true
+        defer { refreshingInstruments = false }
+        do {
+            let instruments = liveUSDTInstruments(try await get("/public/instruments", ["instType": "SWAP"]))
+            guard !instruments.isEmpty else { throw FilterError("No live USDT perpetual swaps found; retaining the current universe.") }
+            try Task.checkCancellation()
+            guard running else { return }
+            let next = Set(instruments.keys), previous = Set(rows.keys)
+            let added = next.subtracting(previous), removed = previous.subtracting(next)
+            guard !added.isEmpty || !removed.isEmpty else { failedPaths.remove("/public/instruments"); return }
+            // Read the cache before replacing membership so a database failure
+            // cannot partially apply a universe refresh and create false exits.
+            let cached = try (added.isEmpty ? nil : store.load(hour: hour, ids: added))
+            failedPaths.remove("/public/instruments")
+            for id in removed {
+                rows.removeValue(forKey: id); candles.removeValue(forKey: id)
+                emaStates.removeValue(forKey: id); chartLiveStats.removeValue(forKey: id)
+                liveHourQuotes.removeValue(forKey: id); closedHourQuotes.removeValue(forKey: id)
+                chartRevisions.removeValue(forKey: id); snapshotGenerations.removeValue(forKey: id)
+                cachedRows.removeValue(forKey: id); takerHistorySavedAt.removeValue(forKey: id)
+                exhaustedCandleHistory.remove(id)
+            }
+            for id in added {
+                rows[id] = Market(id: id, listedAt: instruments[id]?.listedAt)
+                candles[id] = cached?.candles[id]; emaStates[id] = cached?.ema[id]
+            }
+            touch()
+            // Existing socket loops reconnect and subscribe to the new universe.
+            sockets.forEach { $0.cancel(with: .goingAway, reason: nil) }
+            disconnectedChannels.formUnion(["open-interest", "candle1H"])
+            startHistoryScans()
+            await refreshTickers()
+        } catch {
+            if !Task.isCancelled {
+                failedPaths.insert("/public/instruments")
+                NSLog("/public/instruments: %@", error.localizedDescription)
+            }
         }
     }
 
@@ -896,6 +985,7 @@ final class Radar {
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                 "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,
                 "frostedBackgroundEnabled": frostedBackgroundEnabled, "frostedBackgroundOpacity": frostedBackgroundOpacity,
+                "notificationsEnabled": notificationsEnabled,
                 "marketFiltersJSON": marketFiltersJSON,
                 "filterConfigJSON": marketFiltersV2JSON,
                 "filterMetricsCatalog": FilterCatalog.metrics.map(\.snapshot), "filterFunctions": FilterCatalog.functions,
