@@ -610,12 +610,27 @@ final class RuleEditorUITests: XCTestCase {
         (() => {
           const node = document.querySelector('[data-rule-outline-id="\(source)"]');
           const handle = node.querySelector('button[draggable="true"]');
+          handle.scrollIntoView({block:'center'});
+          const bounds = handle.getBoundingClientRect();
+          window.radarRuleDragOrigin = {left:bounds.left + scrollX, top:bounds.top + scrollY, width:bounds.width, height:bounds.height};
           window.radarRuleDrag = new DataTransfer();
           handle.dispatchEvent(new DragEvent('dragstart', {bubbles:true, cancelable:true, dataTransfer:window.radarRuleDrag}));
           return true;
         })()
         """)
         try await wait(view, "getComputedStyle(document.querySelector('[data-rule-outline-id=\"\(source)\"] > [data-surface=\"panel\"]')).opacity === '0.5'")
+        let sourceState = try await js(view, """
+        (() => {
+          const handle = document.querySelector('[data-rule-outline-id="\(source)"] button[draggable="true"]');
+          const bounds = handle.getBoundingClientRect();
+          const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+          const current = {left:bounds.left + scrollX, top:bounds.top + scrollY, width:bounds.width, height:bounds.height};
+          return {interactive:!handle.disabled && !handle.closest('[inert]') && handle.contains(hit),
+            stationary:Object.keys(current).every(key => Math.abs(current[key] - window.radarRuleDragOrigin[key]) < 0.5)};
+        })()
+        """) as? [String: Bool]
+        XCTAssertEqual(sourceState?["interactive"], true, "The native drag handle must remain interactive and reachable throughout the drag.")
+        XCTAssertEqual(sourceState?["stationary"], true, "Drop hints must not move the native drag source during dragstart.")
     }
 
     @MainActor
