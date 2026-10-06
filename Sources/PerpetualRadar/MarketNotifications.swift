@@ -1,6 +1,15 @@
 import Foundation
 import UserNotifications
 
+enum RadarNotificationRoute {
+    static func contract(in url: URL) -> String? {
+        guard url.scheme == "perpetualradar", url.host == "contract", url.pathComponents.count == 2 else { return nil }
+        let id = url.lastPathComponent
+        guard id.hasSuffix("-USDT-SWAP"), id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else { return nil }
+        return id
+    }
+}
+
 enum MarketNotificationAuthorization: String, Sendable {
     case notDetermined, denied, authorized, quiet, unavailable
     var canDeliver: Bool { self == .authorized || self == .quiet }
@@ -76,7 +85,7 @@ final class MarketNotifications: NSObject, UNUserNotificationCenterDelegate {
         guard authorization.canDeliver else { return }
         let content = UNMutableNotificationContent()
         content.title = "Perpetual Radar"
-        content.body = "Filter notifications are working. Monitoring continues when you close the window."
+        content.body = "Filter notifications are working. Monitoring continues after closing the window or quitting the interface with Cmd+Q."
         content.sound = .default
         await deliver(content)
     }

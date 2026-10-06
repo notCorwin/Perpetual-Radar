@@ -998,6 +998,8 @@ final class AppUpdater: @unchecked Sendable {
         app_to_open="$1"
         shift
         if [ "${PERPETUAL_RADAR_BACKGROUND:-0}" = 1 ]; then
+            monitor_app="$app_to_open/Contents/Library/LoginItems/Perpetual Radar Monitor.app"
+            if [ -x "$monitor_app/Contents/MacOS/PerpetualRadar" ]; then app_to_open="$monitor_app"; fi
             "$opener" -g -a "$app_to_open" --env "PERPETUAL_RADAR_BACKGROUND=1" "$@"
         else
             "$opener" -a "$app_to_open" --env "PERPETUAL_RADAR_BACKGROUND=0" "$@"
@@ -1054,7 +1056,7 @@ final class AppUpdater: @unchecked Sendable {
             "/usr/bin/open"
         ]
         var environment = ProcessInfo.processInfo.environment
-        environment["PERPETUAL_RADAR_BACKGROUND"] = UserDefaults.standard.bool(forKey: backgroundRelaunchKey) ? "1" : "0"
+        environment["PERPETUAL_RADAR_BACKGROUND"] = MonitorRuntime.defaults.bool(forKey: backgroundRelaunchKey) ? "1" : "0"
         process.environment = environment
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

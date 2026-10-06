@@ -66,7 +66,7 @@ final class FilterMonitorTests: XCTestCase {
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.delegate = delegate
-        let previousPreference = UserDefaults.standard.object(forKey: AppUpdater.backgroundRelaunchKey)
+        let previousPreference = MonitorRuntime.defaults.object(forKey: AppUpdater.backgroundRelaunchKey)
         let screenEdge = NSScreen.screens.map { $0.frame.maxX }.max() ?? 1440
         window.setFrameOrigin(NSPoint(x: screenEdge + 1000, y: 0))
         window.orderBack(nil)
@@ -79,7 +79,7 @@ final class FilterMonitorTests: XCTestCase {
         }, onChanges: { changes += $0 }, onError: { errors.append($0) })
         defer {
             monitor.stop(); window.delegate = nil; window.close()
-            UserDefaults.standard.set(previousPreference, forKey: AppUpdater.backgroundRelaunchKey)
+            MonitorRuntime.defaults.set(previousPreference, forKey: AppUpdater.backgroundRelaunchKey)
         }
         monitor.start(); monitor.start()
         let firstSampleDeadline = Date().addingTimeInterval(3)

@@ -200,18 +200,27 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     func testBackgroundRelaunchAndRollbackPreserveHiddenWindowWithoutActivation() throws {
-        for fail in [false, true] {
+        for (fail, embeddedMonitor) in [(false, false), (true, false), (false, true), (true, true)] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarBackgroundRelaunchTests-\(UUID())")
             defer { try? FileManager.default.removeItem(at: root) }
             let app = root.appendingPathComponent("Perpetual Radar.app"), backup = root.appendingPathComponent("backup.app"), log = root.appendingPathComponent("open.log")
             try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+            if embeddedMonitor {
+                for bundle in [app, backup] {
+                    let executable = bundle.appendingPathComponent("Contents/Library/LoginItems/Perpetual Radar Monitor.app/Contents/MacOS/PerpetualRadar")
+                    try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Data("monitor".utf8).write(to: executable)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+                }
+            }
             let opener = try makeFakeOpener(in: root, fail: fail)
             let helper = try runRelaunchHelper(app: app, oldPID: Int32.max, backup: backup, opener: opener, log: log, background: true)
             helper.waitUntilExit()
             let arguments = try String(contentsOf: log, encoding: .utf8)
-            XCTAssertTrue(arguments.contains("-g\n-a\n\(app.path)\n--env\nPERPETUAL_RADAR_BACKGROUND=1\n"))
-            XCTAssertEqual(arguments.components(separatedBy: "\(app.path)\n").count - 1, fail ? 2 : 1, "Each attempt opens the app once")
+            let openedPath = embeddedMonitor ? app.appendingPathComponent("Contents/Library/LoginItems/Perpetual Radar Monitor.app").path : app.path
+            XCTAssertTrue(arguments.contains("-g\n-a\n\(openedPath)\n--env\nPERPETUAL_RADAR_BACKGROUND=1\n"))
+            XCTAssertEqual(arguments.components(separatedBy: "\(openedPath)\n").count - 1, fail ? 2 : 1, "Each attempt opens the app once")
             if fail { XCTAssertTrue(arguments.contains("PERPETUAL_RADAR_UPDATE_ROLLBACK=1")) }
             XCTAssertEqual(helper.terminationStatus == 0, !fail)
         }

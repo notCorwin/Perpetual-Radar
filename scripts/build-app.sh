@@ -22,10 +22,18 @@ rm -rf "$app/Contents/Resources/Web"
 ditto dist "$app/Contents/Resources/Web"
 cp macos/Info.plist "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
+helper="$app/Contents/Library/LoginItems/Perpetual Radar Monitor.app"
+mkdir -p "$helper/Contents/MacOS" "$helper/Contents/Resources"
+cp ".build/release/PerpetualRadar" "$helper/Contents/MacOS/PerpetualRadar"
+cp macos/AppIcon.icns "$helper/Contents/Resources/AppIcon.icns"
+cp macos/Monitor-Info.plist "$helper/Contents/Info.plist"
+printf 'APPL????' > "$helper/Contents/PkgInfo"
 revision="${APP_REVISION:-$(git rev-parse HEAD 2>/dev/null || true)}"
 if [[ -n "$revision" ]]; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleSourceRevision string $revision" "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleSourceRevision string $revision" "$helper/Contents/Info.plist"
 fi
+codesign --force --sign - "$helper" >/dev/null
 codesign --force --sign - "$app" >/dev/null
 touch "$app"
 if [[ -z "${CI:-}" ]]; then

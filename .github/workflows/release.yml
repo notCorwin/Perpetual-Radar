@@ -36,6 +36,11 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.perpetualradar.macos
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$app/Contents/Info.plist")" = AppIcon
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSourceRevision' "$app/Contents/Info.plist")" = "$GITHUB_SHA"
+          helper="$app/Contents/Library/LoginItems/Perpetual Radar Monitor.app"
+          test -x "$helper/Contents/MacOS/PerpetualRadar"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$helper/Contents/Info.plist")" = com.perpetualradar.macos.monitor
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$helper/Contents/Info.plist")" = true
+          codesign --verify --deep --strict "$app"
           tar -cf Perpetual.Radar.app.tar -C .build/app 'Perpetual Radar.app'
           tar -tf Perpetual.Radar.app.tar | grep -qx 'Perpetual Radar.app/Contents/MacOS/PerpetualRadar'
           sha256="$(shasum -a 256 Perpetual.Radar.app.tar | cut -d' ' -f1)"

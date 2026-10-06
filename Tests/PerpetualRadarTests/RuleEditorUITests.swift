@@ -4,10 +4,20 @@ import ScreenCaptureKit
 import XCTest
 @testable import PerpetualRadar
 
+@MainActor
+private final class BackgroundTestWindow: NSWindow {
+    // WindowServer marks windows beyond the display edges as occluded. Keep
+    // WebKit's real compositor clock active without showing or focusing them.
+    override var occlusionState: NSWindow.OcclusionState {
+        ProcessInfo.processInfo.environment["RADAR_VISUAL_TESTS"] == "1" ? super.occlusionState : super.occlusionState.union(.visible)
+    }
+}
+
 // Exercises the actual packaged-origin WebKit renderer and promise bridge with
 // native compile/evaluation/persistence and a deterministic 500-market feed.
 @MainActor
 private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKURLSchemeHandler {
+    private let renderingActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Run background WKWebView interaction and material verification")
     let root: URL
     let radar: Radar
     let suite: String
@@ -29,6 +39,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var notificationSettingsOpenCount = 0
     var notificationPermissionRequests = 0
     var notificationError = ""
+    var launchAtLogin = "disabled"
+    var loginSettingsOpenCount = 0
     let worker = FilterEvaluationWorker()
     init(root: URL) throws {
         self.root = root; suite = "RuleUI-\(UUID())"
@@ -48,19 +60,27 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         rows = generated; contexts = data
         super.init()
     }
-    func cleanUp() { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
+    func cleanUp() { ProcessInfo.processInfo.endActivity(renderingActivity); UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
     func snapshot() -> [String: Any] {
         var result = radar.snapshot(rocPeriod: 9, marocPeriod: 9)
         result["rows"] = rows; result["revision"] = revision
         result["notificationAuthorization"] = notificationAuthorization
         result["notificationError"] = notificationError; result["backgroundMonitoringError"] = ""
+        result["monitoringPaused"] = radar.monitoringPaused
+        result["launchAtLogin"] = launchAtLogin; result["launchAtLoginError"] = ""
         return result
     }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let request = message.body as! [String: Any]
-        if request["notificationsEnabled"] != nil || request["notificationAction"] != nil {
+        if request["notificationsEnabled"] != nil || request["notificationAction"] != nil || request["monitoringPaused"] != nil || request["launchAtLogin"] != nil {
             do {
                 if let enabled = request["notificationsEnabled"] as? Bool { try radar.setNotificationsEnabled(enabled); revision += 1 }
+                if let paused = request["monitoringPaused"] as? Bool { try radar.setMonitoringPaused(paused); revision += 1 }
+                if let enabled = request["launchAtLogin"] as? Bool {
+                    if launchAtLogin == "requiresApproval", enabled { loginSettingsOpenCount += 1 }
+                    else { launchAtLogin = enabled ? "enabled" : "disabled" }
+                    revision += 1
+                }
                 if request["notificationAction"] as? String == "test" { notificationTestCount += 1 }
                 if request["notificationAction"] as? String == "openSettings" { notificationSettingsOpenCount += 1 }
                 if (request["notificationAction"] as? String == "requestPermission" || request["notificationsEnabled"] as? Bool == true), notificationAuthorization == "notDetermined" {
@@ -183,7 +203,7 @@ final class RuleEditorUITests: XCTestCase {
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: .zero, configuration: configuration)
         let background = WindowBackgroundView(contentView: view); bridge.windowBackground = background
         window.contentView = background
@@ -196,6 +216,23 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Test notification")
         try await wait(view, "document.querySelector('#filter-notifications')?.disabled === false")
         XCTAssertEqual(bridge.notificationTestCount, 1)
+        try await click(view, "Enable background monitoring")
+        try await wait(view, "document.querySelector('#background-monitoring')?.textContent === 'Paused' && document.querySelector('#background-monitoring')?.disabled === false")
+        XCTAssertTrue(bridge.radar.monitoringPaused)
+        try await click(view, "Enable background monitoring")
+        try await wait(view, "document.querySelector('#background-monitoring')?.textContent === 'Running' && document.querySelector('#background-monitoring')?.disabled === false")
+        XCTAssertFalse(bridge.radar.monitoringPaused)
+        try await click(view, "Start monitoring at login")
+        try await wait(view, "document.querySelector('#launch-at-login')?.dataset.state === 'on' && document.querySelector('#launch-at-login')?.disabled === false")
+        XCTAssertEqual(bridge.launchAtLogin, "enabled")
+        bridge.launchAtLogin = "requiresApproval"
+        try await click(view, "Settings"); try await click(view, "Settings")
+        try await wait(view, "document.body.innerText.includes('Open Login Items')")
+        try await click(view, "Open Login Items")
+        try await wait(view, "document.querySelector('#launch-at-login')?.disabled === false")
+        XCTAssertEqual(bridge.loginSettingsOpenCount, 1)
+        try await click(view, "Start monitoring at login")
+        try await wait(view, "document.querySelector('#launch-at-login')?.dataset.state === 'off' && document.querySelector('#launch-at-login')?.disabled === false")
         try await click(view, "Enable filter notifications")
         try await wait(view, "document.querySelector('#filter-notifications')?.dataset.state === 'off'")
         XCTAssertFalse(bridge.radar.notificationsEnabled)
@@ -233,7 +270,7 @@ final class RuleEditorUITests: XCTestCase {
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         configuration.userContentController.addUserScript(WKUserScript(source: "window.radarAppearance = { frostedBackgroundEnabled: true, frostedBackgroundOpacity: 0.3, nativeWindowBackground: true };", injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.setValue(false, forKey: "drawsBackground")
         view.underPageBackgroundColor = .clear
@@ -333,6 +370,7 @@ final class RuleEditorUITests: XCTestCase {
         // Wait for control color transitions; inspect the renderer rather than
         // matching generated classes or the source token formulas.
         try await Task.sleep(nanoseconds: 200_000_000)
+        try await wait(view, "Array.from(document.querySelectorAll('[data-surface=\"floating\"]')).every(x => x.closest('[data-state=\"closed\"]') || !x.getBoundingClientRect().width || !x.getBoundingClientRect().height || getComputedStyle(x).opacity === '1')", seconds: 2)
         let result = try await js(view, """
         (() => {
           const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
@@ -382,7 +420,7 @@ final class RuleEditorUITests: XCTestCase {
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         configuration.userContentController.addUserScript(WKUserScript(source: "window.radarAppearance = { frostedBackgroundEnabled: true, frostedBackgroundOpacity: 0.3, nativeWindowBackground: true };", injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.setValue(false, forKey: "drawsBackground"); view.underPageBackgroundColor = .clear
         let background = WindowBackgroundView(contentView: view)
@@ -630,7 +668,9 @@ final class RuleEditorUITests: XCTestCase {
             if try await js(view, "document.querySelector(\(formulaQuote(selector))) === null") as? Bool == true { try await click(view, "Structure & name") }
         }
         try await wait(view, "(() => { const x = document.querySelector(\(formulaQuote(selector))); return Boolean(x && !x.disabled && x.getBoundingClientRect().height > 0); })()")
-        let predicate = popover ? "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]')" : "document.querySelector('[data-slot=\"select-content\"][data-state=\"open\"]')"
+        // Other overlays can still be mounted while their exit animation runs.
+        // Measure the trigger's own popup rather than another overlay in DOM.
+        let predicate = popover ? "document.getElementById(trigger.getAttribute('aria-controls'))" : "document.querySelector('[data-slot=\"select-content\"][data-state=\"open\"]')"
         let script = """
         const trigger = document.querySelector(\(formulaQuote(selector)));
         if (!trigger) throw new Error('Missing menu trigger');
@@ -643,7 +683,7 @@ final class RuleEditorUITests: XCTestCase {
           const frame = () => { const menu = \(predicate); frames += 1;
             if (!firstFrame) firstFrame = performance.now() - start;
             if (menu) animation = getComputedStyle(menu).animationDuration;
-            if (menu && menu.getBoundingClientRect().height > 0 && Number(getComputedStyle(menu).opacity) > 0.9) {
+            if (menu && menu.dataset.state === 'open' && menu.getBoundingClientRect().height > 0 && Number(getComputedStyle(menu).opacity) > 0.9) {
               requestAnimationFrame(() => { clearTimeout(timeout); resolve(); });
             } else requestAnimationFrame(frame);
           }; requestAnimationFrame(frame);
@@ -753,7 +793,7 @@ final class RuleEditorUITests: XCTestCase {
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 1100), configuration: configuration)
         window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
@@ -850,7 +890,7 @@ final class RuleEditorUITests: XCTestCase {
         bridge.pulseRows = true
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 1100), configuration: configuration)
         window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
@@ -992,7 +1032,7 @@ final class RuleEditorUITests: XCTestCase {
         bridge.pulseRows = true
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 1100), configuration: configuration)
         window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
@@ -1079,7 +1119,7 @@ final class RuleEditorUITests: XCTestCase {
         }
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
         window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
@@ -1189,7 +1229,7 @@ final class RuleEditorUITests: XCTestCase {
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
         window.contentView = view; present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
@@ -1259,7 +1299,7 @@ final class RuleEditorUITests: XCTestCase {
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
         window.contentView = view; window.appearance = NSAppearance(named: .aqua); present(window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }

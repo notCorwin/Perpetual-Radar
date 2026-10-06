@@ -1,35 +1,19 @@
 import AppKit
 import WebKit
-import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKURLSchemeHandler {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var windowBackground: WindowBackgroundView!
-    private var radar: Radar?
-    private var filterMonitor: FilterMonitor?
-    private var notifications: MarketNotifications?
-    private var monitoringActivity: NSObjectProtocol?
-    private var statusItem: NSStatusItem?
-    private let monitoringStatusItem = NSMenuItem(title: "Starting monitoring…", action: nil, keyEquivalent: "")
-    private let notificationStatusItem = NSMenuItem(title: "Notifications: Permission needed", action: nil, keyEquivalent: "")
-    private lazy var notificationsItem = NSMenuItem(title: "Filter Notifications", action: #selector(toggleFilterNotifications), keyEquivalent: "")
-    private lazy var testNotificationItem = NSMenuItem(title: "Send Test Notification", action: #selector(sendTestNotification), keyEquivalent: "")
-    private var monitoringError = ""
+    private let monitorClient = MonitorClient()
+    private var frostedBackgroundEnabled = MonitorRuntime.defaults.object(forKey: "LastWindowFrostedEnabled") as? Bool ?? true
+    private var frostedBackgroundOpacity = MonitorRuntime.defaults.object(forKey: "LastWindowFrostedOpacity") as? Double ?? 0.3
     private var pendingNotificationInstId: String?
     private var filterPreviewTask: Task<Void, Never>?
     private var filterExplainTask: Task<Void, Never>?
     private var startupError = ""
     private var webRoot: URL?
-    private let updater = AppUpdater()
-    private var updateTimer: Timer?
-    private var updateState = "idle"
-    private var update: AppUpdate?
-    private var isCheckingUpdate = false
-    private var isInstallingUpdate = false
-    private var isPresentingUpdate = false
-    private var automaticInstallRetryAfter: Date?
     private lazy var checkUpdatesItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdatesNow), keyEquivalent: "")
     private lazy var automaticUpdatesItem = NSMenuItem(title: "Automatically Install Updates", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
     private let appearanceMenu = NSMenu(title: "Appearance")
@@ -45,9 +29,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let launchInBackground = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_BACKGROUND"] == "1"
-        if ProcessInfo.processInfo.environment["PERPETUAL_RADAR_UPDATE_ROLLBACK"] == "1" {
-            automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60)
-        }
         if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_PID_FILE"], !path.isEmpty {
             FileManager.default.createFile(atPath: path, contents: Data(String(ProcessInfo.processInfo.processIdentifier).utf8))
         }
@@ -85,9 +66,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.mainMenu = menu
         NSApp.windowsMenu = windowMenu
 
-        do { radar = try Radar() }
-        catch { startupError = "Cannot open local cache: \(error.localizedDescription)" }
-
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "radar")
@@ -115,8 +93,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeAfterWake),
                                                         name: NSWorkspace.didWakeNotification, object: nil)
 
-        radar?.start()
-        configureMonitoring()
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(quitInterface), name: MonitorRuntime.quitUI, object: nil)
+        Task {
+            do {
+                try await monitorClient.ensureRunning()
+                let info = try await monitorClient.request(["serviceInfo": true])
+                let settings = try await monitorClient.request(["notificationAction": !launchInBackground && info["notificationsEnabled"] as? Bool == true ? "requestPermission" : "refresh"])
+                acceptNativeSettings(settings)
+                MonitorRuntime.markReady()
+            } catch { startupError = error.localizedDescription }
+        }
 
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("Web/index.html")
         let development = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("dist/index.html")
@@ -131,94 +117,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             webView.loadHTMLString("<html><body style='font:14px system-ui;padding:40px'>\(message)</body></html>", baseURL: nil)
         }
         if !launchInBackground { NSApp.activate(ignoringOtherApps: true) }
-        if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_READY_FILE"], !path.isEmpty {
-            FileManager.default.createFile(atPath: path, contents: Data())
-        }
-        let timer = Timer(timeInterval: 15, target: self,
-                          selector: #selector(checkForUpdatesAutomatically), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common)
-        updateTimer = timer
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
-        updateTimer?.invalidate()
-        filterMonitor?.stop()
-        radar?.stop()
-        if let monitoringActivity { ProcessInfo.processInfo.endActivity(monitoringActivity) }
-        if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
-        updater.cancel()
+        DistributedNotificationCenter.default().removeObserver(self)
+        filterPreviewTask?.cancel(); filterExplainTask?.cancel()
+        MonitorRuntime.defaults.set(true, forKey: AppUpdater.backgroundRelaunchKey)
     }
 
-    private func configureMonitoring() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: "Perpetual Radar")
-        item.button?.toolTip = "Perpetual Radar · Background monitoring"
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        menu.delegate = self
-        monitoringStatusItem.isEnabled = false; notificationStatusItem.isEnabled = false
-        let show = NSMenuItem(title: "Show Perpetual Radar", action: #selector(showWindow), keyEquivalent: "")
-        show.target = self; menu.addItem(show)
-        menu.addItem(.separator())
-        menu.addItem(monitoringStatusItem); menu.addItem(notificationStatusItem)
-        notificationsItem.target = self; menu.addItem(notificationsItem)
-        testNotificationItem.target = self; menu.addItem(testNotificationItem)
-        let settings = NSMenuItem(title: "Notification Settings…", action: #selector(openNotificationSettings), keyEquivalent: "")
-        settings.target = self; menu.addItem(settings)
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Perpetual Radar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        item.menu = menu; statusItem = item
+    @objc private func quitInterface() { NSApp.terminate(nil) }
 
-        // UNUserNotificationCenter requires an application bundle. Keep the
-        // collector usable under `swift run`, with a visible settings explanation.
-        if Bundle.main.bundleURL.pathExtension == "app" {
-            let center = UNUserNotificationCenter.current()
-            let service = MarketNotifications(transport: SystemMarketNotificationTransport(center: center),
-                                              enabled: { [weak self] in self?.radar?.notificationsEnabled == true })
-            service.onOpen = { [weak self] id in
-                self?.pendingNotificationInstId = id
-                self?.showWindow()
-                self?.openNotificationContract()
-            }
-            service.onStateChanged = { [weak self] in self?.renderMonitoringItems() }
-            center.delegate = service
-            notifications = service
-            Task { await service.refresh(requestPermission: radar?.notificationsEnabled == true && window.isVisible) }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let id = RadarNotificationRoute.contract(in: url) else { continue }
+            pendingNotificationInstId = id
+            showWindow(); openNotificationContract()
         }
-        monitoringActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
-            reason: "Monitor OKX contracts and deliver saved-filter notifications while the window is closed")
-        filterMonitor = FilterMonitor(sample: { [weak self] in try await self?.radar?.observeSavedFilters() },
-            onChanges: { [weak self] changes in await self?.notifications?.send(changes) },
-            onError: { [weak self] error in self?.monitoringError = error; self?.renderMonitoringItems() })
-        filterMonitor?.start()
-        renderMonitoringItems()
     }
 
-    private func renderMonitoringItems() {
-        monitoringStatusItem.title = !startupError.isEmpty || !monitoringError.isEmpty ? "Monitoring unavailable; retrying" : "Monitoring saved filters · 1h"
-        let state = notifications?.authorization ?? .unavailable
-        let label: String
-        switch state {
-        case .notDetermined: label = "Permission needed"
-        case .denied: label = "Blocked in System Settings"
-        case .authorized: label = "Allowed"
-        case .quiet: label = "Banners disabled in System Settings"
-        case .unavailable: label = "Launch the packaged app"
+    private func acceptNativeSettings(_ snapshot: [String: Any]) {
+        if let enabled = snapshot["frostedBackgroundEnabled"] as? Bool, let opacity = snapshot["frostedBackgroundOpacity"] as? Double {
+            frostedBackgroundEnabled = enabled; frostedBackgroundOpacity = opacity
+            MonitorRuntime.defaults.set(enabled, forKey: "LastWindowFrostedEnabled")
+            MonitorRuntime.defaults.set(opacity, forKey: "LastWindowFrostedOpacity")
+            applyWindowBackground(); configureBackgroundScript(in: webView.configuration.userContentController)
         }
-        notificationStatusItem.title = "Notifications: \(label)"
-        notificationsItem.state = radar?.notificationsEnabled == true ? .on : .off
-        notificationsItem.isEnabled = radar != nil
-        testNotificationItem.isEnabled = state.canDeliver
-    }
-
-    private func withNotificationStatus(_ snapshot: [String: Any]) -> [String: Any] {
-        var result = snapshot
-        result["notificationsEnabled"] = radar?.notificationsEnabled ?? true
-        result["notificationAuthorization"] = (notifications?.authorization ?? .unavailable).rawValue
-        result["notificationError"] = notifications?.error ?? "Launch the packaged macOS app to enable notifications."
-        result["backgroundMonitoringError"] = monitoringError
-        return result
+        if let title = snapshot["updateMenuTitle"] as? String { checkUpdatesItem.title = title }
+        if let enabled = snapshot["updateMenuEnabled"] as? Bool { checkUpdatesItem.isEnabled = enabled }
+        if let enabled = snapshot["automaticUpdatesEnabled"] as? Bool { automaticUpdatesItem.state = enabled ? .on : .off }
     }
 
     @objc private func showWindow() {
@@ -233,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
-        UserDefaults.standard.set(true, forKey: AppUpdater.backgroundRelaunchKey)
+        MonitorRuntime.defaults.set(true, forKey: AppUpdater.backgroundRelaunchKey)
         NSApp.setActivationPolicy(.accessory)
         return false
     }
@@ -244,33 +171,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        Task { await notifications?.refresh() }
+        Task { if let info = try? await monitorClient.request(["serviceInfo": true]) { acceptNativeSettings(info) } }
     }
 
     private func updateRelaunchPresentation() {
         guard let window else { return }
-        UserDefaults.standard.set(!window.isVisible || window.isMiniaturized || NSApp.isHidden, forKey: AppUpdater.backgroundRelaunchKey)
+        MonitorRuntime.defaults.set(!window.isVisible || window.isMiniaturized || NSApp.isHidden, forKey: AppUpdater.backgroundRelaunchKey)
     }
 
     func windowDidMiniaturize(_ notification: Notification) { updateRelaunchPresentation() }
     func windowDidDeminiaturize(_ notification: Notification) { updateRelaunchPresentation() }
     func applicationDidHide(_ notification: Notification) { updateRelaunchPresentation() }
     func applicationDidUnhide(_ notification: Notification) { updateRelaunchPresentation() }
-
-    @objc private func toggleFilterNotifications() {
-        guard let radar else { return }
-        do {
-            try radar.setNotificationsEnabled(!radar.notificationsEnabled)
-            renderMonitoringItems()
-            Task { await notifications?.refresh(requestPermission: radar.notificationsEnabled) }
-        } catch { showUpdateAlert("Cannot Save Notifications", error.localizedDescription) }
-    }
-
-    @objc private func sendTestNotification() { Task { await notifications?.sendTest() } }
-
-    @objc private func openNotificationSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
-    }
 
     private func openNotificationContract() {
         guard let id = pendingNotificationInstId, let webView, !webView.isLoading else { return }
@@ -282,7 +194,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { openNotificationContract() }
 
     @objc private func resumeAfterWake(_ notification: Notification) {
-        radar?.resumeAfterWake()
         applyWindowBackground()
         webView.reload()
     }
@@ -296,8 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        renderUpdateItem(); renderMonitoringItems()
-        Task { await notifications?.refresh() }
+        Task { if let info = try? await monitorClient.request(["serviceInfo": true]) { acceptNativeSettings(info) } }
     }
 
     @objc private func changeAppearance(_ sender: NSMenuItem) {
@@ -312,8 +222,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func configureBackgroundScript(in controller: WKUserContentController) {
-        let enabled = radar?.frostedBackgroundEnabled ?? true
-        let opacity = radar?.frostedBackgroundOpacity ?? 0.3
+        let enabled = frostedBackgroundEnabled
+        let opacity = frostedBackgroundOpacity
         // Keep the document-start settings current for wake and WebKit process reloads.
         controller.removeAllUserScripts()
         controller.addUserScript(WKUserScript(
@@ -322,166 +232,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func applyWindowBackground() {
-        windowBackground.apply(enabled: radar?.frostedBackgroundEnabled ?? true,
-                               opacity: radar?.frostedBackgroundOpacity ?? 0.3, to: window)
+        windowBackground.apply(enabled: frostedBackgroundEnabled, opacity: frostedBackgroundOpacity, to: window)
     }
 
-    @objc private func checkForUpdatesNow() {
-        if updateState == "available", let update { presentUpdate(update) }
-        else { checkForUpdates(silently: false) }
-    }
-    @objc private func checkForUpdatesAutomatically() { checkForUpdates(silently: true) }
-
-    @objc private func toggleAutomaticUpdates() {
-        let enabled = !Self.automaticUpdatesEnabled()
-        UserDefaults.standard.set(enabled, forKey: Self.automaticUpdatesKey)
-        automaticUpdatesItem.state = enabled ? .on : .off
-        if enabled, updateState == "available", let update,
-           !isInstallingUpdate, !isPresentingUpdate {
-            installUpdate(update, automatically: true)
-        }
-    }
-
-    private func renderUpdateItem() {
-        if updateState == "available", let update {
-            let revision = update.revision == "unknown" ? "" : " · \(update.revision.prefix(7))"
-            let age: String
-            if let publishedAt = update.publishedAt {
-                let formatter = RelativeDateTimeFormatter()
-                formatter.locale = Locale(identifier: "en_US")
-                formatter.unitsStyle = .abbreviated
-                age = " · \(formatter.localizedString(for: publishedAt, relativeTo: Date()))"
-            } else { age = "" }
-            checkUpdatesItem.title = "Update Available\(revision)\(age)"
-        } else {
-            checkUpdatesItem.title = updateState == "installing" ? "Installing Update…" : "Check for Updates"
-        }
-        checkUpdatesItem.isEnabled = !isCheckingUpdate && !isInstallingUpdate
-    }
-
-    private func checkForUpdates(silently: Bool) {
-        guard !isCheckingUpdate, !isInstallingUpdate, !isPresentingUpdate else { return }
-        isCheckingUpdate = true
-        updateState = "checking"
-        renderUpdateItem()
-        updater.check { [weak self] result in
-            guard let self else { return }
-            isCheckingUpdate = false
-            switch result {
-            case .success(let found):
-                update = found
-                updateState = found == nil ? "latest" : "available"
-                if let found {
-                    if Self.automaticUpdatesEnabled(),
-                       automaticInstallRetryAfter.map({ $0 <= Date() }) ?? true {
-                        installUpdate(found, automatically: true)
-                    } else if !silently {
-                        presentUpdate(found)
-                    }
-                } else if !silently {
-                    showUpdateAlert("Up to Date", "You have the latest version of Perpetual Radar.")
-                }
-            case .failure(let error):
-                updateState = update == nil ? "failed" : "available"
-                if !silently { showUpdateAlert("Update Check Failed", error.localizedDescription) }
-            }
-            renderUpdateItem()
-        }
-    }
-
-    private func presentUpdate(_ update: AppUpdate) {
-        guard !isInstallingUpdate, !isPresentingUpdate else { return }
-        isPresentingUpdate = true
-        let alert = NSAlert()
-        alert.messageText = "Update Available"
-        let revision = update.revision == "unknown" ? "" : " (\(update.revision.prefix(7)))"
-        alert.informativeText = "\(update.name)\(revision) is available. Download and install it now?"
-        alert.addButton(withTitle: "Update")
-        alert.addButton(withTitle: "Later")
-        let shouldInstall = alert.runModal() == .alertFirstButtonReturn
-        isPresentingUpdate = false
-        guard shouldInstall else { return }
-        installUpdate(update, automatically: false)
-    }
-
-    private func installUpdate(_ update: AppUpdate, automatically: Bool) {
-        guard !isInstallingUpdate else { return }
-        isInstallingUpdate = true
-        updateState = "installing"
-        renderUpdateItem()
-        updater.downloadAndInstall(update) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success:
-                NSApp.terminate(nil)
-            case .failure(let error):
-                isInstallingUpdate = false
-                updateState = "available"
-                if automatically { automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60) }
-                renderUpdateItem()
-                if !automatically { showUpdateAlert("Update Failed", error.localizedDescription) }
+    @objc private func checkForUpdatesNow() { sendUpdateAction("check") }
+    @objc private func toggleAutomaticUpdates() { sendUpdateAction("toggleAutomatic") }
+    private func sendUpdateAction(_ action: String) {
+        Task {
+            do { acceptNativeSettings(try await monitorClient.request(["updateAction": action])) }
+            catch {
+                let alert = NSAlert(); alert.messageText = "Cannot Reach Background Monitor"
+                alert.informativeText = error.localizedDescription; alert.runModal()
             }
         }
-    }
-
-    private func showUpdateAlert(_ title: String, _ message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let parameters = message.body as? [String: Any] else { replyHandler(nil, "Invalid request"); return }
-        if parameters["notificationsEnabled"] != nil || parameters["notificationAction"] != nil {
-            guard let radar else { replyHandler(nil, startupError); return }
-            if let requested = parameters["notificationsEnabled"] {
-                guard let enabled = requested as? Bool else { replyHandler(nil, "Invalid notification setting"); return }
-                do { try radar.setNotificationsEnabled(enabled) }
-                catch { replyHandler(nil, "Cannot save notification setting: \(error.localizedDescription)"); return }
-            }
-            guard parameters["notificationAction"] == nil || ["refresh", "requestPermission", "test", "openSettings"].contains(parameters["notificationAction"] as? String ?? "") else {
-                replyHandler(nil, "Invalid notification action"); return
-            }
-            Task {
-                let action = parameters["notificationAction"] as? String
-                if action == "openSettings" { openNotificationSettings() }
-                if action == "test" { await notifications?.sendTest() }
-                else { await notifications?.refresh(requestPermission: action == "requestPermission" || parameters["notificationsEnabled"] as? Bool == true) }
-                renderMonitoringItems()
-                do { replyHandler(withNotificationStatus(try await radar.asyncSnapshot(rocPeriod: 9, marocPeriod: 9)), nil) }
-                catch { replyHandler(nil, String(describing: error)) }
-            }
-            return
-        }
         if let requested = parameters["windowTintRGB"] {
             guard let rgb = requested as? [Double], windowBackground.setTint(rgb: rgb) else { replyHandler(nil, "Invalid window tint"); return }
             replyHandler(["ok": true], nil)
-            return
-        }
-        if let request = parameters["compileMarketFilters"] as? [String: Any] {
-            replyHandler(radar?.compileMarketFilters(request) ?? ["diagnostics": [startupError.isEmpty ? "Collector is starting." : startupError]], nil)
-            return
-        }
-        if let request = parameters["previewMarketFilters"] as? [String: Any], let json = request["filtersJSON"] as? String, let token = request["token"] as? String {
-            guard let radar else { replyHandler(nil, startupError); return }
-            filterPreviewTask?.cancel()
-            filterPreviewTask = Task {
-                do { replyHandler(withNotificationStatus(try await radar.previewMarketFilters(filtersJSON: json, token: token)), nil) }
-                catch { replyHandler(nil, String(describing: error)) }
-            }
-            return
-        }
-        if let request = parameters["explainMarketFilters"] as? [String: Any], let json = request["filtersJSON"] as? String,
-           let token = request["token"] as? String, let id = request["instId"] as? String {
-            guard let radar else { replyHandler(nil, startupError); return }
-            filterExplainTask?.cancel()
-            filterExplainTask = Task {
-                do { replyHandler(try await radar.explainMarketFilters(instId: id, filtersJSON: json, token: token), nil) }
-                catch { replyHandler(nil, String(describing: error)) }
-            }
             return
         }
         if let bounds = parameters["captureChart"] as? [String: Any] {
@@ -516,140 +287,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             }
             return
         }
-        if let id = parameters["chartInstId"] as? String {
-            guard let radar else { replyHandler(["bars": [], "error": startupError, "revision": -1], nil); return }
-            if let endHour = parameters["chartEndHour"] as? Int64 {
-                Task { replyHandler(await radar.loadHistoricalChart(id, endingAt: endHour), nil) }
-            } else if parameters["loadChart"] as? Bool == true {
-                Task { replyHandler(await radar.loadChart(id), nil) }
-            } else { replyHandler(radar.chartSnapshot(id, sinceRevision: parameters["sinceRevision"] as? Int), nil) }
-            return
-        }
-        if parameters["frostedBackgroundEnabled"] != nil || parameters["frostedBackgroundOpacity"] != nil {
-            guard let radar else { replyHandler(nil, startupError); return }
-            let enabled = parameters["frostedBackgroundEnabled"] as? Bool
-            let opacity = parameters["frostedBackgroundOpacity"] as? Double
-            guard parameters["frostedBackgroundEnabled"] == nil || enabled != nil,
-                  parameters["frostedBackgroundOpacity"] == nil || opacity != nil else {
-                replyHandler(nil, "Invalid frosted background setting"); return
-            }
+        let requestTask = Task {
             do {
-                guard try radar.setFrostedBackground(enabled: enabled, opacity: opacity) else {
-                    replyHandler(nil, "Background opacity must be between 0 and 1"); return
-                }
-                applyWindowBackground()
-                configureBackgroundScript(in: webView.configuration.userContentController)
-            } catch {
-                replyHandler(nil, "Cannot save background settings: \(error.localizedDescription)"); return
-            }
+                let result = try await monitorClient.request(parameters)
+                try Task.checkCancellation()
+                acceptNativeSettings(result)
+                replyHandler(result, nil)
+            } catch { replyHandler(nil, error.localizedDescription) }
         }
-        if let requested = parameters["minimum24hTurnoverUSDT"] {
-            guard let threshold = requested as? Int, radar?.setMinimum24hTurnoverUSDT(threshold) == true else {
-                replyHandler(nil, "Invalid 24h turnover threshold"); return
-            }
-        }
-        if let requested = parameters["spreadFilterEnabled"] {
-            guard let enabled = requested as? Bool, let radar else {
-                replyHandler(nil, "Invalid spread filter setting"); return
-            }
-            radar.setSpreadFilterEnabled(enabled)
-        }
-        if let requested = parameters["maximumSpreadPercent"] {
-            guard let maximum = requested as? Double, radar?.setMaximumSpreadPercent(maximum) == true else {
-                replyHandler(nil, "Maximum spread must be between 0 and 100%"); return
-            }
-        }
-        if let requested = parameters["contractAgeFilterEnabled"] {
-            guard let enabled = requested as? Bool, let radar else {
-                replyHandler(nil, "Invalid contract age filter setting"); return
-            }
-            radar.setContractAgeFilterEnabled(enabled)
-        }
-        if let requested = parameters["minimumContractAgeMonths"] {
-            guard let minimum = requested as? Int, radar?.setMinimumContractAgeMonths(minimum) == true else {
-                replyHandler(nil, "Minimum contract age must be a whole number from 1 to 1200 months"); return
-            }
-        }
-        if let requested = parameters["filterLibraryPreferencesJSON"] {
-            guard let json = requested as? String, let radar else { replyHandler(nil, "Invalid condition library preferences"); return }
-            do { try radar.setFilterLibraryPreferences(json) }
-            catch { replyHandler(nil, "Cannot save condition library preferences: \(error.localizedDescription)"); return }
-        }
-        if let requested = parameters["marketFiltersJSON"] {
-            guard let filters = requested as? String, let radar else {
-                replyHandler(nil, "Invalid market filter configuration"); return
-            }
-            do {
-                guard try radar.setMarketFiltersJSON(filters) else {
-                    replyHandler(nil, "Invalid market filter configuration"); return
-                }
-            } catch {
-                replyHandler(nil, "Cannot save filters: \(error.localizedDescription)"); return
-            }
-        }
-        if let requested = parameters["saveMarketFilterCombination"] {
-            guard let request = requested as? [String: Any], let name = request["name"] as? String,
-                  let filters = request["filtersJSON"] as? String, let radar else {
-                replyHandler(nil, "Invalid filter combination"); return
-            }
-            do {
-                guard try radar.saveMarketFilterCombination(name: name, filtersJSON: filters) else {
-                    replyHandler(nil, "Use a name from 1 to 80 characters and valid filter conditions"); return
-                }
-            } catch {
-                replyHandler(nil, "Cannot save combination: \(error.localizedDescription)"); return
-            }
-        }
-        if let requested = parameters["selectedMarketFilterCombinationID"] {
-            guard let id = requested as? String, let radar else {
-                replyHandler(nil, "Invalid filter combination selection"); return
-            }
-            do {
-                guard try radar.setSelectedMarketFilterCombinationID(id) else {
-                    replyHandler(nil, "The saved combination no longer exists"); return
-                }
-            } catch {
-                replyHandler(nil, "Cannot remember combination: \(error.localizedDescription)"); return
-            }
-        }
-        if let requested = parameters["deleteMarketFilterCombination"] {
-            guard let id = requested as? String, let radar else {
-                replyHandler(nil, "Invalid filter combination"); return
-            }
-            do {
-                guard try radar.deleteMarketFilterCombination(id) else {
-                    replyHandler(nil, "The saved combination no longer exists"); return
-                }
-            } catch {
-                replyHandler(nil, "Cannot delete combination: \(error.localizedDescription)"); return
-            }
-        }
-        if !startupError.isEmpty {
-            let failureSnapshot: [String: Any] = ["rows": [], "updatedAt": NSNull(), "error": startupError, "revision": -1,
-                          "minimum24hTurnoverUSDT": radar?.minimum24hTurnoverUSDT ?? 10_000_000,
-                          "spreadFilterEnabled": radar?.spreadFilterEnabled ?? true,
-                          "maximumSpreadPercent": radar?.maximumSpreadPercent ?? 0.15,
-                          "contractAgeFilterEnabled": radar?.contractAgeFilterEnabled ?? true,
-                          "minimumContractAgeMonths": radar?.minimumContractAgeMonths ?? defaultMinimumContractAgeMonths,
-                          "frostedBackgroundEnabled": radar?.frostedBackgroundEnabled ?? true,
-                          "frostedBackgroundOpacity": radar?.frostedBackgroundOpacity ?? 0.3,
-                          "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}",
-                          "filterConfigJSON": radar?.marketFiltersV2JSON ?? FilterConfigV2().json,
-                          "filterMetricsCatalog": FilterCatalog.metrics.map(\.snapshot), "filterFunctions": FilterCatalog.functions,
-                          "filterFunctionCatalog": FilterCatalog.scalarFunctions.map(\.snapshot), "filterLibraryPreferences": radar?.filterLibraryPreferences.snapshot ?? FilterLibraryPreferences().snapshot,
-                          "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? [],
-                          "selectedMarketFilterCombinationID": radar?.selectedMarketFilterCombinationID ?? ""]
-            replyHandler(withNotificationStatus(failureSnapshot), nil)
-            return
-        }
-        let roc = parameters["rocPeriod"] as? Int ?? 9
-        let maroc = parameters["marocPeriod"] as? Int ?? 9
-        let since = parameters["sinceRevision"] as? Int
-        guard let radar else { replyHandler(nil, "Collector is starting."); return }
-        Task {
-            do { replyHandler(withNotificationStatus(try await radar.asyncSnapshot(rocPeriod: roc, marocPeriod: maroc, sinceRevision: since)), nil) }
-            catch { replyHandler(nil, String(describing: error)) }
-        }
+        if parameters["previewMarketFilters"] != nil { filterPreviewTask?.cancel(); filterPreviewTask = requestTask }
+        if parameters["explainMarketFilters"] != nil { filterExplainTask?.cancel(); filterExplainTask = requestTask }
     }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
@@ -691,7 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 }
 
 let application = NSApplication.shared
-application.setActivationPolicy(ProcessInfo.processInfo.environment["PERPETUAL_RADAR_BACKGROUND"] == "1" ? .accessory : .regular)
-let delegate = AppDelegate()
+application.setActivationPolicy(MonitorRuntime.isHelper || ProcessInfo.processInfo.environment["PERPETUAL_RADAR_BACKGROUND"] == "1" ? .accessory : .regular)
+let delegate: any NSApplicationDelegate = MonitorRuntime.isHelper ? MonitorDelegate() : AppDelegate()
 application.delegate = delegate
 application.run()

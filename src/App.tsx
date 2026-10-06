@@ -27,12 +27,12 @@ import { emptyFilterConfig, initialEditorState, initialLibraryPreferences, parse
 import { expressionTemplates, type ExpressionTemplate } from "@/filter-expression"
 
 type WindowAppearance = { frostedBackgroundEnabled: boolean; frostedBackgroundOpacity: number }
-type NotificationSettings = { notificationsEnabled: boolean; notificationAuthorization: "notDetermined" | "denied" | "authorized" | "quiet" | "unavailable"; notificationError: string; backgroundMonitoringError: string }
+type NotificationSettings = { notificationsEnabled: boolean; notificationAuthorization: "notDetermined" | "denied" | "authorized" | "quiet" | "unavailable"; notificationError: string; backgroundMonitoringError: string; monitoringPaused: boolean; launchAtLogin: "enabled" | "disabled" | "requiresApproval" | "unavailable"; launchAtLoginError: string }
 type HistoryProgress = { pending: number; completed: number; error: string }
-type Snapshot = WindowAppearance & NotificationSettings & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; filterFunctionCatalog: ExpressionTemplate[]; filterLibraryPreferences: FilterLibraryPreferences; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
+type Snapshot = WindowAppearance & NotificationSettings & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; serviceSession?: string; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; filterFunctionCatalog: ExpressionTemplate[]; filterLibraryPreferences: FilterLibraryPreferences; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
 type PreviewSnapshot = Snapshot & { filterResults: Record<string, FilterTruth>; filterToken: string; historyProgress: HistoryProgress }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = Partial<WindowAppearance> & { notificationsEnabled?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
+type SettingRequest = Partial<WindowAppearance> & { notificationsEnabled?: boolean; monitoringPaused?: boolean; launchAtLogin?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string } }): Promise<CompileResponse>
@@ -133,6 +133,7 @@ const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain }: { row
 
 function App() {
   const revision = useRef(-1)
+  const serviceSession = useRef<string | undefined>(undefined)
   const backgroundOpacityDraftDirty = useRef(false)
   const appliedJSON = useRef("")
   const compileEpoch = useRef(0)
@@ -162,7 +163,7 @@ function App() {
   const [frostedBackgroundOpacity, setFrostedBackgroundOpacity] = useState(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3)
   const [backgroundOpacityDraft, setBackgroundOpacityDraft] = useState(String(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3))
   const [backgroundOpacityError, setBackgroundOpacityError] = useState("")
-  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ notificationsEnabled: true, notificationAuthorization: "notDetermined", notificationError: "", backgroundMonitoringError: "" })
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ notificationsEnabled: true, notificationAuthorization: "notDetermined", notificationError: "", backgroundMonitoringError: "", monitoringPaused: false, launchAtLogin: "disabled", launchAtLoginError: "" })
   const [notificationPending, setNotificationPending] = useState(false)
   const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
@@ -207,6 +208,7 @@ function App() {
     return () => theme.removeEventListener("change", updateTint)
   }, [frostedBackgroundEnabled, frostedBackgroundOpacity])
   const acceptSnapshot = (snapshot: Snapshot) => {
+    if (snapshot.serviceSession && snapshot.serviceSession !== serviceSession.current) { serviceSession.current = snapshot.serviceSession; revision.current = -1 }
     if (snapshot.revision < revision.current) return false
     const includeData = revision.current === -1 || "filterResults" in snapshot
     revision.current = snapshot.revision
@@ -218,6 +220,9 @@ function App() {
       notificationAuthorization: snapshot.notificationAuthorization ?? "notDetermined",
       notificationError: snapshot.notificationError ?? "",
       backgroundMonitoringError: snapshot.backgroundMonitoringError ?? "",
+      monitoringPaused: snapshot.monitoringPaused ?? false,
+      launchAtLogin: snapshot.launchAtLogin ?? "disabled",
+      launchAtLoginError: snapshot.launchAtLoginError ?? "",
     }))
     if (!backgroundOpacityDraftDirty.current && document.activeElement?.id !== "background-opacity") setBackgroundOpacityDraft(String(snapshot.frostedBackgroundOpacity))
     if (appliedJSON.current !== snapshot.filterConfigJSON) {
@@ -287,7 +292,7 @@ function App() {
       try {
         const snapshot = await window.webkit.messageHandlers.radar.postMessage({ previewMarketFilters: { filtersJSON: lastValidJSON, token } })
         if (stopped || epoch !== previewEpoch.current) return
-        if (previewResponseIsCurrent(snapshot, token, revision.current)) startTransition(() => {
+        if (previewResponseIsCurrent(snapshot, token, snapshot.serviceSession && snapshot.serviceSession !== serviceSession.current ? -1 : revision.current)) startTransition(() => {
           if (!acceptSnapshot(snapshot)) return
           setResults(current => keepSnapshotValue(current, snapshot.filterResults))
           setPreviewJSON(lastValidJSON)
@@ -393,7 +398,7 @@ function App() {
         <Popover onOpenChange={open => { if (!open && backgroundOpacityDraftDirty.current) saveBackgroundOpacity(); if (open) void updateNotifications({ notificationAction: "refresh" }) }}>
           <PopoverTrigger asChild><Button variant="outline"><Settings2 data-icon="inline-start" aria-hidden="true" />Settings</Button></PopoverTrigger>
           <PopoverContent align="end">
-            <PopoverHeader><PopoverTitle>Settings</PopoverTitle><PopoverDescription>Customize notifications and the window background.</PopoverDescription></PopoverHeader>
+            <PopoverHeader><PopoverTitle>Settings</PopoverTitle><PopoverDescription>Customize monitoring, notifications and the window background.</PopoverDescription></PopoverHeader>
             <FieldGroup>
               <Field>
                 <Field orientation="horizontal">
@@ -407,8 +412,24 @@ function App() {
                   <Button variant="outline" size="sm" disabled={notificationPending || !notificationSettings.notificationsEnabled || !["authorized", "quiet"].includes(notificationSettings.notificationAuthorization)} onClick={() => void updateNotifications({ notificationAction: "test" })}>Test notification</Button>
                   <Button variant="ghost" size="sm" disabled={notificationPending} onClick={() => void updateNotifications({ notificationAction: "openSettings" })}>Notification Settings</Button>
                 </div>
-                <FieldDescription>Closing the window keeps monitoring in the menu bar. Choose Quit to stop.</FieldDescription>
+                <FieldDescription>Monitoring continues after closing the window or Cmd+Q. Use Quit Completely in the menu bar to stop everything.</FieldDescription>
                 {(notificationSettings.notificationError || notificationSettings.backgroundMonitoringError) && <FieldError role="alert">{notificationSettings.notificationError || notificationSettings.backgroundMonitoringError}</FieldError>}
+              </Field>
+              <Field>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="background-monitoring">Background monitoring</FieldLabel>
+                  <Toggle id="background-monitoring" variant="outline" pressed={!notificationSettings.monitoringPaused} disabled={notificationPending} onPressedChange={enabled => void updateNotifications({ monitoringPaused: !enabled })} aria-label="Enable background monitoring">{notificationSettings.monitoringPaused ? "Paused" : "Running"}</Toggle>
+                </Field>
+                <FieldDescription>Pausing stops collection and alerts. Resuming establishes a fresh baseline.</FieldDescription>
+              </Field>
+              <Field>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="launch-at-login">Start at Login</FieldLabel>
+                  <Toggle id="launch-at-login" variant="outline" pressed={notificationSettings.launchAtLogin === "enabled" || notificationSettings.launchAtLogin === "requiresApproval"} disabled={notificationPending || notificationSettings.launchAtLogin === "unavailable"} onPressedChange={enabled => void updateNotifications({ launchAtLogin: enabled })} aria-label="Start monitoring at login">{notificationSettings.launchAtLogin === "enabled" ? "On" : notificationSettings.launchAtLogin === "requiresApproval" ? "Approval needed" : "Off"}</Toggle>
+                </Field>
+                <FieldDescription>Start the menu bar monitor after signing in, with the main window closed.</FieldDescription>
+                {notificationSettings.launchAtLogin === "requiresApproval" && <Button variant="outline" size="sm" disabled={notificationPending} onClick={() => void updateNotifications({ launchAtLogin: true })}>Open Login Items</Button>}
+                {notificationSettings.launchAtLoginError && <FieldError role="alert">{notificationSettings.launchAtLoginError}</FieldError>}
               </Field>
               <Field orientation="horizontal">
                 <FieldLabel htmlFor="frosted-background">Frosted background</FieldLabel>

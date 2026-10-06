@@ -14,6 +14,7 @@ private let selectedMarketFilterCombinationKey = "selectedMarketFilterCombinatio
 private let frostedBackgroundEnabledKey = "frostedBackgroundEnabled"
 private let frostedBackgroundOpacityKey = "frostedBackgroundOpacity"
 private let notificationsEnabledKey = "filterNotificationsEnabled"
+private let monitoringPausedKey = "monitoringPaused"
 private let emptyMarketFiltersJSON = "{\"version\":1,\"match\":\"all\",\"rules\":[]}"
 
 func validMarketFiltersJSON(_ value: String) -> Bool {
@@ -102,6 +103,7 @@ final class Radar {
     private(set) var frostedBackgroundEnabled: Bool
     private(set) var frostedBackgroundOpacity: Double
     private(set) var notificationsEnabled: Bool
+    private(set) var monitoringPaused: Bool
     private var rows: [String: Market] = [:]
     private var cachedRows: [String: [String: Any]] = [:]
     private var cachedPeriods: (roc: Int, maroc: Int)?
@@ -145,6 +147,7 @@ final class Radar {
         let savedOpacity = (try store.preference(forKey: frostedBackgroundOpacityKey)).flatMap(Double.init) ?? 0.3
         frostedBackgroundOpacity = savedOpacity.isFinite && (0...1).contains(savedOpacity) ? savedOpacity : 0.3
         notificationsEnabled = try store.preference(forKey: notificationsEnabledKey) != "false"
+        monitoringPaused = try store.preference(forKey: monitoringPausedKey) == "true"
         historyLoader = FilterHistoryLoader(url: store.url)
         monitorHistoryLoader = FilterHistoryLoader(url: store.url)
         if let saved = try store.preference(forKey: "filterLibraryPreferences") {
@@ -269,6 +272,13 @@ final class Radar {
         guard enabled != notificationsEnabled else { return }
         try store.setPreference(String(enabled), forKey: notificationsEnabledKey)
         notificationsEnabled = enabled
+        touch()
+    }
+
+    func setMonitoringPaused(_ paused: Bool) throws {
+        guard paused != monitoringPaused else { return }
+        try store.setPreference(String(paused), forKey: monitoringPausedKey)
+        monitoringPaused = paused
         touch()
     }
 
