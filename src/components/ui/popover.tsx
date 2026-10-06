@@ -1,6 +1,7 @@
 import * as React from "react"
 import { cn } from "cn"
 import { Popover as PopoverPrimitive } from "radix-ui"
+import { preserveNewMenuFocus } from "@/lib/menu-focus"
 
 function Popover({
   ...props
@@ -18,6 +19,7 @@ function PopoverContent({
   className,
   align = "center",
   sideOffset = 4,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
   return (
@@ -31,6 +33,7 @@ function PopoverContent({
           className
         )}
         {...props}
+        onCloseAutoFocus={event => { preserveNewMenuFocus(event); onCloseAutoFocus?.(event) }}
       />
     </PopoverPrimitive.Portal>
   )

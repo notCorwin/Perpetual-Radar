@@ -164,7 +164,7 @@ final class RuleEditorUITests: XCTestCase {
     }
     @MainActor
     private func click(_ view: WKWebView, _ label: String) async throws {
-        _ = try await js(view, "(() => { const x = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === \(formulaQuote(label))); x?.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,button:0})); x?.click(); return true; })()")
+        _ = try await js(view, "(() => { const x = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))); if (!x) throw new Error('Missing button: ' + \(formulaQuote(label))); x.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,button:0})); x.click(); return true; })()")
         if label == "Formula" { try await wait(view, "document.querySelector('textarea') !== null") }
     }
     @MainActor
@@ -190,7 +190,7 @@ final class RuleEditorUITests: XCTestCase {
         const dispatched = performance.now() - start;
         let firstFrame = 0, animation = '', frames = 0;
         await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('Menu did not open')), 2000);
+          const timeout = setTimeout(() => reject(new Error('Menu did not open: ' + \(formulaQuote(selector)) + '; trigger=' + trigger.outerHTML + '; focus=' + document.activeElement?.outerHTML?.slice(0, 400) + '; menus=' + Array.from(document.querySelectorAll('[data-slot="popover-content"], [data-slot="select-content"]')).map(x => x.outerHTML.slice(0, 500)))), 2000);
           const frame = () => { const menu = \(predicate); frames += 1;
             if (!firstFrame) firstFrame = performance.now() - start;
             if (menu) animation = getComputedStyle(menu).animationDuration;
@@ -218,7 +218,7 @@ final class RuleEditorUITests: XCTestCase {
         try await input(view, "[cmdk-input]", key)
         try await wait(view, "Array.from(document.querySelectorAll('[cmdk-item]')).some(x => x.dataset.value?.endsWith(\(formulaQuote(" " + key))))")
         _ = try await js(view, "Array.from(document.querySelectorAll('[cmdk-item]')).find(x => x.dataset.value?.endsWith(\(formulaQuote(" " + key)))).click(); true")
-        try await wait(view, "document.querySelector('[aria-label=\"Left expression\"]')?.value === \(formulaQuote(key))")
+        try await wait(view, "document.querySelector('[data-expression-field=\"Left expression\"]')?.dataset.expressionSource === \(formulaQuote(key))")
         try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]') === null")
         return latency
     }
@@ -229,7 +229,7 @@ final class RuleEditorUITests: XCTestCase {
         let picker = "[data-expression-picker=\(formulaQuote(field))][data-state=\"open\"]"
         try await wait(view, "document.querySelector(\(formulaQuote(picker))) !== null")
         try await input(view, "\(picker) [cmdk-input]", choice)
-        let predicate = "Array.from(document.querySelector(\(formulaQuote(picker))).querySelectorAll('[cmdk-item]')).find(x => x.dataset.value?.toLowerCase().endsWith(\(formulaQuote(" " + choice.lowercased()))))"
+        let predicate = "Array.from(document.querySelector(\(formulaQuote(picker))).querySelectorAll('[cmdk-item]')).find(x => x.dataset.functionName?.toLowerCase() === \(formulaQuote(choice.lowercased())))"
         try await wait(view, "Boolean(\(predicate))")
         _ = try await js(view, "\(predicate).click(); true")
         try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]') === null")
@@ -282,7 +282,7 @@ final class RuleEditorUITests: XCTestCase {
         try await validDraft(view)
         try await input(view, "[aria-label=\"Right expression Left operand Window hours\"]", "")
         try await wait(view, "document.body.innerText.includes('Last valid preview remains active')")
-        let retained = try await js(view, "document.querySelector('[aria-label=\"Right expression Left operand Source expression\"]')?.value") as? String
+        let retained = try await js(view, "document.querySelector('[data-expression-field=\"Right expression Left operand Source expression\"]')?.dataset.expressionSource") as? String
         XCTAssertEqual(retained, "lag(Volume, 1)")
         try await input(view, "[aria-label=\"Right expression Left operand Window hours\"]", "20")
         try await validDraft(view)
@@ -303,7 +303,7 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Rules")
         _ = try await openMenu(view, selector: "[data-rule-kind=\"count\"] [aria-label=\"Wrap rule\"]"); try await option(view, "Remove wrapper")
         try await validDraft(view)
-        let source = try await js(view, "document.querySelector('[aria-label=\"Right expression\"]')?.value") as? String
+        let source = try await js(view, "document.querySelector('[data-expression-field=\"Right expression\"]')?.dataset.expressionSource") as? String
         XCTAssertEqual(source, "(mean(lag(Volume, 1), 20) * 2)")
         // Switching from a range to a crossing removes the inactive maximum control.
         _ = try await metric(view, "Close")
@@ -313,7 +313,7 @@ final class RuleEditorUITests: XCTestCase {
         _ = try await openMenu(view, selector: "[aria-label=\"Comparison\"]"); try await option(view, "Between (inclusive)")
         _ = try await openMenu(view, selector: "[data-rule-kind=\"condition\"] [aria-label=\"Rule type\"]"); try await option(view, "Crosses above")
         try await validDraft(view)
-        let crossingControls = try await js(view, "document.querySelector('[aria-label=\"Maximum expression\"]') === null && document.querySelector('[aria-label=\"Right expression\"]')?.value === 'EMA(480)'") as? Bool
+        let crossingControls = try await js(view, "document.querySelector('[data-expression-field=\"Maximum expression\"]') === null && document.querySelector('[data-expression-field=\"Right expression\"]')?.dataset.expressionSource === 'EMA(480)'") as? Bool
         XCTAssertEqual(crossingControls, true)
         _ = try await metric(view, "oiTrend")
         try await validDraft(view)
@@ -379,6 +379,11 @@ final class RuleEditorUITests: XCTestCase {
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
         bridge.pulseRows = true
+        for index in bridge.contexts.indices {
+            let hour = bridge.contexts[index].hour
+            bridge.contexts[index].stats[hour - 2 * hourMS] = .init(oi: 100_000_000, sell: nil, buy: nil)
+            bridge.contexts[index].stats[hour - hourMS] = .init(oi: 99_000_000 + Double(index % 3) * 1_000_000, sell: nil, buy: nil)
+        }
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
@@ -391,6 +396,7 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 500")
         let rendered = try await js(view, "document.querySelectorAll('tbody tr[data-market-index]').length") as? Int
         XCTAssertLessThan(try XCTUnwrap(rendered), 50, "Offscreen contracts should not delay menus.")
+        _ = try await view.callAsyncJavaScript("await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); return true;", arguments: [:], in: nil, contentWorld: .page)
         _ = try await js(view, "window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'}); true")
         try await wait(view, "document.querySelector('tr[data-market-index=\"499\"]') !== null")
         _ = try await js(view, "(() => { const row = document.querySelector('tr[data-market-index=\"499\"]'); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', {key:'Home',bubbles:true})); return true; })()")
@@ -411,23 +417,55 @@ final class RuleEditorUITests: XCTestCase {
         timings.append(try await openMenu(view, selector: "[aria-label=\"Rule type\"]"))
         try await option(view, "All (AND)")
         try await click(view, "Add condition")
-        timings.append(try await metric(view, "oiTrend"))
+        // Select OI entirely by its visible name and ordinary terminology, without entering a formula.
+        timings.append(try await openMenu(view, selector: "[aria-label=\"Choose Left expression\"]", popover: true))
+        let metricFirst = try await js(view, "(() => { const items = Array.from(document.querySelectorAll('[cmdk-item]')); return items.findIndex(x => x.dataset.metricKey === 'oiTrend') < items.findIndex(x => x.dataset.value === 'EMA EMA'); })()") as? Bool
+        XCTAssertEqual(metricFirst, true)
+        try await input(view, "[cmdk-input]", "Open interest trend")
+        try await wait(view, "document.querySelector('[cmdk-item][data-metric-key=\"oiTrend\"]')?.textContent.includes('OI Trend')")
+        _ = try await js(view, "document.querySelector('[cmdk-item][data-metric-key=\"oiTrend\"]').click(); true")
+        try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]') === null")
         try await wait(view, "document.querySelector('[aria-label=\"Right value\"]')?.textContent.includes('Rising') && Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 167")
+        let visualOI = try await js(view, "document.querySelector('[aria-label=\"Choose Left expression\"]')?.textContent === 'OI Trend' && document.querySelector('[aria-label=\"Left expression\"]') === null") as? Bool
+        XCTAssertEqual(visualOI, true, "A selected indicator should show its name, not require a formula input.")
         timings.append(try await openMenu(view, selector: "[aria-label=\"Comparison\"]"))
         let operators = try await js(view, "Array.from(document.querySelectorAll('[data-slot=\"select-item\"]')).map(x => x.textContent.trim())") as? [String]
         XCTAssertEqual(operators, ["Equals", "Does not equal", "Available", "Unavailable"])
-        try await option(view, "Equals")
+        let retainedMenu = try await view.callAsyncJavaScript("""
+        Array.from(document.querySelectorAll('[data-slot="select-item"]')).find(x => x.textContent.trim() === 'Equals').dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',bubbles:true}));
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        document.querySelector('[aria-label="Choose Left expression"]').click();
+        await new Promise(resolve => setTimeout(resolve, 250));
+        return Boolean(document.querySelector('[data-expression-picker="Left expression"][data-state="open"]')?.contains(document.activeElement));
+        """, arguments: [:], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(retainedMenu, true, "Closing the preceding select must not dismiss the next indicator menu.")
+        _ = try await js(view, "document.querySelector('[data-slot=\"popover-content\"]')?.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); true")
+        try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]') === null")
         for (label, count) in [("Falling", 166), ("Flat", 167), ("Rising", 167)] {
             timings.append(try await openMenu(view, selector: "[aria-label=\"Right value\"]"))
             try await option(view, label)
             try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === \(count) && !document.body.innerText.includes('Compiling…')")
         }
+        // Closed must use the last two completed OI readings, independently of the live direction.
+        _ = try await js(view, "Array.from(document.querySelector('[data-rule-kind=\"condition\"] [aria-label=\"Evaluation hour\"]').querySelectorAll('button')).find(x => x.textContent.trim() === 'Closed').click(); true")
+        try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 166")
+        try await screenshot(view, project.appendingPathComponent(".build/ui-qa/oi-trend-closed.png"))
+        _ = try await js(view, "Array.from(document.querySelector('[data-rule-kind=\"condition\"] [aria-label=\"Evaluation hour\"]').querySelectorAll('button')).find(x => x.textContent.trim() === 'Live').click(); true")
+        try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 167")
         try await screenshot(view, project.appendingPathComponent(".build/ui-qa/oi-trend-rules.png"))
         try await click(view, "Formula")
         try await wait(view, "document.querySelector('textarea')?.value.includes('oiTrend == \"rising\"')")
         try await click(view, "Rules")
         let restored = try await js(view, "document.querySelector('[aria-label=\"Right value\"]').textContent.includes('Rising')") as? Bool
         XCTAssertEqual(restored, true)
+        // Direct expression editing is optional and returning to the visual control preserves the rule.
+        try await click(view, "Edit Left expression formula")
+        try await wait(view, "document.activeElement?.getAttribute('aria-label') === 'Left expression'")
+        try await input(view, "[aria-label=\"Left expression\"]", "oiTrend")
+        try await click(view, "Use visual Left expression")
+        try await wait(view, "document.querySelector('[aria-label=\"Choose Left expression\"]')?.textContent === 'OI Trend' && document.querySelector('[aria-label=\"Left expression\"]') === null")
         timings.append(try await openMenu(view, selector: "[aria-label=\"Right value\"]"))
         try await option(view, "Custom expression…")
         try await input(view, "[aria-label=\"Right expression\"]", "emaTrend")
@@ -435,7 +473,7 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Formula")
         try await wait(view, "document.querySelector('textarea')?.value.includes('oiTrend == emaTrend')")
         try await click(view, "Rules")
-        let custom = try await js(view, "document.querySelector('[aria-label=\"Right expression\"]').value") as? String
+        let custom = try await js(view, "document.querySelector('[data-expression-field=\"Right expression\"]')?.dataset.expressionSource") as? String
         XCTAssertEqual(custom, "emaTrend")
         timings.append(try await openMenu(view, selector: "[aria-label=\"Right value\"]"))
         try await option(view, "Rising")
@@ -476,7 +514,7 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertEqual(bridge.radar.marketFilterCombinations.count, 1)
         try await input(view, "[aria-label=\"Combination name\"]", "Draft name not saved")
         try await click(view, "Rules")
-        try await wait(view, "Array.from(document.querySelectorAll('[aria-label=\"Left expression\"]')).some(x => x.value === 'relativeVolume')")
+        try await wait(view, "Array.from(document.querySelectorAll('[data-expression-field=\"Left expression\"]')).some(x => x.dataset.expressionSource === 'relativeVolume')")
         try await screenshot(view, project.appendingPathComponent(".build/ui-qa/rules-light.png"))
         try await click(view, "Formula")
         try await input(view, "textarea", "Close >", textarea: true)
