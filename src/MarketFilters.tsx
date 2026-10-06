@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { Check, ChevronDown, Code, Copy, Filter, Plus, Redo2, RotateCcw, Save, Trash2, Undo2, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ import { FilterRulePreview } from '@/FilterRulePreview'
 import { RuleLibrary } from '@/RuleLibrary'
 import { addLibraryRule, conditionLibrary, renameValueReferences, rulePath, topLevelSelection, visualPresets, type LibraryItem } from '@/filter-builder'
 import { functionCompletion, type ExpressionTemplate } from '@/filter-expression'
+import { filterConfigurationName, filterRuleSummary } from '@/filter-summary'
 import { cn } from '@/lib/utils'
 import { duplicateRule, emptyFilterConfig, findRule, newRuleID, parseFilterConfig, removeRule, ruleCount, updateRule, type EditorExpression, type FilterCombination, type FilterConfigV2, type FilterDraftRevision, type FilterEditorState, type FilterLibraryPreferences, type FilterMetric, type FilterTruth, type NativeMarketRow, type RuleNode } from '@/rule-engine'
 
@@ -44,6 +45,10 @@ export function MarketFilters(props: Props) {
   const draft = override ?? filters, dirty = override !== null || editor.source !== null || pendingName
   useEffect(() => () => window.clearTimeout(coalesceTimer.current), [])
   const selectedCombination = combinations.find(item => item.id === combinationId)
+  const activeFilters = useMemo(() => props.previewJSON ? parseFilterConfig(props.previewJSON) : filters, [props.previewJSON, filters])
+  const activeName = useMemo(() => filterConfigurationName(activeFilters, combinations, combinationId), [activeFilters, combinations, combinationId])
+  const activeSummary = useMemo(() => filterRuleSummary(activeFilters, metrics, props.expressions, props.templates), [activeFilters, metrics, props.expressions, props.templates])
+  const activeCount = ruleCount(activeFilters.root)
   const name = editor.combinationName?.id === combinationId ? editor.combinationName.value : selectedCombination?.name ?? ''
   const selectedRule = findRule(draft.root, editor.selectedRuleId ?? '') ?? (editor.source !== null ? firstCondition(draft.root) : draft.root)
   const guided = props.preferences.layout === 'guided'
@@ -93,7 +98,13 @@ export function MarketFilters(props: Props) {
     if (!typing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); travel(event.shiftKey ? 'redo' : 'undo') }
     if (!typing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'd') { event.preventDefault(); edit({ ...draft, root: duplicateRule(draft.root, selectedRule.id) }) }
   }}>
-    <div className="flex items-center gap-3"><CollapsibleTrigger asChild><Button variant="ghost" size="sm"><Filter data-icon="inline-start" aria-hidden="true" />Filters<ChevronDown data-icon="inline-end" aria-hidden="true" className={cn(!editor.open && '-rotate-90')} /></Button></CollapsibleTrigger><Badge variant="outline">{ruleCount(draft.root)} {ruleCount(draft.root) === 1 ? 'condition' : 'conditions'}</Badge><span className="text-xs text-muted-foreground" role="status">{props.matches} / {props.total} markets · {props.unknown} Unknown{props.compiling ? ' · Compiling…' : !props.valid ? ' · Invalid draft' : props.previewPending ? ' · Updating preview…' : dirty ? ' · Draft preview' : ' · Applied'}</span></div>
+    <div className="flex min-w-0 items-center gap-3" role="group" aria-label="Current filters" data-filter-summary>
+      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="shrink-0"><Filter data-icon="inline-start" aria-hidden="true" />Filters<ChevronDown data-icon="inline-end" aria-hidden="true" className={cn(!editor.open && '-rotate-90')} /></Button></CollapsibleTrigger>
+      <Badge variant="secondary" className="max-w-64" title={activeName} data-filter-name><span className="truncate">{activeName}</span></Badge>
+      <Badge variant="outline" data-filter-count>{activeCount} {activeCount === 1 ? 'condition' : 'conditions'}</Badge>
+      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={activeSummary} data-filter-rules>{activeSummary}</span>
+      <span className="shrink-0 text-xs text-muted-foreground" role="status">{props.matches} / {props.total} markets · {props.unknown} Unknown{props.compiling ? ' · Compiling…' : !props.valid ? ' · Invalid draft · Last valid preview' : props.previewPending ? ' · Updating preview…' : dirty ? ' · Draft preview' : ' · Applied'}</span>
+    </div>
     <CollapsibleContent className="pt-3"><fieldset disabled={saving} className="flex flex-col gap-4"><legend className="sr-only">Market filter editor</legend>
       <FieldGroup className="grid grid-cols-[20rem_20rem_auto_auto_auto_minmax(0,1fr)] items-end gap-3"><Field><FieldLabel>Saved combinations</FieldLabel><div className="flex items-center gap-1"><Select value={selectedCombination?.id ?? ''} onValueChange={load} disabled={!combinations.length}><SelectTrigger className="w-full" aria-label="Saved combinations"><SelectValue placeholder="Choose a combination…" /></SelectTrigger><SelectContent position="popper"><SelectGroup>{combinations.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select><Button type="button" variant="ghost" size="icon" disabled={!selectedCombination} aria-label="Reload selected combination" onClick={() => { if (selectedCombination) load(selectedCombination.id) }}><RotateCcw aria-hidden="true" /></Button></div></Field>
         <Field><FieldLabel>Combination name</FieldLabel><Input value={name} maxLength={80} aria-label="Combination name" placeholder="Name this combination…" onChange={event => onEditorChange(current => ({ ...current, combinationName: { id: combinationId, value: event.target.value } }))} /></Field><Button type="button" variant="outline" disabled={!props.valid || pendingName || !name.trim()} onClick={() => { void perform(async () => { await props.onSaveCombination(name.trim(), draft); onEditorChange(current => ({ ...current, combinationName: null })) }, 'Combination saved. Apply filters to confirm.') }}><Save data-icon="inline-start" aria-hidden="true" />{combinations.some(item => item.name.toLowerCase() === name.trim().toLowerCase()) ? 'Update combination' : 'Save combination'}</Button><Button type="button" variant="ghost" disabled={!selectedCombination} aria-label="Delete combination" onClick={() => { if (selectedCombination) void perform(async () => { await props.onDeleteCombination(selectedCombination.id); onEditorChange(current => ({ ...current, combinationName: null })) }, 'Combination deleted; current rules remain.') }}><Trash2 aria-hidden="true" /></Button>

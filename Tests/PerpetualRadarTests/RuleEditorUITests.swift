@@ -642,6 +642,7 @@ final class RuleEditorUITests: XCTestCase {
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        try await wait(view, "document.querySelector('[data-filter-summary] [data-slot=\"collapsible-trigger\"]')?.getAttribute('aria-expanded') === 'false' && document.querySelector('[aria-label=\"Combination name\"]') === null && document.querySelector('[data-filter-rules]')?.textContent.includes('24h turnover')")
         try await screenshot(view, project.appendingPathComponent(".build/ui-qa/markets-light.png"))
         try await click(view, "Filters")
         try await wait(view, "document.querySelector('[aria-label=\"Combination name\"]') !== null")
@@ -652,6 +653,10 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Save combination")
         try await wait(view, "document.body.innerText.includes('Combination saved')")
         XCTAssertEqual(bridge.radar.marketFilterCombinations.count, 1)
+        try await click(view, "Filters")
+        try await wait(view, "document.querySelector('[data-filter-name]')?.textContent === 'Unsaved draft' && document.querySelector('[data-filter-count]')?.textContent === '1 condition' && document.querySelector('[data-filter-rules]')?.textContent.includes('Relative Volume > 2') && document.querySelector('[aria-label=\"Combination name\"]') === null")
+        try await screenshot(view, project.appendingPathComponent(".build/ui-qa/filters-collapsed-light.png"))
+        try await click(view, "Filters")
         try await input(view, "[aria-label=\"Combination name\"]", "Draft name not saved")
         try await click(view, "Rules")
         try await wait(view, "Array.from(document.querySelectorAll('[data-expression-field=\"Left expression\"]')).some(x => x.dataset.expressionSource === 'relativeVolume')")
@@ -659,6 +664,7 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Formula")
         try await input(view, "textarea", "Close >", textarea: true)
         try await wait(view, "document.body.innerText.includes('Last valid preview remains active')")
+        try await wait(view, "document.querySelector('[data-filter-name]')?.textContent === 'Unsaved draft' && document.querySelector('[data-filter-rules]')?.textContent.includes('Relative Volume > 2')")
         let retained = try await js(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount)") as? Int
         XCTAssertEqual(retained, 500)
         let disabled = try await js(view, "Array.from(document.querySelectorAll('button')).filter(x => ['Apply filters','Save combination'].includes(x.textContent.trim())).every(x => x.disabled)") as? Bool
@@ -684,6 +690,7 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertEqual(count, 500)
         try await click(view, "Apply filters")
         try await wait(view, "document.body.innerText.includes('Filters applied and saved')")
+        try await wait(view, "document.querySelector('[data-filter-name]')?.textContent === 'Custom filters' && document.querySelector('[data-filter-rules]')?.textContent === 'Candle close > 0'")
         try await input(view, "textarea", "closed(spread > 0)", textarea: true)
         try await wait(view, "document.body.innerText.includes('500 Unknown')")
         try await click(view, "Explain markets")
