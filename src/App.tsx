@@ -168,6 +168,7 @@ function App() {
   const valid = !compiling && compilation.diagnostics.length === 0 && Boolean(compilation.configJSON)
   useLayoutEffect(() => {
     document.documentElement.dataset.frostedBackground = String(frostedBackgroundEnabled)
+    document.documentElement.dataset.translucentBackground = String(frostedBackgroundEnabled && frostedBackgroundOpacity < 1)
     document.documentElement.style.setProperty("--window-background-opacity", String(frostedBackgroundEnabled ? frostedBackgroundOpacity : 1))
   }, [frostedBackgroundEnabled, frostedBackgroundOpacity])
   const acceptSnapshot = (snapshot: Snapshot) => {

@@ -68,7 +68,9 @@
 :root {
     color-scheme: light;
     --window-background-opacity: 0.3;
-    --window-background: color-mix(in srgb, var(--background) calc(var(--window-background-opacity) * 100%), transparent);
+    --frosted-background-tint: #282c34;
+    --window-background-tint: var(--background);
+    --window-background: color-mix(in srgb, var(--window-background-tint) calc(var(--window-background-opacity) * 100%), transparent);
     --control-height: 32px;
     --control-height-sm: 28px;
     --control-height-xs: 24px;
@@ -181,6 +183,14 @@
         --sidebar-accent-foreground: oklch(0.94 0.01 260);
         --sidebar-border: oklch(0.32 0.014 260 / 55%);
         --sidebar-ring: #56b4e9;
+    }
+
+    :root[data-translucent-background="true"] {
+        --window-background-tint: var(--frosted-background-tint);
+        --foreground: #fff;
+        --card: var(--frosted-background-tint);
+        --card-foreground: var(--foreground);
+        --muted-foreground: oklch(0.82 0.01 260);
     }
 }
 

@@ -3,6 +3,17 @@ import XCTest
 @testable import PerpetualRadar
 
 final class FrostedBackgroundTests: XCTestCase {
+    func testDarkIsTheDefaultAppearanceWithoutReplacingAnExistingChoice() throws {
+        let suite = "FrostedAppearanceTests-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(AppDelegate.preferredAppearance(in: defaults), "dark")
+        for choice in ["light", "system", "dark"] {
+            defaults.set(choice, forKey: "appearance")
+            XCTAssertEqual(AppDelegate.preferredAppearance(in: defaults), choice)
+        }
+    }
+
     @MainActor
     private func withDatabase(_ body: (URL, UserDefaults, String) throws -> Void) throws {
         let suite = "FrostedBackgroundTests-\(UUID())"

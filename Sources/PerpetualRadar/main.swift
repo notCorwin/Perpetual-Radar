@@ -28,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         defaults.object(forKey: automaticUpdatesKey) as? Bool ?? true
     }
 
+    nonisolated static func preferredAppearance(in defaults: UserDefaults = .standard) -> String {
+        defaults.string(forKey: "appearance") ?? "dark"
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.environment["PERPETUAL_RADAR_UPDATE_ROLLBACK"] == "1" {
             automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60)
@@ -84,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "Perpetual Radar"
-        applyAppearance(UserDefaults.standard.string(forKey: "appearance") ?? "system")
+        applyAppearance(Self.preferredAppearance())
         window.minSize = NSSize(width: 400, height: 300)
         windowBackground = WindowBackgroundView(contentView: webView)
         window.contentView = windowBackground

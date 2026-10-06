@@ -61,6 +61,10 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         }
         if request["chartInstId"] != nil { replyHandler(["bars": [], "revision": revision, "error": "Fixture chart"], nil); return }
         do {
+            if request["frostedBackgroundEnabled"] != nil || request["frostedBackgroundOpacity"] != nil {
+                _ = try radar.setFrostedBackground(enabled: request["frostedBackgroundEnabled"] as? Bool, opacity: request["frostedBackgroundOpacity"] as? Double)
+                revision += 1
+            }
             if let json = request["marketFiltersJSON"] as? String { _ = try radar.setMarketFiltersJSON(json); revision += 1 }
             if let saved = request["saveMarketFilterCombination"] as? [String: String] { _ = try radar.saveMarketFilterCombination(name: saved["name"]!, filtersJSON: saved["filtersJSON"]!); revision += 1 }
             if let selected = request["selectedMarketFilterCombinationID"] as? String { _ = try radar.setSelectedMarketFilterCombinationID(selected); revision += 1 }
@@ -79,6 +83,75 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
 }
 
 final class RuleEditorUITests: XCTestCase {
+    @MainActor
+    func testGlassTintAndAppearanceChangesKeepTheBackgroundAndContentSeparate() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.setValue(false, forKey: "drawsBackground")
+        view.underPageBackgroundColor = .clear
+        let background = WindowBackgroundView(contentView: view)
+        window.contentView = background
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.orderBack(nil)
+        background.apply(enabled: true, opacity: 0.3, to: window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375 && document.documentElement.dataset.translucentBackground === 'true'")
+        let pixels = """
+        (() => {
+          const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+          const context = canvas.getContext('2d');
+          const read = color => { context.clearRect(0,0,1,1); context.fillStyle = color; context.fillRect(0,0,1,1); return Array.from(context.getImageData(0,0,1,1).data); };
+          const style = getComputedStyle(document.body);
+          return { tint: read(style.backgroundColor), text: read(style.color), contentOpacity: style.opacity, card: read(getComputedStyle(document.documentElement).getPropertyValue('--card')) };
+        })()
+        """
+        let glassResult = try await js(view, pixels)
+        let glass = try XCTUnwrap(glassResult as? [String: Any])
+        let tint = try XCTUnwrap(glass["tint"] as? [Int])
+        // Canvas round-trips translucent sRGB through premultiplied storage.
+        for (actual, expected) in zip(tint, [40, 44, 52, 77]) { XCTAssertLessThanOrEqual(abs(actual - expected), 2) }
+        XCTAssertEqual(glass["text"] as? [Int], [255, 255, 255, 255])
+        XCTAssertEqual(glass["contentOpacity"] as? String, "1")
+        XCTAssertEqual(glass["card"] as? [Int], [40, 44, 52, 255], "Copied charts must have a matching opaque tint behind white text.")
+        // A controlled blue backdrop makes white washing visible in the artifact.
+        _ = try await js(view, "document.documentElement.style.background = 'linear-gradient(100deg, #123d50, #6a8e9e, #164352)'; true")
+        try await screenshot(view, project.appendingPathComponent(".build/ui-qa/glass-dark-backdrop.png"))
+        try await click(view, "Settings")
+        try await wait(view, "document.querySelector('#background-opacity') !== null")
+        try await input(view, "#background-opacity", "1")
+        _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
+        try await wait(view, "document.documentElement.dataset.translucentBackground === 'false' && document.documentElement.style.getPropertyValue('--window-background-opacity') === '1'")
+        let solidResult = try await js(view, pixels)
+        let solid = try XCTUnwrap(solidResult as? [String: Any])
+        XCTAssertEqual((solid["tint"] as? [Int])?.last, 255)
+        XCTAssertLessThan((solid["tint"] as? [Int])?.first ?? 255, 40, "Full opacity restores the solid Dark palette.")
+        try await input(view, "#background-opacity", "0.3")
+        _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
+        try await wait(view, "document.documentElement.dataset.translucentBackground === 'true'")
+        _ = try await js(view, "document.querySelector('#frosted-background').click(); true")
+        try await wait(view, "document.documentElement.dataset.frostedBackground === 'false'")
+        let disabled = try await js(view, pixels) as? [String: Any]
+        XCTAssertEqual(disabled?["tint"] as? [Int], solid["tint"] as? [Int])
+        _ = try await js(view, "document.querySelector('#frosted-background').click(); true")
+        try await wait(view, "document.documentElement.dataset.translucentBackground === 'true'")
+        window.appearance = NSAppearance(named: .aqua)
+        try await wait(view, "!window.matchMedia('(prefers-color-scheme: dark)').matches")
+        let lightResult = try await js(view, pixels)
+        let light = try XCTUnwrap(lightResult as? [String: Any])
+        XCTAssertGreaterThan((light["tint"] as? [Int])?.first ?? 0, 240, "An explicitly chosen Light appearance keeps its light tint.")
+        XCTAssertLessThan((light["text"] as? [Int])?.first ?? 255, 40)
+        window.appearance = NSAppearance(named: .darkAqua)
+        try await wait(view, "window.matchMedia('(prefers-color-scheme: dark)').matches")
+        let restored = try await js(view, pixels) as? [String: Any]
+        XCTAssertEqual(restored?["tint"] as? [Int], tint)
+    }
+
     @MainActor
     private func js(_ view: WKWebView, _ script: String) async throws -> Any? { try await view.evaluateJavaScript(script) }
     @MainActor
