@@ -85,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         webView.setValue(false, forKey: "drawsBackground")
         webView.underPageBackgroundColor = .clear
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.title = "Perpetual Radar"
         applyAppearance(Self.preferredAppearance())
@@ -162,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // Keep the document-start settings current for wake and WebKit process reloads.
         controller.removeAllUserScripts()
         controller.addUserScript(WKUserScript(
-            source: "window.radarAppearance = { frostedBackgroundEnabled: \(enabled), frostedBackgroundOpacity: \(opacity) };",
+            source: "window.radarAppearance = { frostedBackgroundEnabled: \(enabled), frostedBackgroundOpacity: \(opacity), nativeWindowBackground: true };",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
@@ -280,6 +280,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let parameters = message.body as? [String: Any] else { replyHandler(nil, "Invalid request"); return }
+        if let requested = parameters["windowTintRGB"] {
+            guard let rgb = requested as? [Double], windowBackground.setTint(rgb: rgb) else { replyHandler(nil, "Invalid window tint"); return }
+            replyHandler(["ok": true], nil)
+            return
+        }
         if let request = parameters["compileMarketFilters"] as? [String: Any] {
             replyHandler(radar?.compileMarketFilters(request) ?? ["diagnostics": [startupError.isEmpty ? "Collector is starting." : startupError]], nil)
             return

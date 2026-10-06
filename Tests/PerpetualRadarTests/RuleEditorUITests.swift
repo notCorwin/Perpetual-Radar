@@ -17,6 +17,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var previewDelay: UInt64 = 0
     var pulseRows = false
     var pulse = 0.0
+    weak var windowBackground: WindowBackgroundView?
+    var windowTintRGB: [Double] = []
     let worker = FilterEvaluationWorker()
     init(root: URL) throws {
         self.root = root; suite = "RuleUI-\(UUID())"
@@ -40,6 +42,12 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     func snapshot() -> [String: Any] { var result = radar.snapshot(rocPeriod: 9, marocPeriod: 9); result["rows"] = rows; result["revision"] = revision; return result }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let request = message.body as! [String: Any]
+        if let rgb = request["windowTintRGB"] as? [Double] {
+            guard windowBackground?.setTint(rgb: rgb) == true else { replyHandler(nil, "Invalid window tint"); return }
+            windowTintRGB = rgb
+            replyHandler(["ok": true], nil)
+            return
+        }
         if let compile = request["compileMarketFilters"] as? [String: Any] { replyHandler(radar.compileMarketFilters(compile), nil); return }
         if let preview = request["previewMarketFilters"] as? [String: String] {
             var original = snapshot()
@@ -63,6 +71,9 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         do {
             if request["frostedBackgroundEnabled"] != nil || request["frostedBackgroundOpacity"] != nil {
                 _ = try radar.setFrostedBackground(enabled: request["frostedBackgroundEnabled"] as? Bool, opacity: request["frostedBackgroundOpacity"] as? Double)
+                if let background = windowBackground, let window = background.window {
+                    background.apply(enabled: radar.frostedBackgroundEnabled, opacity: radar.frostedBackgroundOpacity, to: window)
+                }
                 revision += 1
             }
             if let json = request["marketFiltersJSON"] as? String { _ = try radar.setMarketFiltersJSON(json); revision += 1 }
@@ -90,38 +101,44 @@ final class RuleEditorUITests: XCTestCase {
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        configuration.userContentController.addUserScript(WKUserScript(source: "window.radarAppearance = { frostedBackgroundEnabled: true, frostedBackgroundOpacity: 0.3, nativeWindowBackground: true };", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.setValue(false, forKey: "drawsBackground")
         view.underPageBackgroundColor = .clear
         let background = WindowBackgroundView(contentView: view)
+        bridge.windowBackground = background
         window.contentView = background
         window.appearance = NSAppearance(named: .darkAqua)
-        window.orderBack(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         background.apply(enabled: true, opacity: 0.3, to: window)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
-        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375 && document.documentElement.dataset.translucentBackground === 'true'")
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375 && document.documentElement.dataset.nativeWindowBackground === 'true'")
         let pixels = """
         (() => {
           const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
           const context = canvas.getContext('2d');
           const read = color => { context.clearRect(0,0,1,1); context.fillStyle = color; context.fillRect(0,0,1,1); return Array.from(context.getImageData(0,0,1,1).data); };
           const style = getComputedStyle(document.body);
-          return { tint: read(style.backgroundColor), text: read(style.color), contentOpacity: style.opacity, card: read(getComputedStyle(document.documentElement).getPropertyValue('--card')) };
+          return { tint: read(getComputedStyle(document.documentElement).getPropertyValue('--window-background-tint')), bodyFill: read(style.backgroundColor), text: read(style.color), contentOpacity: style.opacity, card: read(getComputedStyle(document.documentElement).getPropertyValue('--card')) };
         })()
         """
         let glassResult = try await js(view, pixels)
         let glass = try XCTUnwrap(glassResult as? [String: Any])
         let tint = try XCTUnwrap(glass["tint"] as? [Int])
-        // Canvas round-trips translucent sRGB through premultiplied storage.
-        for (actual, expected) in zip(tint, [40, 44, 52, 77]) { XCTAssertLessThanOrEqual(abs(actual - expected), 2) }
+        XCTAssertEqual(tint, [40, 44, 52, 255])
+        XCTAssertEqual(glass["bodyFill"] as? [Int], [0, 0, 0, 0], "WebKit must not tint the native surface a second time.")
+        XCTAssertEqual(bridge.windowTintRGB, [40 / 255.0, 44 / 255.0, 52 / 255.0])
+        let nativeTintView = background.subviews[1]
+        XCTAssertEqual(nativeTintView.frame, background.bounds)
+        XCTAssertEqual(view.frame, background.convert(window.contentLayoutRect, from: nil))
+        let nativeFill = try XCTUnwrap(NSColor(cgColor: try XCTUnwrap(nativeTintView.layer?.backgroundColor))?.usingColorSpace(.sRGB))
+        XCTAssertEqual(nativeFill.alphaComponent, 0.3, accuracy: 1e-6)
         XCTAssertEqual(glass["text"] as? [Int], [255, 255, 255, 255])
         XCTAssertEqual(glass["contentOpacity"] as? String, "1")
         XCTAssertEqual(glass["card"] as? [Int], [40, 44, 52, 255], "Copied charts must have a matching opaque tint behind white text.")
-        // A controlled blue backdrop makes white washing visible in the artifact.
-        _ = try await js(view, "document.documentElement.style.background = 'linear-gradient(100deg, #123d50, #6a8e9e, #164352)'; true")
-        try await screenshot(view, project.appendingPathComponent(".build/ui-qa/glass-dark-backdrop.png"))
         try await click(view, "Settings")
         try await wait(view, "document.querySelector('#background-opacity') !== null")
         try await input(view, "#background-opacity", "1")
@@ -130,6 +147,9 @@ final class RuleEditorUITests: XCTestCase {
         let solidResult = try await js(view, pixels)
         let solid = try XCTUnwrap(solidResult as? [String: Any])
         XCTAssertEqual((solid["tint"] as? [Int])?.last, 255)
+        XCTAssertEqual(solid["bodyFill"] as? [Int], [0, 0, 0, 0])
+        XCTAssertEqual(nativeTintView.layer?.backgroundColor?.alpha, 1)
+        try await waitForTint(bridge, rgb: try XCTUnwrap(solid["tint"] as? [Int]).prefix(3).map { Double($0) / 255 })
         XCTAssertLessThan((solid["tint"] as? [Int])?.first ?? 255, 40, "Full opacity restores the solid Dark palette.")
         try await input(view, "#background-opacity", "0.3")
         _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
@@ -144,26 +164,44 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "!window.matchMedia('(prefers-color-scheme: dark)').matches")
         let lightResult = try await js(view, pixels)
         let light = try XCTUnwrap(lightResult as? [String: Any])
+        XCTAssertEqual(light["bodyFill"] as? [Int], [0, 0, 0, 0])
         XCTAssertGreaterThan((light["tint"] as? [Int])?.first ?? 0, 240, "An explicitly chosen Light appearance keeps its light tint.")
         XCTAssertLessThan((light["text"] as? [Int])?.first ?? 255, 40)
+        try await waitForTint(bridge, rgb: try XCTUnwrap(light["tint"] as? [Int]).prefix(3).map { Double($0) / 255 })
         window.appearance = NSAppearance(named: .darkAqua)
         try await wait(view, "window.matchMedia('(prefers-color-scheme: dark)').matches")
         let restored = try await js(view, pixels) as? [String: Any]
         XCTAssertEqual(restored?["tint"] as? [Int], tint)
+        try await waitForTint(bridge, rgb: [40 / 255.0, 44 / 255.0, 52 / 255.0])
+        // Reloads must restore the native capability and re-send the design token.
+        view.reload()
+        try await wait(view, "document.documentElement.dataset.nativeWindowBackground === 'true' && Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        let reloaded = try await js(view, pixels) as? [String: Any]
+        XCTAssertEqual(reloaded?["bodyFill"] as? [Int], [0, 0, 0, 0])
+        try await waitForTint(bridge, rgb: [40 / 255.0, 44 / 255.0, 52 / 255.0])
     }
 
     @MainActor
     private func js(_ view: WKWebView, _ script: String) async throws -> Any? { try await view.evaluateJavaScript(script) }
     @MainActor
+    private func waitForTint(_ bridge: RuleUIBridge, rgb: [Double]) async throws {
+        let deadline = Date().addingTimeInterval(2)
+        while bridge.windowTintRGB != rgb && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(bridge.windowTintRGB, rgb)
+    }
+    @MainActor
     private func wait(_ view: WKWebView, _ predicate: String, seconds: Double = 12) async throws {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline { if try await js(view, predicate) as? Bool == true { return }; try await Task.sleep(nanoseconds: 50_000_000) }
         let body = try await js(view, "document.body.innerText") as? String ?? ""
+        let diagnostics = try await js(view, "JSON.stringify({dialogs:Array.from(document.querySelectorAll('[role=dialog]')).map(x=>({state:x.dataset.state,animation:getComputedStyle(x).animationName,opacity:getComputedStyle(x).opacity,animations:x.getAnimations().map(a=>({state:a.playState,time:a.currentTime}))})),visibility:document.visibilityState,height:innerHeight,scrollY,documentHeight:document.documentElement.scrollHeight})") as? String ?? ""
+        print("UI diagnostics: \(diagnostics)")
         XCTFail("UI timed out: \(predicate)\n\(body.prefix(1500))")
         throw FilterError("UI predicate failed.")
     }
     @MainActor
     private func click(_ view: WKWebView, _ label: String) async throws {
+        try await wait(view, "Array.from(document.querySelectorAll('button')).some(x => (x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))) && !x.disabled && x.getBoundingClientRect().height > 0)")
         _ = try await js(view, "(() => { const x = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))); if (!x) throw new Error('Missing button: ' + \(formulaQuote(label))); x.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,button:0})); x.click(); return true; })()")
         if label == "Formula" { try await wait(view, "document.querySelector('textarea') !== null") }
     }
@@ -181,6 +219,7 @@ final class RuleEditorUITests: XCTestCase {
 
     @MainActor
     private func openMenu(_ view: WKWebView, selector: String, popover: Bool = false) async throws -> Double {
+        try await wait(view, "(() => { const x = document.querySelector(\(formulaQuote(selector))); return Boolean(x && !x.disabled && x.getBoundingClientRect().height > 0); })()")
         let predicate = popover ? "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]')" : "document.querySelector('[data-slot=\"select-content\"][data-state=\"open\"]')"
         let script = """
         const trigger = document.querySelector(\(formulaQuote(selector)));
@@ -396,8 +435,7 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 500")
         let rendered = try await js(view, "document.querySelectorAll('tbody tr[data-market-index]').length") as? Int
         XCTAssertLessThan(try XCTUnwrap(rendered), 50, "Offscreen contracts should not delay menus.")
-        _ = try await view.callAsyncJavaScript("await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); return true;", arguments: [:], in: nil, contentWorld: .page)
-        _ = try await js(view, "window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'}); true")
+        _ = try await view.callAsyncJavaScript("await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'}); return true;", arguments: [:], in: nil, contentWorld: .page)
         try await wait(view, "document.querySelector('tr[data-market-index=\"499\"]') !== null")
         _ = try await js(view, "(() => { const row = document.querySelector('tr[data-market-index=\"499\"]'); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', {key:'Home',bubbles:true})); return true; })()")
         try await wait(view, "document.activeElement?.dataset.marketIndex === '0'")
@@ -498,7 +536,7 @@ final class RuleEditorUITests: XCTestCase {
         configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
-        window.contentView = view; window.appearance = NSAppearance(named: .aqua); window.orderFront(nil)
+        window.contentView = view; window.appearance = NSAppearance(named: .aqua); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")

@@ -38,10 +38,11 @@ type NativeBridge = {
   postMessage(request: { explainMarketFilters: { instId: string; filtersJSON: string; token: string } }): Promise<ExplainResponse>
   postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { captureChart: { x: number; y: number; width: number; height: number; backgroundRGB: number[] } }): Promise<{ ok: boolean }>
+  postMessage(request: { windowTintRGB: number[] }): Promise<{ ok: boolean }>
   postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number; chartEndHour?: number }): Promise<ChartPollResponse>
 }
 declare global {
-  interface Window { radarAppearance?: WindowAppearance; webkit: { messageHandlers: { radar: NativeBridge } } }
+  interface Window { radarAppearance?: WindowAppearance & { nativeWindowBackground?: boolean }; webkit: { messageHandlers: { radar: NativeBridge } } }
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
@@ -170,6 +171,21 @@ function App() {
     document.documentElement.dataset.frostedBackground = String(frostedBackgroundEnabled)
     document.documentElement.dataset.translucentBackground = String(frostedBackgroundEnabled && frostedBackgroundOpacity < 1)
     document.documentElement.style.setProperty("--window-background-opacity", String(frostedBackgroundEnabled ? frostedBackgroundOpacity : 1))
+    if (!window.radarAppearance?.nativeWindowBackground) return
+    document.documentElement.dataset.nativeWindowBackground = "true"
+    const updateTint = () => {
+      const canvas = document.createElement("canvas")
+      canvas.width = canvas.height = 1
+      const context = canvas.getContext("2d")!
+      context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--window-background-tint")
+      context.fillRect(0, 0, 1, 1)
+      const rgb = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(value => value / 255)
+      void window.webkit.messageHandlers.radar.postMessage({ windowTintRGB: rgb }).catch(() => {})
+    }
+    const theme = window.matchMedia("(prefers-color-scheme: dark)")
+    updateTint()
+    theme.addEventListener("change", updateTint)
+    return () => theme.removeEventListener("change", updateTint)
   }, [frostedBackgroundEnabled, frostedBackgroundOpacity])
   const acceptSnapshot = (snapshot: Snapshot) => {
     if (snapshot.revision < revision.current) return false

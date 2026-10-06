@@ -148,7 +148,7 @@ final class FrostedBackgroundTests: XCTestCase {
     func testNativeBackgroundTogglesWithoutFadingOrResizingContent() async throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let content = NSView()
@@ -156,6 +156,8 @@ final class FrostedBackgroundTests: XCTestCase {
         window.contentView = background
         window.orderBack(nil)
         let effect = try XCTUnwrap(background.subviews.first as? NSVisualEffectView)
+        let tint = background.subviews[1]
+        XCTAssertTrue(background.setTint(rgb: [40 / 255.0, 44 / 255.0, 52 / 255.0]))
         XCTAssertEqual(effect.blendingMode, .behindWindow)
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
@@ -171,11 +173,59 @@ final class FrostedBackgroundTests: XCTestCase {
                     XCTAssertEqual(try XCTUnwrap(window.backgroundColor).alphaComponent, transparent ? 0.001 : 1, accuracy: 1e-6)
                     XCTAssertTrue(effect.isHidden, "A second material tint must not cover the WindowServer blur")
                     XCTAssertEqual(effect.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]), appearance)
-                    XCTAssertEqual(content.frame, background.bounds)
+                    XCTAssertEqual(tint.frame, background.bounds, "The same tint must cover the native titlebar and all content.")
+                    XCTAssertEqual(content.frame, background.convert(window.contentLayoutRect, from: nil))
+                    XCTAssertLessThan(content.frame.maxY, background.bounds.maxY, "WebKit must not cover the titlebar or traffic lights.")
+                    XCTAssertTrue(window.titlebarAppearsTransparent)
+                    XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+                    let fill = try XCTUnwrap(NSColor(cgColor: try XCTUnwrap(tint.layer?.backgroundColor))?.usingColorSpace(.sRGB))
+                    XCTAssertEqual(fill.redComponent, 40 / 255.0, accuracy: 1e-6)
+                    XCTAssertEqual(fill.greenComponent, 44 / 255.0, accuracy: 1e-6)
+                    XCTAssertEqual(fill.blueComponent, 52 / 255.0, accuracy: 1e-6)
+                    XCTAssertEqual(fill.alphaComponent, enabled ? opacity : 1, accuracy: 1e-6)
+                    XCTAssertNil(tint.hitTest(NSPoint(x: 100, y: background.bounds.maxY - 10)))
+                    for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+                        XCTAssertFalse(try XCTUnwrap(window.standardWindowButton(button)).isHidden)
+                    }
                     XCTAssertFalse(content.isHidden)
                     XCTAssertEqual(content.alphaValue, 1)
                 }
             }
+        }
+    }
+
+    @MainActor
+    func testNativeTitlebarAndContentRenderTheSameTint() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let background = WindowBackgroundView(contentView: NSView())
+        window.contentView = background
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.orderBack(nil)
+        XCTAssertTrue(background.setTint(rgb: [40 / 255.0, 44 / 255.0, 52 / 255.0]))
+        XCTAssertTrue(background.apply(enabled: true, opacity: 0.3, to: window))
+        background.layoutSubtreeIfNeeded()
+        let frame = try XCTUnwrap(background.superview)
+        let bitmap = try XCTUnwrap(frame.bitmapImageRepForCachingDisplay(in: frame.bounds))
+        frame.cacheDisplay(in: frame.bounds, to: bitmap)
+        let titlebar = try XCTUnwrap(bitmap.colorAt(x: 110, y: 10)?.usingColorSpace(.sRGB))
+        let content = try XCTUnwrap(bitmap.colorAt(x: 110, y: 110)?.usingColorSpace(.sRGB))
+        XCTAssertEqual(titlebar.redComponent, content.redComponent, accuracy: 2 / 255.0)
+        XCTAssertEqual(titlebar.greenComponent, content.greenComponent, accuracy: 2 / 255.0)
+        XCTAssertEqual(titlebar.blueComponent, content.blueComponent, accuracy: 2 / 255.0)
+        XCTAssertEqual(titlebar.alphaComponent, content.alphaComponent, accuracy: 2 / 255.0)
+        XCTAssertGreaterThan(titlebar.alphaComponent, 0.25, "A clear titlebar must still receive the shared tint.")
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let file = project.appendingPathComponent(".build/ui-qa/native-titlebar-tint.png")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: file)
+        let previous = try XCTUnwrap(background.subviews[1].layer?.backgroundColor)
+        for rgb in [[], [0.1, 0.2], [0.1, 0.2, 0.3, 0.4], [-0.1, 0, 0], [0, 1.1, 0], [.nan, 0, 0], [0, .infinity, 0]] {
+            XCTAssertFalse(background.setTint(rgb: rgb))
+            XCTAssertEqual(background.subviews[1].layer?.backgroundColor, previous)
         }
     }
 

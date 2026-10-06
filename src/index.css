@@ -198,6 +198,10 @@
     --chart-surface: var(--card);
 }
 
+:root[data-native-window-background="true"] {
+    --window-background: transparent;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50 tabular-nums;
