@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type SetStateAction } from 'react'
+import { useRef, useState, type Dispatch, type DragEvent, type SetStateAction } from 'react'
 import { ArrowDown, ArrowUp, ChevronDown, Copy, GripVertical, Plus, Square, SquareCheck, Trash2, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -30,11 +30,12 @@ function CategoryValueInput(props: ExpressionInputProps) {
     {expression && <ExpressionInput {...props} />}
   </FieldGroup>
 }
+export type RuleDropTarget = { parent: string; index: number; into?: boolean }
 export type RuleTreeContext = {
   config: FilterConfigV2; edit: (config: FilterConfigV2, selectedId?: string) => void; select: (id: string) => void; selectedId: string
   metrics: FilterMetric[]; units: Record<string, string>; expressions: Record<string, EditorExpression>; templates: ExpressionTemplate[]
   editor: FilterEditorState; setEditor: Dispatch<SetStateAction<FilterEditorState>>; disabled: boolean; guided: boolean
-  dragging: string | null; setDragging: (id: string | null) => void; drop: { parent: string; index: number } | null; setDrop: (drop: { parent: string; index: number } | null) => void
+  dragging: string | null; setDragging: (id: string | null) => void; drop: RuleDropTarget | null; setDrop: (drop: RuleDropTarget | null) => void
   rememberExpression: (expression: EditorExpression) => void
 }
 function changeRule(tree: RuleTreeContext, node: RuleNode, next: Partial<RuleNode>) { tree.edit({ ...tree.config, root: updateRule(tree.config.root, node.id, n => ({ ...n, ...next })) }) }
@@ -110,23 +111,45 @@ export function RuleInspector({ node, tree }: { node: RuleNode; tree: RuleTreeCo
   </FieldSet>
 }
 export function RuleOutline({ node, parent, index = 0, tree }: { node: RuleNode; parent?: RuleNode; index?: number; tree: RuleTreeContext }) {
+  const card = useRef<HTMLDivElement>(null)
   const selected = tree.selectedId === node.id, folded = tree.editor.collapsed[node.id] ?? false
   const body = bodyPresentation(node), wrappedLeaf = timeWrapper(node) && node.children.length === 1 && (['condition', 'crossup', 'crossdown'].includes(node.children[0].kind) || bodyPresentation(node.children[0]))
   const showChildren = node.children.length > 0 && ((!body && !wrappedLeaf) || !selected && Boolean(findRule(node, tree.selectedId)))
   const move = (direction: number) => { if (parent) tree.edit({ ...tree.config, root: moveRule(tree.config.root, node.id, parent.id, direction > 0 ? index + 2 : index - 1) }) }
-  return <div className="relative" data-rule-outline-id={node.id} onDragOver={event => {
-    if (!tree.dragging || !parent) return
+  const targetAt = (event: DragEvent<HTMLDivElement>): RuleDropTarget | null => {
+    const bounds = card.current?.getBoundingClientRect(), heading = card.current?.firstElementChild?.getBoundingClientRect()
+    if (!bounds || !heading) return null
+    const edge = heading.height / 4
+    if (canReceiveChildren(node) && (!parent || event.clientY > bounds.top + edge && event.clientY < bounds.bottom - edge)) return { parent: node.id, index: node.children.length, into: true }
+    return parent ? { parent: parent.id, index: index + (event.clientY > bounds.top + bounds.height / 2 ? 1 : 0) } : null
+  }
+  const movedRoot = (target: RuleDropTarget | null) => tree.dragging && !tree.disabled && target ? moveRule(tree.config.root, tree.dragging, target.parent, target.index) : tree.config.root
+  const finishDrag = () => { tree.setDragging(null); tree.setDrop(null) }
+  const dragOver = (event: DragEvent<HTMLDivElement>, target: RuleDropTarget | null) => {
+    if (!tree.dragging) return
+    event.stopPropagation()
+    if (!target || movedRoot(target) === tree.config.root) { event.dataTransfer.dropEffect = 'none'; tree.setDrop(null); return }
+    event.preventDefault(); event.dataTransfer.dropEffect = 'move'
+    if (tree.drop?.parent !== target.parent || tree.drop.index !== target.index || tree.drop.into !== target.into) tree.setDrop(target)
+  }
+  const drop = (event: DragEvent<HTMLDivElement>, target: RuleDropTarget | null) => {
+    if (!tree.dragging) return
     event.preventDefault(); event.stopPropagation()
-    const bounds = event.currentTarget.getBoundingClientRect(), gap = index + (event.clientY > bounds.top + bounds.height / 2 ? 1 : 0)
-    if (moveRule(tree.config.root, tree.dragging, parent.id, gap) !== tree.config.root) tree.setDrop({ parent: parent.id, index: gap })
-  }} onDrop={event => {
-    if (!tree.dragging || !tree.drop) return
-    event.preventDefault(); event.stopPropagation(); tree.edit({ ...tree.config, root: moveRule(tree.config.root, tree.dragging, tree.drop.parent, tree.drop.index) }); tree.setDragging(null); tree.setDrop(null)
+    const root = movedRoot(target)
+    if (target && root !== tree.config.root) {
+      tree.edit({ ...tree.config, root }, tree.dragging)
+      tree.setEditor(current => ({ ...current, collapsed: { ...current.collapsed, [target.parent]: false } }))
+    }
+    finishDrag()
+  }
+  const receiving = Boolean(tree.drop?.into && tree.drop.parent === node.id)
+  return <div className={cn('relative', tree.dragging && 'select-none')} data-rule-outline-id={node.id} onDragOver={event => dragOver(event, targetAt(event))} onDrop={event => drop(event, targetAt(event))} onDragEnd={finishDrag} onDragLeave={event => {
+    if (tree.dragging && (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget))) tree.setDrop(null)
   }}>
-    {parent && tree.drop?.parent === parent.id && tree.drop.index === index && <div data-surface="inherited" data-filter-insertion-line aria-hidden="true" className="pointer-events-none absolute inset-x-0 -top-1 h-0.5 bg-primary" />}
-    <div data-surface="panel" className={cn('flex flex-col gap-2 rounded-lg border bg-card p-2', selected && 'border-selection-border bg-state-selection', tree.dragging === node.id && 'opacity-50')}>
+    {parent && !tree.drop?.into && tree.drop?.parent === parent.id && tree.drop.index === index && <div data-surface="inherited" data-filter-insertion-line aria-hidden="true" className="pointer-events-none absolute inset-x-0 -top-1 h-0.5 bg-primary" />}
+    <div ref={card} data-surface="panel" data-filter-drop-target={receiving ? '' : undefined} inert={tree.dragging === node.id} className={cn('flex flex-col gap-2 rounded-lg border bg-card p-2', (selected || receiving) && 'border-selection-border bg-state-selection', tree.dragging === node.id && 'opacity-50')}>
       <div className="flex items-start gap-1">
-        {parent && <Button type="button" variant="ghost" size="icon" draggable={!tree.disabled} aria-label={`Move ${node.name || 'rule'}`} title="Drag between groups; ArrowUp / ArrowDown to reorder" onDragStart={event => { event.stopPropagation(); event.dataTransfer.setData('text/plain', node.id); event.dataTransfer.effectAllowed = 'move'; tree.setDragging(node.id) }} onDragEnd={() => { tree.setDragging(null); tree.setDrop(null) }} onKeyDown={event => { if (['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); move(event.key === 'ArrowUp' ? -1 : 1) } }}><GripVertical aria-hidden="true" /></Button>}
+        {parent && <Button type="button" variant="ghost" size="icon" draggable={!tree.disabled} aria-label={`Move ${node.name || 'rule'}`} title="Drag onto a group to move inside; drag to an edge or use ArrowUp / ArrowDown to reorder" onDragStart={event => { event.stopPropagation(); event.dataTransfer.setData('text/plain', node.id); event.dataTransfer.effectAllowed = 'move'; tree.setDrop(null); tree.setDragging(node.id) }} onKeyDown={event => { if (['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); move(event.key === 'ArrowUp' ? -1 : 1) } }}><GripVertical aria-hidden="true" /></Button>}
         <Button type="button" variant="ghost" className="h-auto min-w-0 flex-1 justify-start whitespace-normal text-left" aria-label={`Edit ${ruleSentence(node, tree.metrics, tree.expressions, tree.templates)}`} aria-pressed={selected} onClick={() => tree.select(node.id)}><span className="min-w-0"><span className="block">{node.name && `${parent?.kind === 'sequence' ? `${index + 1}. ` : ''}${humanName(node.name)} · `}{ruleSentence(node, tree.metrics, tree.expressions, tree.templates)}</span><span className="block text-xs text-muted-foreground">{anchorOffset(tree.config.root, node.id) > 0 ? `Closed anchor · −${anchorOffset(tree.config.root, node.id)}h` : 'Live hour'}{parent?.kind === 'sequence' && index > 0 && ` · gap ≤ ${node.gapHours}h`}</span></span></Button>
         {parent && <Button type="button" variant="ghost" size="icon" aria-label={`Select ${node.name || 'rule'} for bulk editing`} aria-pressed={tree.editor.selectedIds.includes(node.id)} onClick={() => tree.setEditor(current => ({ ...current, selectedIds: current.selectedIds.includes(node.id) ? current.selectedIds.filter(id => id !== node.id) : [...current.selectedIds, node.id] }))}>{tree.editor.selectedIds.includes(node.id) ? <SquareCheck aria-hidden="true" /> : <Square aria-hidden="true" />}</Button>}
         {showChildren && <Button type="button" variant="ghost" size="icon" aria-label={folded ? 'Expand rule' : 'Collapse rule'} aria-expanded={!folded} onClick={() => tree.setEditor(current => ({ ...current, collapsed: { ...current.collapsed, [node.id]: !folded } }))}><ChevronDown aria-hidden="true" className={cn(folded && '-rotate-90')} /></Button>}
@@ -135,6 +158,7 @@ export function RuleOutline({ node, parent, index = 0, tree }: { node: RuleNode;
       {selected && tree.guided && <div className="border-t p-2"><RuleInspector node={node} tree={tree} /></div>}
     </div>
     {showChildren && !folded && <div className="ml-3 mt-2 flex flex-col gap-2 border-l pl-3">{node.children.map((child, childIndex) => <RuleOutline key={child.id} node={child} parent={node} index={childIndex} tree={tree} />)}</div>}
-    {canReceiveChildren(node) && tree.dragging && <div className="mt-2 rounded-md border border-dashed p-2 text-xs text-muted-foreground" onDragOver={event => { if (moveRule(tree.config.root, tree.dragging!, node.id, node.children.length) !== tree.config.root) { event.preventDefault(); event.stopPropagation(); tree.setDrop({ parent: node.id, index: node.children.length }) } }} onDrop={event => { event.preventDefault(); event.stopPropagation(); tree.edit({ ...tree.config, root: moveRule(tree.config.root, tree.dragging!, node.id, node.children.length) }); tree.setDragging(null); tree.setDrop(null) }}>Drop into this group</div>}
+    {canReceiveChildren(node) && tree.dragging && movedRoot({ parent: node.id, index: node.children.length, into: true }) !== tree.config.root && <div data-surface="inherited" data-filter-drop-group={node.id} className="mt-2 rounded-md border border-dashed p-2 text-xs text-muted-foreground" onDragOver={event => dragOver(event, { parent: node.id, index: node.children.length, into: true })} onDrop={event => drop(event, { parent: node.id, index: node.children.length, into: true })}>Drop into this group</div>}
+    {parent && index === parent.children.length - 1 && !tree.drop?.into && tree.drop?.parent === parent.id && tree.drop.index === index + 1 && <div data-surface="inherited" data-filter-insertion-line aria-hidden="true" className="pointer-events-none absolute inset-x-0 -bottom-1 h-0.5 bg-primary" />}
   </div>
 }

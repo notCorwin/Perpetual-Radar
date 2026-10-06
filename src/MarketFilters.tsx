@@ -15,7 +15,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { FilterNameInput } from '@/FilterNameInput'
 import { ExpressionInput } from '@/FilterExpressionInput'
-import { RuleInspector, RuleOutline, RulePicker, type RuleTreeContext } from '@/FilterRuleEditor'
+import { RuleInspector, RuleOutline, RulePicker, type RuleDropTarget, type RuleTreeContext } from '@/FilterRuleEditor'
 import { FilterRulePreview } from '@/FilterRulePreview'
 import { RuleLibrary } from '@/RuleLibrary'
 import { addLibraryRule, conditionLibrary, renameValueReferences, rulePath, topLevelSelection, visualPresets, type LibraryItem } from '@/filter-builder'
@@ -40,7 +40,7 @@ export function MarketFilters(props: Props) {
   const formulaInput = useRef<HTMLTextAreaElement>(null), lastEdit = useRef(''), coalesceTimer = useRef<number | undefined>(undefined)
   const [completionOpen, setCompletionOpen] = useState(false), [libraryOpen, setLibraryOpen] = useState(false)
   const [saving, setSaving] = useState(false), [saveError, setSaveError] = useState(''), [feedback, setFeedback] = useState('')
-  const [dragging, setDragging] = useState<string | null>(null), [drop, setDrop] = useState<{ parent: string; index: number } | null>(null)
+  const [dragging, setDragging] = useState<string | null>(null), [drop, setDrop] = useState<RuleDropTarget | null>(null)
   const pendingName = Object.keys(editor.nameDrafts).length > 0
   const draft = override ?? filters, dirty = override !== null || editor.source !== null || pendingName
   useEffect(() => () => window.clearTimeout(coalesceTimer.current), [])

@@ -605,6 +605,144 @@ final class RuleEditorUITests: XCTestCase {
     }
 
     @MainActor
+    private func startRuleDrag(_ view: WKWebView, source: String) async throws {
+        _ = try await js(view, """
+        (() => {
+          const node = document.querySelector('[data-rule-outline-id="\(source)"]');
+          const handle = node.querySelector('button[draggable="true"]');
+          window.radarRuleDrag = new DataTransfer();
+          handle.dispatchEvent(new DragEvent('dragstart', {bubbles:true, cancelable:true, dataTransfer:window.radarRuleDrag}));
+          return true;
+        })()
+        """)
+        try await wait(view, "getComputedStyle(document.querySelector('[data-rule-outline-id=\"\(source)\"] > [data-surface=\"panel\"]')).opacity === '0.5'")
+    }
+
+    @MainActor
+    private func ruleDragEvent(_ view: WKWebView, type: String, target: String, position: Double = 0.5) async throws -> Bool {
+        let result = try await js(view, """
+        (() => {
+          const node = document.querySelector('[data-rule-outline-id="\(target)"]');
+          const heading = node.querySelector(':scope > [data-surface="panel"]').firstElementChild;
+          const bounds = heading.getBoundingClientRect();
+          const event = new DragEvent('\(type)', {bubbles:true, cancelable:true, dataTransfer:window.radarRuleDrag,
+            clientX:bounds.left + bounds.width / 2, clientY:bounds.top + bounds.height * \(position)});
+          heading.dispatchEvent(event);
+          return event.defaultPrevented;
+        })()
+        """)
+        return result as? Bool == true
+    }
+
+    @MainActor
+    private func ruleChildIDs(_ view: WKWebView, parent: String) async throws -> [String] {
+        let result = try await js(view, """
+        (() => {
+          const parent = document.querySelector('[data-rule-outline-id="\(parent)"]');
+          return Array.from(parent.querySelectorAll('[data-rule-outline-id]'))
+            .filter(child => child.parentElement.closest('[data-rule-outline-id]') === parent).map(child => child.dataset.ruleOutlineId);
+        })()
+        """)
+        return try XCTUnwrap(result as? [String])
+    }
+
+    @MainActor
+    func testDraggingConditionsAcrossGroupCards() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 1100), configuration: configuration)
+        window.contentView = view; present(window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "document.querySelector('table[data-market-count]') !== null")
+        try await click(view, "Filters")
+        let parentIs = { (child: String, parent: String) in "document.querySelector('[data-rule-outline-id=\"\(child)\"]').parentElement.closest('[data-rule-outline-id]').dataset.ruleOutlineId === '\(parent)'" }
+        for layout in ["Sentence rows", "Guided cards"] {
+            try await click(view, "Reset draft"); try await click(view, "Formula")
+            try await input(view, "textarea", "all(all(Price > 100, RSI(14) > 40), any(Volume > 10, Price < 200))", textarea: true)
+            try await validDraft(view); try await click(view, "Rules"); try await click(view, layout)
+            let rootResult = try await js(view, "document.querySelector('[data-rule-outline-id]').dataset.ruleOutlineId")
+            let root = try XCTUnwrap(rootResult as? String), groups = try await ruleChildIDs(view, parent: root)
+            let origin = groups[0], target = groups[1]
+            let originChildren = try await ruleChildIDs(view, parent: origin), targetChildren = try await ruleChildIDs(view, parent: target)
+            let source = originChildren[0]
+            // Drop onto a selected group card, including its taller guided inspector.
+            _ = try await js(view, "document.querySelector('[data-rule-outline-id=\"\(target)\"] button[aria-label^=\"Edit \"]').click(); true")
+            try await startRuleDrag(view, source: source)
+            let accepted = try await ruleDragEvent(view, type: "dragover", target: target)
+            XCTAssertTrue(accepted, layout)
+            try await wait(view, "document.querySelector('[data-rule-outline-id=\"\(target)\"] > [data-filter-drop-target]') !== null")
+            _ = try await ruleDragEvent(view, type: "drop", target: target)
+            try await wait(view, parentIs(source, target)); try await validDraft(view)
+            try await click(view, "Undo filter edit"); try await wait(view, parentIs(source, origin))
+            try await click(view, "Redo filter edit"); try await wait(view, parentIs(source, target))
+            // Row edges still insert before and after siblings, including the final row.
+            try await startRuleDrag(view, source: source)
+            _ = try await ruleDragEvent(view, type: "dragover", target: targetChildren[0], position: 0.1)
+            _ = try await ruleDragEvent(view, type: "drop", target: targetChildren[0], position: 0.1)
+            var ordered = try await ruleChildIDs(view, parent: target)
+            XCTAssertEqual(ordered, [source] + targetChildren, layout)
+            try await startRuleDrag(view, source: source)
+            _ = try await ruleDragEvent(view, type: "dragover", target: targetChildren[1], position: 0.9)
+            try await wait(view, "document.querySelector('[data-rule-outline-id=\"\(targetChildren[1])\"] > [data-filter-insertion-line]') !== null")
+            _ = try await ruleDragEvent(view, type: "drop", target: targetChildren[1], position: 0.9)
+            ordered = try await ruleChildIDs(view, parent: target)
+            XCTAssertEqual(ordered, targetChildren + [source], layout)
+            try await startRuleDrag(view, source: source)
+            _ = try await ruleDragEvent(view, type: "dragover", target: originChildren[1], position: 0.1)
+            _ = try await ruleDragEvent(view, type: "drop", target: originChildren[1], position: 0.1)
+            try await wait(view, parentIs(source, origin))
+            ordered = try await ruleChildIDs(view, parent: origin)
+            XCTAssertEqual(ordered, originChildren, layout)
+            // Collapsed groups accept the drop and reveal the moved condition.
+            _ = try await js(view, "document.querySelector('[data-rule-outline-id=\"\(target)\"] button[aria-label=\"Collapse rule\"]').click(); true")
+            try await wait(view, "document.querySelector('[data-rule-outline-id=\"\(target)\"]').querySelectorAll('[data-rule-outline-id]').length === 0")
+            try await startRuleDrag(view, source: source)
+            _ = try await ruleDragEvent(view, type: "dragover", target: target)
+            _ = try await ruleDragEvent(view, type: "drop", target: target)
+            try await wait(view, parentIs(source, target)); try await validDraft(view)
+            try await click(view, "Undo filter edit"); try await wait(view, parentIs(source, origin))
+            // A newly added empty group becomes valid once it receives a condition.
+            _ = try await js(view, "document.querySelector('[data-rule-outline-id=\"\(root)\"] button[aria-label^=\"Edit \"]').click(); true")
+            try await click(view, "Add group")
+            let withEmpty = try await ruleChildIDs(view, parent: root), empty = try XCTUnwrap(withEmpty.last)
+            try await startRuleDrag(view, source: source)
+            _ = try await ruleDragEvent(view, type: "dragover", target: empty)
+            _ = try await ruleDragEvent(view, type: "drop", target: empty)
+            try await wait(view, parentIs(source, empty)); try await validDraft(view)
+            // Invalid descendant targets clear feedback and cannot use a stale valid destination.
+            try await startRuleDrag(view, source: empty)
+            _ = try await ruleDragEvent(view, type: "dragover", target: target)
+            try await wait(view, "document.querySelector('[data-filter-drop-target]') !== null")
+            let invalid = try await ruleDragEvent(view, type: "dragover", target: source)
+            XCTAssertFalse(invalid, layout)
+            try await wait(view, "document.querySelector('[data-filter-drop-target], [data-filter-insertion-line]') === null")
+            _ = try await ruleDragEvent(view, type: "dragover", target: target)
+            try await wait(view, "document.querySelector('[data-filter-drop-target]') !== null")
+            _ = try await ruleDragEvent(view, type: "drop", target: source)
+            try await wait(view, parentIs(empty, root)); try await wait(view, parentIs(source, empty))
+            try await wait(view, "document.querySelector('[data-filter-drop-group], [data-filter-drop-target], [data-filter-insertion-line]') === null")
+            // Rejected drops add no undo revision; cancelling a drag leaves the tree unchanged.
+            try await click(view, "Undo filter edit"); try await wait(view, parentIs(source, origin))
+            try await click(view, "Redo filter edit"); try await wait(view, parentIs(source, empty))
+            try await startRuleDrag(view, source: source)
+            _ = try await ruleDragEvent(view, type: "dragover", target: target)
+            _ = try await ruleDragEvent(view, type: "dragend", target: source)
+            try await wait(view, "document.querySelector('[data-filter-drop-group], [data-filter-drop-target]') === null")
+            try await wait(view, parentIs(source, empty)); try await validDraft(view)
+            try await click(view, "Apply filters")
+            try await wait(view, "document.body.innerText.includes('Filters applied and saved.')")
+            let saved = try FilterConfigV2.decode(bridge.radar.marketFiltersV2JSON)
+            let moved = saved.root.children.first(where: { $0.id == empty })?.children.first
+            XCTAssertEqual(moved?.id, source, layout); XCTAssertEqual(moved?.left, "Price", layout); XCTAssertEqual(moved?.right, "100", layout)
+        }
+    }
+
+    @MainActor
     func testVisualFunctionCoverageRelativeVolumeCountTextAndCrossingControls() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
