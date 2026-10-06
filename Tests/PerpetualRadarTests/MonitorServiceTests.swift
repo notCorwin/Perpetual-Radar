@@ -31,20 +31,50 @@ final class MonitorServiceTests: XCTestCase {
 
     @MainActor
     func testPackagedMonitorSurvivesQuitNotifiesReopensPausesAndQuitsCompletely() async throws {
+        try await checkPackagedMonitorLifecycle(preferencesMatchBundleIdentifier: false)
+    }
+
+    @MainActor
+    func testPackagedInterfaceStartsWithItsOwnPreferencesDomain() async throws {
+        try await checkPackagedMonitorLifecycle(preferencesMatchBundleIdentifier: true)
+    }
+
+    @MainActor
+    private func checkPackagedMonitorLifecycle(preferencesMatchBundleIdentifier: Bool) async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["RADAR_SERVICE_TESTS"] == "1", "Run after packaging with RADAR_SERVICE_TESTS=1; every process remains in the background.")
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let app = root.appendingPathComponent(".build/app/Perpetual Radar.app")
+        var app = root.appendingPathComponent(".build/app/Perpetual Radar.app")
         let channel = UUID().uuidString, name = "com.perpetualradar.monitor.\(getuid()).\(channel)"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(channel)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let suite = "RadarServiceTests.\(channel)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         var processes: [Process] = []
         var monitorPID: Int32?
         defer {
             processes.filter(\.isRunning).forEach { $0.terminate() }
             if let monitorPID { kill(monitorPID, SIGTERM) }
-            UserDefaults(suiteName: "RadarServiceTests.\(channel)")?.removePersistentDomain(forName: "RadarServiceTests.\(channel)")
+            defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: directory)
         }
+        if preferencesMatchBundleIdentifier {
+            // Mirror the production app's own preference domain without touching real settings.
+            let isolatedApp = directory.appendingPathComponent("Perpetual Radar.app")
+            try FileManager.default.copyItem(at: app, to: isolatedApp)
+            app = isolatedApp
+            let plistURL = app.appendingPathComponent("Contents/Info.plist")
+            var plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), options: [], format: nil) as? [String: Any])
+            plist["CFBundleIdentifier"] = suite
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
+            let signer = Process()
+            signer.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+            signer.arguments = ["--force", "--sign", "-", app.path]
+            signer.standardOutput = FileHandle.nullDevice; signer.standardError = FileHandle.nullDevice
+            try signer.run(); signer.waitUntilExit()
+            XCTAssertEqual(signer.terminationStatus, 0)
+        }
+        defaults.set(false, forKey: "AutomaticallyInstallUpdates")
+        defaults.set(false, forKey: AppUpdater.backgroundRelaunchKey)
         func launch(helper: Bool) throws -> Process {
             let process = Process()
             let bundle = helper ? app.appendingPathComponent("Contents/Library/LoginItems/Perpetual Radar Monitor.app") : app
@@ -77,6 +107,7 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertNotNil(NSImage(systemSymbolName: MonitorDelegate.symbolName, accessibilityDescription: nil))
         XCTAssertEqual(info["menuSymbol"] as? String, "dot.radiowaves.left.and.right")
         XCTAssertEqual(info["appPath"] as? String, app.path)
+        XCTAssertEqual(info["automaticUpdatesEnabled"] as? Bool, false, "The helper must read the interface's existing preferences.")
         let config = try FilterCompiler.compile(source: "Close > 105").config.json
         let saved = try await request(["marketFiltersJSON": config, "frostedBackgroundOpacity": 0.55])
         XCTAssertEqual(saved["filterConfigJSON"] as? String, config)
@@ -86,6 +117,7 @@ final class MonitorServiceTests: XCTestCase {
         _ = try await request(["testQuitUI": true])
         try await wait { !ui.isRunning }
         XCTAssertEqual(ui.terminationStatus, 0)
+        XCTAssertTrue(defaults.bool(forKey: AppUpdater.backgroundRelaunchKey), "Interface writes must use the shared preference domain.")
         _ = try await request(["testPrice": 110.0])
         try await wait { ((try await request(["serviceInfo": true]))["delivered"] as? [[String: String]])?.count == 1 }
         _ = try await request(["testPrice": 100.0])

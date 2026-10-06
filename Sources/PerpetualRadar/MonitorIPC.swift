@@ -8,7 +8,13 @@ enum MonitorRuntime {
     static let testChannel = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_TEST_CHANNEL"]
     static let portName = "com.perpetualradar.monitor.\(getuid())\(testChannel.map { ".\($0)" } ?? "")"
     static let quitUI = Notification.Name(portName + ".quit-ui")
-    static var defaults: UserDefaults { UserDefaults(suiteName: testChannel.map { "RadarServiceTests.\($0)" } ?? "com.perpetualradar.macos")! }
+    static var defaults: UserDefaults {
+        let suite = testChannel.map { "RadarServiceTests.\($0)" } ?? "com.perpetualradar.macos"
+        // Foundation rejects an explicit suite matching the running app's bundle ID.
+        // The interface already uses this domain; the helper opens it as a shared suite.
+        if suite == Bundle.main.bundleIdentifier { return .standard }
+        return UserDefaults(suiteName: suite)!
+    }
     static var appURL: URL {
         if Bundle.main.bundleIdentifier == helperIdentifier {
             return Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
