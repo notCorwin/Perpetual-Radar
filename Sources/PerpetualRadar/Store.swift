@@ -2,25 +2,40 @@ import Foundation
 import CSQLite
 
 final class Store {
+    private static let busyTimeoutMilliseconds: Int32 = 5_000
     private var db: OpaquePointer?
     let url: URL
 
     init(url: URL) throws {
         self.url = url
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
-        try execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS market_filter_combinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE, filters_json TEXT NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, open REAL, PRIMARY KEY(inst_id,hour))")
-        try execute("CREATE TABLE IF NOT EXISTS ema200 (inst_id TEXT PRIMARY KEY, hour INTEGER, value REAL)")
-        try execute("CREATE TABLE IF NOT EXISTS chart_stats (inst_id TEXT, hour INTEGER, oi REAL, sell REAL, buy REAL, PRIMARY KEY(inst_id,hour))")
-        try execute("CREATE INDEX IF NOT EXISTS candles_hour ON candles(hour)")
-        try execute("CREATE INDEX IF NOT EXISTS chart_stats_hour ON chart_stats(hour)")
-        // Existing Python caches may predate base_volume.
-        if !columns("candles").contains("base_volume") { try execute("ALTER TABLE candles ADD COLUMN base_volume REAL") }
-        if !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
-        if !columns("market_filter_combinations").contains("filters_v2_json") { try execute("ALTER TABLE market_filter_combinations ADD COLUMN filters_v2_json TEXT") }
-        try execute("CREATE TABLE IF NOT EXISTS hourly_quotes (inst_id TEXT, hour INTEGER, turnover REAL, spread REAL, quote_timestamp INTEGER NOT NULL, PRIMARY KEY(inst_id,hour))")
+        do {
+            guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
+            // Radar and both history loaders use independent actor-owned connections.
+            // WAL lets readers proceed during writes; competing writers wait briefly.
+            guard sqlite3_busy_timeout(db, Self.busyTimeoutMilliseconds) == SQLITE_OK else { throw failure() }
+            try enableWriteAheadLogging()
+            // Recheck the schema only after taking the write lock so connections
+            // cannot race to add the same legacy column.
+            try transaction {
+                try execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS market_filter_combinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE, filters_json TEXT NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, open REAL, PRIMARY KEY(inst_id,hour))")
+                try execute("CREATE TABLE IF NOT EXISTS ema200 (inst_id TEXT PRIMARY KEY, hour INTEGER, value REAL)")
+                try execute("CREATE TABLE IF NOT EXISTS chart_stats (inst_id TEXT, hour INTEGER, oi REAL, sell REAL, buy REAL, PRIMARY KEY(inst_id,hour))")
+                try execute("CREATE INDEX IF NOT EXISTS candles_hour ON candles(hour)")
+                try execute("CREATE INDEX IF NOT EXISTS chart_stats_hour ON chart_stats(hour)")
+                // Existing Python caches may predate base_volume.
+                if try !columns("candles").contains("base_volume") { try execute("ALTER TABLE candles ADD COLUMN base_volume REAL") }
+                if try !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
+                if try !columns("market_filter_combinations").contains("filters_v2_json") { try execute("ALTER TABLE market_filter_combinations ADD COLUMN filters_v2_json TEXT") }
+                try execute("CREATE TABLE IF NOT EXISTS hourly_quotes (inst_id TEXT, hour INTEGER, turnover REAL, spread REAL, quote_timestamp INTEGER NOT NULL, PRIMARY KEY(inst_id,hour))")
+            }
+        } catch {
+            sqlite3_close(db)
+            db = nil
+            throw error
+        }
     }
 
     deinit { sqlite3_close(db) }
@@ -33,6 +48,41 @@ final class Store {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { throw failure() }
         return stmt
+    }
+
+    private func readRows(_ stmt: OpaquePointer, _ read: () -> Void) throws {
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            read()
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+    }
+
+    private func enableWriteAheadLogging() throws {
+        // Journal-mode upgrades can bypass SQLite's busy handler. Retry after
+        // finalizing the statement to release our own read lock between attempts.
+        // Use one deadline rather than restarting a full busy timeout on each try.
+        guard sqlite3_busy_timeout(db, 0) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_busy_timeout(db, Self.busyTimeoutMilliseconds) }
+        let deadline = ProcessInfo.processInfo.systemUptime + Double(Self.busyTimeoutMilliseconds) / 1_000
+        while true {
+            do {
+                let stmt = try statement("PRAGMA journal_mode=WAL")
+                defer { sqlite3_finalize(stmt) }
+                var mode = ""
+                try readRows(stmt) { mode = String(cString: sqlite3_column_text(stmt, 0)) }
+                guard mode == "wal" else {
+                    throw NSError(domain: "SQLite", code: Int(SQLITE_ERROR),
+                                  userInfo: [NSLocalizedDescriptionKey: "Cannot enable SQLite write-ahead logging."])
+                }
+                return
+            } catch let error as NSError where error.domain == "SQLite" && error.code == Int(SQLITE_BUSY) {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { throw error }
+                Thread.sleep(forTimeInterval: min(0.01, remaining))
+            }
+        }
     }
 
     private func bind(_ values: [Any?], to stmt: OpaquePointer) {
@@ -54,11 +104,11 @@ final class Store {
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
     }
 
-    private func columns(_ table: String) -> Set<String> {
-        guard let stmt = try? statement("PRAGMA table_info(\(table))") else { return [] }
+    private func columns(_ table: String) throws -> Set<String> {
+        let stmt = try statement("PRAGMA table_info(\(table))")
         defer { sqlite3_finalize(stmt) }
         var names = Set<String>()
-        while sqlite3_step(stmt) == SQLITE_ROW { names.insert(String(cString: sqlite3_column_text(stmt, 1))) }
+        try readRows(stmt) { names.insert(String(cString: sqlite3_column_text(stmt, 1))) }
         return names
     }
 
@@ -99,15 +149,12 @@ final class Store {
         let stmt = try statement("SELECT id,name,filters_json,filters_v2_json FROM market_filter_combinations ORDER BY name COLLATE NOCASE")
         defer { sqlite3_finalize(stmt) }
         var result: [MarketFilterCombination] = []
-        var status = sqlite3_step(stmt)
-        while status == SQLITE_ROW {
+        try readRows(stmt) {
             result.append(MarketFilterCombination(id: String(cString: sqlite3_column_text(stmt, 0)),
                                                  name: String(cString: sqlite3_column_text(stmt, 1)),
                                                  filtersJSON: String(cString: sqlite3_column_text(stmt, 2)),
                                                  filtersV2JSON: sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 3))))
-            status = sqlite3_step(stmt)
         }
-        guard status == SQLITE_DONE else { throw failure() }
         return result
     }
 
@@ -142,7 +189,7 @@ final class Store {
         let stmt = try statement("SELECT hour,turnover,spread,quote_timestamp FROM hourly_quotes WHERE inst_id=? AND hour>=? AND hour<=?")
         defer { sqlite3_finalize(stmt) }; bind([id, since, through], to: stmt)
         var result: [Int64: FilterQuote] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        try readRows(stmt) {
             result[sqlite3_column_int64(stmt, 0)] = FilterQuote(turnover: sqlite3_column_type(stmt, 1) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 1),
                 spread: sqlite3_column_type(stmt, 2) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 2), timestamp: sqlite3_column_int64(stmt, 3))
         }
@@ -154,15 +201,15 @@ final class Store {
         let candleStmt = try statement("SELECT inst_id,hour,high,low,close,volume,base_volume,open FROM candles WHERE hour >= ? AND hour < ?")
         defer { sqlite3_finalize(candleStmt) }
         bind([hour - Int64(candleLookback) * hourMS, hour], to: candleStmt)
-        while sqlite3_step(candleStmt) == SQLITE_ROW {
+        try readRows(candleStmt) {
             let id = String(cString: sqlite3_column_text(candleStmt, 0))
-            guard ids.contains(id) else { continue }
+            guard ids.contains(id) else { return }
             let ts = sqlite3_column_int64(candleStmt, 1)
             candles[id, default: [:]][ts] = Candle(hour: ts, high: sqlite3_column_double(candleStmt, 2), low: sqlite3_column_double(candleStmt, 3), close: sqlite3_column_double(candleStmt, 4), quoteVolume: sqlite3_column_double(candleStmt, 5), baseVolume: sqlite3_column_type(candleStmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(candleStmt, 6), open: sqlite3_column_type(candleStmt, 7) == SQLITE_NULL ? nil : sqlite3_column_double(candleStmt, 7))
         }
         let emaStmt = try statement("SELECT inst_id,hour,value FROM ema200")
         defer { sqlite3_finalize(emaStmt) }
-        while sqlite3_step(emaStmt) == SQLITE_ROW {
+        try readRows(emaStmt) {
             let id = String(cString: sqlite3_column_text(emaStmt, 0))
             if ids.contains(id) { ema[id] = (sqlite3_column_int64(emaStmt, 1), sqlite3_column_double(emaStmt, 2)) }
         }
@@ -176,13 +223,8 @@ final class Store {
 
     func saveCandles(_ id: String, _ bars: [Candle]) throws {
         guard !bars.isEmpty else { return }
-        try execute("BEGIN IMMEDIATE")
-        do {
+        try transaction {
             for bar in bars { try save(id, bar) }
-            try execute("COMMIT")
-        } catch {
-            try? execute("ROLLBACK")
-            throw error
         }
     }
 
@@ -191,13 +233,10 @@ final class Store {
         defer { sqlite3_finalize(stmt) }
         bind([id, since, through], to: stmt)
         var result: [Int64: Candle] = [:]
-        var status = sqlite3_step(stmt)
-        while status == SQLITE_ROW {
+        try readRows(stmt) {
             let ts = sqlite3_column_int64(stmt, 0)
             result[ts] = Candle(hour: ts, high: sqlite3_column_double(stmt, 1), low: sqlite3_column_double(stmt, 2), close: sqlite3_column_double(stmt, 3), quoteVolume: sqlite3_column_double(stmt, 4), baseVolume: sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 5), open: sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 6))
-            status = sqlite3_step(stmt)
         }
-        guard status == SQLITE_DONE else { throw failure() }
         return result
     }
 
@@ -218,12 +257,9 @@ final class Store {
         defer { sqlite3_finalize(stmt) }
         bind([hour], to: stmt)
         var result: [String: Double] = [:]
-        var status = sqlite3_step(stmt)
-        while status == SQLITE_ROW {
+        try readRows(stmt) {
             result[String(cString: sqlite3_column_text(stmt, 0))] = sqlite3_column_double(stmt, 1)
-            status = sqlite3_step(stmt)
         }
-        guard status == SQLITE_DONE else { throw failure() }
         return result
     }
 
@@ -232,7 +268,7 @@ final class Store {
         defer { sqlite3_finalize(stmt) }
         bind([id, since, through], to: stmt)
         var result: [Int64: (oi: Double?, sell: Double?, buy: Double?)] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        try readRows(stmt) {
             result[sqlite3_column_int64(stmt, 0)] = (
                 sqlite3_column_type(stmt, 1) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 1),
                 sqlite3_column_type(stmt, 2) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 2),

@@ -98,27 +98,31 @@ final class MarketFilterCombinationTests: XCTestCase {
     }
 
     @MainActor
-    func testWriteAndCommitFailuresPreserveSavedCombinationsUntilRetry() async throws {
+    func testWriteFailuresPreserveSavedCombinationsAndReadersAllowRetry() async throws {
         try withRadar { url, defaults, radar in
             XCTAssertTrue(try radar.saveMarketFilterCombination(name: "Long setup", filtersJSON: long))
             let original = radar.marketFilterCombinations
             let id = try XCTUnwrap(original.first?.id)
             let revision = try XCTUnwrap(radar.snapshot(rocPeriod: 9, marocPeriod: 9)["revision"] as? Int)
             let blocker = try Store(url: url)
-            for transaction in ["BEGIN IMMEDIATE", "BEGIN"] {
-                try blocker.execute(transaction)
-                _ = try blocker.marketFilterCombinations()
-                XCTAssertThrowsError(try radar.saveMarketFilterCombination(name: "Short setup", filtersJSON: short))
-                XCTAssertThrowsError(try radar.deleteMarketFilterCombination(id))
-                XCTAssertEqual(radar.marketFilterCombinations, original)
-                XCTAssertEqual(radar.selectedMarketFilterCombinationID, id)
-                XCTAssertEqual(radar.snapshot(rocPeriod: 9, marocPeriod: 9, sinceRevision: revision)["unchanged"] as? Bool, true)
-                try blocker.execute("ROLLBACK")
-                XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).marketFilterCombinations, original)
-                XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).selectedMarketFilterCombinationID, id)
-            }
+            try blocker.execute("BEGIN IMMEDIATE")
+            defer { try? blocker.execute("ROLLBACK") }
+            XCTAssertThrowsError(try radar.saveMarketFilterCombination(name: "Short setup", filtersJSON: short))
+            XCTAssertThrowsError(try radar.deleteMarketFilterCombination(id))
+            XCTAssertEqual(radar.marketFilterCombinations, original)
+            XCTAssertEqual(radar.selectedMarketFilterCombinationID, id)
+            XCTAssertEqual(radar.snapshot(rocPeriod: 9, marocPeriod: 9, sinceRevision: revision)["unchanged"] as? Bool, true)
+            try blocker.execute("ROLLBACK")
+            XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).marketFilterCombinations, original)
+            XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).selectedMarketFilterCombinationID, id)
+
+            // WAL readers keep their snapshot without blocking a successful retry.
+            try blocker.execute("BEGIN")
+            XCTAssertEqual(try blocker.marketFilterCombinations(), original)
             XCTAssertTrue(try radar.saveMarketFilterCombination(name: "Short setup", filtersJSON: short))
             XCTAssertTrue(try radar.deleteMarketFilterCombination(id))
+            XCTAssertEqual(try blocker.marketFilterCombinations(), original)
+            try blocker.execute("COMMIT")
             XCTAssertEqual(try Radar(defaults: defaults, storeURL: url).marketFilterCombinations.map(\.name), ["Short setup"])
         }
     }
