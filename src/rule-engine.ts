@@ -10,15 +10,23 @@ export type RuleNode = {
 }
 export type FilterConfigV2 = { version: 2; root: RuleNode; definitions: NamedFormula[] }
 export type FilterMetricChoice = { value: string; label: string }
-export type FilterMetric = { key: string; label: string; group: string; description: string; unit: string; numeric: boolean; choices: FilterMetricChoice[] }
+export type FilterMetric = { key: string; label: string; group: string; description: string; unit: string; numeric: boolean; choices: FilterMetricChoice[]; aliases?: string[] }
+export type FilterLibraryPreferences = { favorites: string[]; recent: string[]; layout: "sentences" | "guided" }
+export const initialLibraryPreferences = (): FilterLibraryPreferences => ({ favorites: [], recent: [], layout: "sentences" })
 export type FilterCombination = { id: string; name: string; filtersJSON: string; filterConfigJSON?: string }
 export type EditorExpression = { kind: "number" | "text" | "name" | "unary" | "binary" | "call" | "raw"; source: string; unit: string; value?: string; operation?: string; arguments: EditorExpression[]; choices: FilterMetricChoice[] }
 export type CompileResponse = { configJSON?: string; formula?: string; diagnostics: string[]; requiredHours?: number; units?: Record<string, string>; expressions?: Record<string, EditorExpression> }
 export type FilterTrace = { id: string; label: string; result: FilterTruth; hour: number; readings: Record<string, string>; reason: string; children: FilterTrace[]; eventHours: number[] }
 export type ExplainResponse = { instId: string; filterToken: string; revision: number; trace: FilterTrace }
 export type NativeMarketRow = MarketRow & { opportunity: OpportunityResult }
-export type FilterEditorState = { open: boolean; tab: "rules" | "formula"; source: string | null; collapsed: Record<string, boolean>; combinationName: { id: string; value: string } | null }
-export const initialEditorState = (): FilterEditorState => ({ open: false, tab: "rules", source: null, collapsed: {}, combinationName: null })
+export type FilterDraftRevision = { config: FilterConfigV2; source: string | null; expressionDrafts?: Record<string, EditorExpression> }
+export type FilterEditorState = {
+  open: boolean; tab: "rules" | "formula"; source: string | null; collapsed: Record<string, boolean>; combinationName: { id: string; value: string } | null
+  selectedRuleId: string | null; selectedIds: string[]; past: FilterDraftRevision[]; future: FilterDraftRevision[]; explainId: string | null
+  nameDrafts: Record<string, string>
+  expressionDrafts: Record<string, EditorExpression>
+}
+export const initialEditorState = (): FilterEditorState => ({ open: false, tab: "rules", source: null, collapsed: {}, combinationName: null, selectedRuleId: null, selectedIds: [], past: [], future: [], explainId: null, nameDrafts: {}, expressionDrafts: {} })
 // WKWebView's custom radar:// origin can omit randomUUID while still providing
 // getRandomValues. Draft identities must work in the packaged native app.
 export function newRuleID(): string {

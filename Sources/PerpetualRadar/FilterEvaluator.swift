@@ -337,6 +337,7 @@ final class FilterEvaluator {
                 else if node.comparison == "between", low == .no, Double(maximum) >= Double(node.minimum), Double(yes) <= (upper.number ?? 0) { trace.result = .unknown }
                 else { trace.result = low }
                 trace.readings = ["Known matches": .number(Double(yes)), "Unknown hours": .number(Double(unknown)), "Threshold": threshold]
+                if node.comparison == "between" { trace.readings["Maximum count"] = upper }
             }
             if explain { trace.children = children }
             trace.reason = unknown > 0 ? "The requested window contains unavailable hourly data." : "Window includes the anchor hour and \(node.hours - 1) preceding hours."

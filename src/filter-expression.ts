@@ -47,8 +47,8 @@ export function arithmeticExpression(operation: string, argument: EditorExpressi
   const result: EditorExpression = { kind: "binary", source: "", unit: "", operation, choices: [], arguments: [argument, numberExpression(["*", "/"].includes(operation) ? "2" : "0")] }
   return { ...result, source: expressionSource(result) }
 }
-export function functionCompletion(signature: string): string {
-  const template = expressionTemplates.find(item => item.name.toLowerCase() === signature.split("(")[0].toLowerCase())
+export function functionCompletion(signature: string, templates = expressionTemplates): string {
+  const template = templates.find(item => item.name.toLowerCase() === signature.split("(")[0].toLowerCase())
   if (template) return templateExpression(template).source
   const rules: Record<string, string> = {
     all: "all(Close > 0)", any: "any(Close > 0)", "not condition": "NOT (Close > 0)", between: "between(RSI(14), 30, 70)",
@@ -60,9 +60,9 @@ export function functionCompletion(signature: string): string {
   }
   return rules[signature.split("(")[0].toLowerCase()] ?? signature
 }
-export function selectRuleLeft(node: RuleNode, left: string, metrics: FilterMetric[], expressions: Record<string, EditorExpression>, units: Record<string, string>, selection?: EditorExpression): Partial<RuleNode> {
+export function selectRuleLeft(node: RuleNode, left: string, metrics: FilterMetric[], expressions: Record<string, EditorExpression>, units: Record<string, string>, selection?: EditorExpression, templates = expressionTemplates): Partial<RuleNode> {
   const metric = metrics.find(item => item.key.toLowerCase() === left.trim().toLowerCase())
-  const template = expressionTemplates.find(item => item.name.toLowerCase() === left.split("(")[0].toLowerCase())
+  const template = templates.find(item => item.name.toLowerCase() === left.split("(")[0].toLowerCase())
   const info = expressions[left] ?? selection, unit = info?.unit || units[left] || metric?.unit || template?.unit
   const categorical = unit === "category" || unit === "text", numeric = metric?.numeric ?? (["binary", "unary", "number"].includes(info?.kind ?? "") ? true : unit ? !categorical : undefined)
   const next: Partial<RuleNode> = { left }

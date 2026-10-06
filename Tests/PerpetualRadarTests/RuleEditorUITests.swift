@@ -76,6 +76,7 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
                 }
                 revision += 1
             }
+            if let json = request["filterLibraryPreferencesJSON"] as? String { try radar.setFilterLibraryPreferences(json); revision += 1 }
             if let json = request["marketFiltersJSON"] as? String { _ = try radar.setMarketFiltersJSON(json); revision += 1 }
             if let saved = request["saveMarketFilterCombination"] as? [String: String] { _ = try radar.saveMarketFilterCombination(name: saved["name"]!, filtersJSON: saved["filtersJSON"]!); revision += 1 }
             if let selected = request["selectedMarketFilterCombinationID"] as? String { _ = try radar.setSelectedMarketFilterCombinationID(selected); revision += 1 }
@@ -204,6 +205,12 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "Array.from(document.querySelectorAll('button')).some(x => (x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))) && !x.disabled && x.getBoundingClientRect().height > 0)")
         _ = try await js(view, "(() => { const x = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))); if (!x) throw new Error('Missing button: ' + \(formulaQuote(label))); x.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,button:0})); x.click(); return true; })()")
         if label == "Formula" { try await wait(view, "document.querySelector('textarea') !== null") }
+        if label == "Add condition" {
+            try await wait(view, "document.querySelector('[data-rule-library]') !== null")
+            try await input(view, "[data-rule-library] [cmdk-input]", "Price")
+            _ = try await js(view, "document.querySelector('[data-library-id=\"metric:price\"]').click(); true")
+            try await wait(view, "document.querySelector('[data-rule-library]') === null && document.querySelector('[aria-label=\"Choose Left expression\"]') !== null")
+        }
     }
     @MainActor
     private func input(_ view: WKWebView, _ selector: String, _ text: String, textarea: Bool = false) async throws {
@@ -219,6 +226,9 @@ final class RuleEditorUITests: XCTestCase {
 
     @MainActor
     private func openMenu(_ view: WKWebView, selector: String, popover: Bool = false) async throws -> Double {
+        if selector.contains("Rule type") || selector.contains("Wrap rule") {
+            if try await js(view, "document.querySelector(\(formulaQuote(selector))) === null") as? Bool == true { try await click(view, "Structure & name") }
+        }
         try await wait(view, "(() => { const x = document.querySelector(\(formulaQuote(selector))); return Boolean(x && !x.disabled && x.getBoundingClientRect().height > 0); })()")
         let predicate = popover ? "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]')" : "document.querySelector('[data-slot=\"select-content\"][data-state=\"open\"]')"
         let script = """
@@ -323,6 +333,15 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "document.body.innerText.includes('Last valid preview remains active')")
         let retained = try await js(view, "document.querySelector('[data-expression-field=\"Right expression Left operand Source expression\"]')?.dataset.expressionSource") as? String
         XCTAssertEqual(retained, "lag(Volume, 1)")
+        // Incomplete visual blocks survive tab changes, panel folding and chart navigation.
+        try await click(view, "Formula"); try await click(view, "Rules")
+        try await wait(view, "document.querySelector('[aria-label=\"Right expression Left operand Window hours\"]')?.value === '' && document.querySelector('[aria-label=\"Right expression Left operand Source expression Offset hours\"]')?.value === '1'")
+        try await click(view, "Filters"); try await click(view, "Filters")
+        try await wait(view, "document.querySelector('[aria-label=\"Right expression Left operand Window hours\"]')?.value === ''")
+        _ = try await js(view, "document.querySelector('tbody tr[tabindex]').click(); true")
+        try await wait(view, "document.body.innerText.includes('Fixture chart')")
+        try await click(view, "Markets")
+        try await wait(view, "document.querySelector('[aria-label=\"Right expression Left operand Window hours\"]')?.value === '' && document.querySelector('[aria-label=\"Right expression Left operand Source expression Offset hours\"]')?.value === '1'")
         try await input(view, "[aria-label=\"Right expression Left operand Window hours\"]", "20")
         try await validDraft(view)
         try await screenshot(view, project.appendingPathComponent(".build/ui-qa/visual-relative-volume.png"))
@@ -331,7 +350,7 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Rules")
         try await wait(view, "document.querySelector('[aria-label=\"Right expression Left operand Source expression Offset hours\"]')?.value === '1'")
         // Existing conditions can be wrapped in counts and unwrapped without losing their expression.
-        _ = try await openMenu(view, selector: "[data-rule-kind=\"condition\"] [aria-label=\"Wrap rule\"]"); try await option(view, "Occurrence count")
+        _ = try await openMenu(view, selector: "[aria-label=\"Wrap rule\"]"); try await option(view, "Occurrence count")
         try await input(view, "[aria-label=\"Window hours\"]", "48")
         try await input(view, "[aria-label=\"Count threshold\"]", "3")
         _ = try await openMenu(view, selector: "[aria-label=\"Count comparison\"]"); try await option(view, "Between (inclusive)")
@@ -340,7 +359,7 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Formula")
         try await wait(view, "document.querySelector('textarea')?.value.includes(', 48, \"between\", 3, 24)')")
         try await click(view, "Rules")
-        _ = try await openMenu(view, selector: "[data-rule-kind=\"count\"] [aria-label=\"Wrap rule\"]"); try await option(view, "Remove wrapper")
+        _ = try await openMenu(view, selector: "[aria-label=\"Wrap rule\"]"); try await option(view, "Remove wrapper")
         try await validDraft(view)
         let source = try await js(view, "document.querySelector('[data-expression-field=\"Right expression\"]')?.dataset.expressionSource") as? String
         XCTAssertEqual(source, "(mean(lag(Volume, 1), 20) * 2)")
@@ -390,7 +409,7 @@ final class RuleEditorUITests: XCTestCase {
         let sequence = #"sequence(2, stage("break", closed(Close == 100), 2, capture("level", Close)), stage("finish", Close > break.level, 2))"#
         try await input(view, "textarea", sequence, textarea: true)
         try await validDraft(view); try await click(view, "Rules")
-        _ = try await openMenu(view, selector: "[data-rule-kind=\"sequence\"] fieldset[aria-label=\"break\"] [aria-label=\"Wrap rule\"]")
+        _ = try await openMenu(view, selector: "fieldset[aria-label=\"break\"] [aria-label=\"Wrap rule\"]")
         try await option(view, "AND group")
         try await validDraft(view)
         try await click(view, "Formula")
@@ -410,6 +429,88 @@ final class RuleEditorUITests: XCTestCase {
         try await screenshot(view, project.appendingPathComponent(".build/ui-qa/visual-functions-dark-narrow.png"))
         let overflowing = try await js(view, "document.documentElement.scrollWidth > window.innerWidth + 1") as? Bool
         XCTAssertEqual(overflowing, false)
+    }
+
+    @MainActor
+    func testConditionLibraryTemplatesGuidedCardsUndoBulkAndInlineReadings() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = WKWebViewConfiguration()
+        bridge.pulseRows = true
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1100), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 1100), configuration: configuration)
+        window.contentView = view; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        try await click(view, "Filters"); try await click(view, "Reset draft")
+        let latency = try await openMenu(view, selector: "[aria-label=\"Add condition\"]", popover: true)
+        try await input(view, "[data-rule-library] [cmdk-input]", "持仓趋势")
+        try await wait(view, "document.querySelector('[data-library-id=\"metric:oiTrend\"]') !== null")
+        _ = try await js(view, "document.querySelector('[data-library-id=\"metric:oiTrend\"]').click(); true")
+        try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 167 && document.querySelector('[data-rule-preview]')?.innerText.includes('rising')")
+        XCTAssertLessThan(latency, 250)
+        let noFormula = try await js(view, "document.querySelector('textarea') === null") as? Bool
+        XCTAssertEqual(noFormula, true)
+        try await click(view, "Guided cards")
+        try await wait(view, "document.querySelector('[data-rule-layout=\"guided\"] [data-expression-field=\"Left expression\"]') !== null")
+        XCTAssertEqual(bridge.radar.filterLibraryPreferences.layout, "guided")
+        _ = try await openMenu(view, selector: "[aria-label=\"Right value\"]"); try await option(view, "Falling")
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 166")
+        try await click(view, "Undo filter edit")
+        try await wait(view, "document.querySelector('[aria-label=\"Right value\"]')?.textContent.includes('Rising') && Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 167")
+        try await click(view, "Redo filter edit")
+        try await wait(view, "document.querySelector('[aria-label=\"Right value\"]')?.textContent.includes('Falling')")
+        try await click(view, "Sentence rows")
+        try await wait(view, "document.querySelector('[aria-label=\"Selected rule editor\"]') !== null")
+        try await click(view, "Reset draft"); try await click(view, "Body above EMA")
+        try await validDraft(view)
+        try await wait(view, "document.querySelector('[aria-label=\"Body EMA period hours\"]')?.value === '200' && document.querySelector('[aria-label=\"Window hours\"]')?.value === '48'")
+        try await input(view, "[aria-label=\"Body EMA period hours\"]", "")
+        try await wait(view, "document.body.innerText.includes('Last valid preview remains active') && document.querySelector('[aria-label=\"Body EMA period hours\"]')?.value === ''")
+        try await input(view, "[aria-label=\"Body EMA period hours\"]", "480")
+        try await validDraft(view)
+        try await click(view, "Formula")
+        let bodyResult = try await js(view, "document.querySelector('textarea').value") as? String
+        let bodyFormula = try XCTUnwrap(bodyResult)
+        XCTAssertTrue(bodyFormula.contains("Open > EMA(480)")); XCTAssertTrue(bodyFormula.contains("Close > EMA(480)")); XCTAssertTrue(bodyFormula.contains(", 48)"))
+        try await click(view, "Rules")
+        try await wait(view, "document.querySelector('[aria-label=\"Body EMA period hours\"]')?.value === '480'")
+        try await screenshot(view, project.appendingPathComponent(".build/ui-qa/sentence-body-window.png"))
+        try await click(view, "Reset draft"); try await click(view, "Volume surge")
+        try await validDraft(view)
+        try await wait(view, "document.querySelector('[aria-label=\"Right expression Left operand Source expression Offset hours\"]')?.value === '1'")
+        try await click(view, "Reset draft"); try await click(view, "Break & retest")
+        try await validDraft(view)
+        try await wait(view, "document.querySelector('[aria-label=\"Sequence stages\"]')?.innerText.includes('Capture: Level')")
+        _ = try await js(view, "Array.from(document.querySelector('[aria-label=\"Sequence stages\"]').querySelectorAll('button')).find(x => x.textContent.includes('1.')).click(); true")
+        try await input(view, "[aria-label=\"Stage name\"]", "breakout")
+        _ = try await js(view, "document.querySelector('[aria-label=\"Stage name\"]').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
+        try await validDraft(view)
+        try await click(view, "Formula")
+        let renamedResult = try await js(view, "document.querySelector('textarea').value") as? String
+        let renamed = try XCTUnwrap(renamedResult)
+        XCTAssertTrue(renamed.contains("breakout.level")); XCTAssertFalse(renamed.contains("break.level"))
+        try await click(view, "Rules")
+        try await click(view, "Reset draft"); try await click(view, "OI rising"); try await click(view, "OI rising")
+        _ = try await js(view, "Array.from(document.querySelectorAll('[aria-label*=\"for bulk editing\"]')).forEach(x => x.click()); true")
+        try await wait(view, "document.body.innerText.includes('2 selected')")
+        try await click(view, "Set Closed"); try await validDraft(view)
+        try await click(view, "Undo filter edit"); try await validDraft(view)
+        try await click(view, "Reset draft")
+        _ = try await openMenu(view, selector: "[aria-label=\"Add condition\"]", popover: true)
+        try await click(view, "Favorite OI rising")
+        try await wait(view, "Boolean(document.querySelector('[aria-label=\"Favorite OI rising\"][aria-pressed=\"true\"]'))")
+        XCTAssertTrue(bridge.radar.filterLibraryPreferences.favorites.contains("preset:oi"))
+        _ = try await js(view, "document.querySelector('[data-rule-library]').dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); true")
+        try await wait(view, "document.querySelector('[data-rule-library]') === null")
+        window.setContentSize(NSSize(width: 720, height: 1000)); window.appearance = NSAppearance(named: .darkAqua)
+        try await screenshot(view, project.appendingPathComponent(".build/ui-qa/sentence-builder-dark-narrow.png"))
+        let overflow = try await js(view, "document.documentElement.scrollWidth > window.innerWidth + 1") as? Bool
+        XCTAssertEqual(overflow, false)
     }
 
     @MainActor
@@ -505,7 +606,8 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Use visual Left expression")
         try await wait(view, "document.querySelector('[aria-label=\"Choose Left expression\"]')?.textContent === 'OI Trend' && document.querySelector('[aria-label=\"Left expression\"]') === null")
         timings.append(try await openMenu(view, selector: "[aria-label=\"Right value\"]"))
-        try await option(view, "Custom expression…")
+        try await option(view, "Another indicator / value…")
+        try await click(view, "Edit Right expression formula")
         try await input(view, "[aria-label=\"Right expression\"]", "emaTrend")
         try await wait(view, "Array.from(document.querySelectorAll('button')).some(x => x.textContent.trim() === 'Apply filters' && !x.disabled)")
         try await click(view, "Formula")

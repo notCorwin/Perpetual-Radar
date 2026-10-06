@@ -4,10 +4,74 @@ struct FilterMetricInfo: Sendable {
     let key: String, label: String, group: String, description: String, unit: String
     let numeric: Bool
     var snapshot: [String: Any] { ["key": key, "label": label, "group": group, "description": description, "unit": unit, "numeric": numeric,
-        "choices": FilterCatalog.choices(for: key).map { ["value": $0.value, "label": $0.label] }] }
+        "choices": FilterCatalog.choices(for: key).map { ["value": $0.value, "label": $0.label] }, "aliases": FilterCatalog.searchAliases(for: key)] }
+}
+
+struct FilterFunctionInfo: Sendable {
+    struct Parameter: Sendable {
+        let label: String, kind: String
+        var minimum: Double = 1
+        var step = "1"
+        var unit = "hours"
+        var snapshot: [String: Any] { ["label": label, "kind": kind, "minimum": minimum, "step": step, "unit": unit] }
+    }
+    let name: String, signature: String, label: String, group: String, unit: String, description: String
+    let parameters: [Parameter], defaults: [String]
+    var snapshot: [String: Any] { ["name": name, "label": label, "group": group, "unit": unit, "description": description,
+        "parameters": parameters.map(\.snapshot), "defaults": defaults] }
 }
 
 enum FilterCatalog {
+    static func searchAliases(for key: String) -> [String] {
+        switch key {
+        case "oiTrend": return ["OI", "open interest trend", "持仓趋势", "持仓上涨"]
+        case "emaBody": return ["candle body", "实体", "K线", "above EMA", "below EMA"]
+        case "Volume", "liveVolume": return ["volume", "quote volume", "成交量", "放量"]
+        case "turnover": return ["turnover", "liquidity", "成交额"]
+        default: return []
+        }
+    }
+    // The renderer builds its pickers, value blocks and help from this catalogue.
+    // Adding a scalar capability must provide its editable parameter schema here.
+    static let scalarFunctions: [FilterFunctionInfo] = {
+        typealias P = FilterFunctionInfo.Parameter
+        let period = P(label: "Period (h)", kind: "number")
+        let source = P(label: "Source expression", kind: "expression", unit: "source unit")
+        func indicator(_ name: String, _ signature: String, _ label: String, _ unit: String, _ parameters: [P], _ defaults: [String], _ description: String) -> FilterFunctionInfo {
+            .init(name: name, signature: signature, label: label, group: "Parameterized indicators", unit: unit, description: description, parameters: parameters, defaults: defaults)
+        }
+        var result = [
+            indicator("EMA", "EMA(n)", "EMA", "USDT", [period], ["200"], "Exponential moving average of hourly closes. The period is editable; missing hourly history is never skipped."),
+            indicator("RSI", "RSI(n)", "RSI", "0–100", [period], ["14"], "Relative strength index over the selected number of hourly periods; values range from 0 to 100."),
+            indicator("ROC", "ROC(n)", "ROC", "%", [period], ["9"], "Percentage price change from the close that many hours earlier."),
+            indicator("MAROC", "MAROC(rocN, meanN)", "MAROC", "%", [P(label: "ROC period (h)", kind: "number"), P(label: "Mean period (h)", kind: "number")], ["9", "9"], "Average of hourly ROC readings, with independently editable ROC and averaging periods.")
+        ]
+        for band in ["Upper", "Middle", "Lower"] {
+            result.append(indicator("LogBB\(band)", "LogBB\(band)(n, deviations)", "Log BB \(band)", "USDT", [period, P(label: "Deviations", kind: "number", minimum: 0, step: "any", unit: "standard deviations")], ["20", "2"], "\(band) Bollinger band computed in log-price space, returned as a price in USDT."))
+        }
+        result += [
+            indicator("VWAP", "VWAP(n)", "VWAP", "USDT", [period], ["14"], "Volume-weighted average price over the specified hourly window."),
+            indicator("PriorHigh", "PriorHigh(n)", "Prior high", "USDT", [P(label: "Reference hours", kind: "number")], ["48"], "Highest high of the previous completed hours. Excludes the evaluated candle."),
+            indicator("PriorLow", "PriorLow(n)", "Prior low", "USDT", [P(label: "Reference hours", kind: "number")], ["48"], "Lowest low of the previous completed hours. Excludes the evaluated candle.")
+        ]
+        for direction in ["Breakout", "Breakdown"] {
+            result.append(indicator("\(direction)Age", "\(direction)Age(n, searchHours)", "\(direction) age", "hours", [P(label: "Reference hours", kind: "number"), P(label: "Search hours", kind: "number")], ["48", "48"], "Hours since the latest strict \(direction.lowercased()) in the search window. No event or insufficient history is Unknown."))
+        }
+        func transform(_ name: String, _ label: String, _ unit: String, _ parameters: [P], _ defaults: [String], _ description: String) -> FilterFunctionInfo {
+            .init(name: name, signature: "\(name)(x\(parameters.count > 1 ? ", n" : ""))", label: label, group: "Expression functions", unit: unit, description: description, parameters: parameters, defaults: defaults)
+        }
+        result.append(transform("abs", "Absolute value", "source unit", [source], ["Price"], "Magnitude of a numeric value; keeps the source unit."))
+        for (name, label) in [("mean", "Mean"), ("sum", "Sum"), ("highest", "Highest"), ("lowest", "Lowest"), ("stddev", "Standard deviation")] {
+            result.append(transform(name, label, "source unit", [source, P(label: "Window hours", kind: "number")], ["Volume", "20"], "Includes the evaluated hour and preceding hourly slots. Add a one-hour offset to use only previous closed candles. Any missing slot makes this value Unknown."))
+        }
+        result += [
+            transform("lag", "Historical offset", "source unit", [source, P(label: "Offset hours", kind: "number", minimum: 0)], ["Volume", "1"], "Reads the source that many hours before the rule's evaluation hour."),
+            transform("change", "Change rate", "%", [source, P(label: "Offset hours", kind: "number")], ["Price", "1"], "Percentage change from the earlier value, divided by its absolute value."),
+            transform("closed", "Previous closed hour", "source unit", [source], ["Price"], "Shifts this value one hour before the rule's anchor. A parent Closed anchor also applies."),
+            transform("live", "Current evaluation hour", "source unit", [source], ["Price"], "Reads at the rule's current anchor; it does not cancel a parent's Closed anchor.")
+        ]
+        return result
+    }()
     struct Choice: Sendable { let value: String, label: String }
     static func choices(for key: String) -> [Choice] {
         switch key {
@@ -98,5 +162,5 @@ enum FilterCatalog {
     static let numericFields = Set(metrics.filter(\.numeric).map(\.key))
     static let aliases = ["price": "price", "close": "Close", "open": "Open", "high": "High", "low": "Low", "volume": "Volume", "symbol": "Symbol", "listingagemonths": "ListingAgeMonths", "oi": "oiUSD", "buy": "buy", "sell": "sell"]
     static func key(_ name: String) -> String? { fields.contains(name) ? name : aliases[name.lowercased()] ?? metrics.first { $0.key.lowercased() == name.lowercased() }?.key }
-    static let functions = ["EMA(n)", "RSI(n)", "ROC(n)", "MAROC(rocN, meanN)", "LogBBUpper(n, deviations)", "LogBBMiddle(n, deviations)", "LogBBLower(n, deviations)", "VWAP(n)", "PriorHigh(n)", "PriorLow(n)", "BreakoutAge(n, searchHours)", "BreakdownAge(n, searchHours)", "abs(x)", "mean(x, n)", "sum(x, n)", "highest(x, n)", "lowest(x, n)", "stddev(x, n)", "lag(x, n)", "change(x, n)", "closed(x)", "live(x)", "all(...)", "any(...)", "NOT condition", "between(x, min, max)", "absGte(x, threshold)", "absLte(x, threshold)", "positive(x)", "negative(x)", "zero(x)", "available(x)", "unavailable(x)", "every(condition, hours)", "recent(condition, hours)", "count(condition, hours, \"gte\", minimum)", "crossUp(left, right)", "crossDown(left, right)", "sequence(hours, stage(\"break\", condition, gapHours, capture(\"level\", expression)), stage(\"retest\", condition, gapHours))"]
+    static let functions = scalarFunctions.map(\.signature) + ["all(...)", "any(...)", "NOT condition", "between(x, min, max)", "absGte(x, threshold)", "absLte(x, threshold)", "positive(x)", "negative(x)", "zero(x)", "available(x)", "unavailable(x)", "every(condition, hours)", "recent(condition, hours)", "count(condition, hours, \"gte\", minimum)", "crossUp(left, right)", "crossDown(left, right)", "sequence(hours, stage(\"break\", condition, gapHours, capture(\"level\", expression)), stage(\"retest\", condition, gapHours))"]
 }

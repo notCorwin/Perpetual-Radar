@@ -95,6 +95,7 @@ final class Radar {
     private var liveHourQuotes: [String: FilterQuote] = [:]
     private var closedHourQuotes: [String: [Int64: FilterQuote]] = [:]
     private(set) var selectedMarketFilterCombinationID = ""
+    private(set) var filterLibraryPreferences = FilterLibraryPreferences()
     private(set) var frostedBackgroundEnabled: Bool
     private(set) var frostedBackgroundOpacity: Double
     private var rows: [String: Market] = [:]
@@ -139,6 +140,9 @@ final class Radar {
         let savedOpacity = (try store.preference(forKey: frostedBackgroundOpacityKey)).flatMap(Double.init) ?? 0.3
         frostedBackgroundOpacity = savedOpacity.isFinite && (0...1).contains(savedOpacity) ? savedOpacity : 0.3
         historyLoader = FilterHistoryLoader(url: store.url)
+        if let saved = try store.preference(forKey: "filterLibraryPreferences") {
+            filterLibraryPreferences = (try? FilterLibraryPreferences.decode(saved)) ?? FilterLibraryPreferences()
+        }
         let storedFilters = try store.preference(forKey: marketFiltersKey)
         let savedFilters = storedFilters ?? defaults.string(forKey: marketFiltersKey) ?? emptyMarketFiltersJSON
         marketFiltersJSON = validMarketFiltersJSON(savedFilters) ? savedFilters : emptyMarketFiltersJSON
@@ -304,6 +308,14 @@ final class Radar {
         let compiled = try FilterCompiler.compile(FilterConfigV2.decode(value))
         if compiledFilters.count >= 8 { compiledFilters.removeAll() }
         compiledFilters[value] = compiled; return compiled
+    }
+
+    func setFilterLibraryPreferences(_ json: String) throws {
+        let next = try FilterLibraryPreferences.decode(json)
+        guard next != filterLibraryPreferences else { return }
+        try store.setPreference(next.json, forKey: "filterLibraryPreferences")
+        filterLibraryPreferences = next
+        revision += 1
     }
 
     func compileMarketFilters(_ request: [String: Any]) -> [String: Any] {
@@ -887,6 +899,7 @@ final class Radar {
                 "marketFiltersJSON": marketFiltersJSON,
                 "filterConfigJSON": marketFiltersV2JSON,
                 "filterMetricsCatalog": FilterCatalog.metrics.map(\.snapshot), "filterFunctions": FilterCatalog.functions,
+                "filterFunctionCatalog": FilterCatalog.scalarFunctions.map(\.snapshot), "filterLibraryPreferences": filterLibraryPreferences.snapshot,
                 "marketFilterCombinations": marketFilterCombinations.map(\.snapshot),
                 "selectedMarketFilterCombinationID": selectedMarketFilterCombinationID]
     }

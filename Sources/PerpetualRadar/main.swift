@@ -394,6 +394,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 replyHandler(nil, "Minimum contract age must be a whole number from 1 to 1200 months"); return
             }
         }
+        if let requested = parameters["filterLibraryPreferencesJSON"] {
+            guard let json = requested as? String, let radar else { replyHandler(nil, "Invalid condition library preferences"); return }
+            do { try radar.setFilterLibraryPreferences(json) }
+            catch { replyHandler(nil, "Cannot save condition library preferences: \(error.localizedDescription)"); return }
+        }
         if let requested = parameters["marketFiltersJSON"] {
             guard let filters = requested as? String, let radar else {
                 replyHandler(nil, "Invalid market filter configuration"); return
@@ -455,6 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                           "marketFiltersJSON": radar?.marketFiltersJSON ?? "{\"version\":1,\"match\":\"all\",\"rules\":[]}",
                           "filterConfigJSON": radar?.marketFiltersV2JSON ?? FilterConfigV2().json,
                           "filterMetricsCatalog": FilterCatalog.metrics.map(\.snapshot), "filterFunctions": FilterCatalog.functions,
+                          "filterFunctionCatalog": FilterCatalog.scalarFunctions.map(\.snapshot), "filterLibraryPreferences": radar?.filterLibraryPreferences.snapshot ?? FilterLibraryPreferences().snapshot,
                           "marketFilterCombinations": radar?.marketFilterCombinations.map(\.snapshot) ?? [],
                           "selectedMarketFilterCombinationID": radar?.selectedMarketFilterCombinationID ?? ""]
             replyHandler(failureSnapshot, nil)

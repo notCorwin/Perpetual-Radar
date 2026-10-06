@@ -1,218 +1,120 @@
-import { useRef, useState, type Dispatch, type SetStateAction } from "react"
-import { Check, ChevronDown, Code, Copy, Filter, GripVertical, Plus, RotateCcw, Save, Trash2, X } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Spinner } from "@/components/ui/spinner"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import { cn } from "@/lib/utils"
-import {
-  canReceiveChildren, categoryComparisons, comparisons, duplicateRule, emptyFilterConfig, formulaExamples, makeRule, moveRule, newRuleID,
-  parseFilterConfig, removeRule, ruleCount, ruleKinds, unaryComparison, unwrapRule, updateRule, wrapRule,
-  type EditorExpression, type FilterCombination, type FilterConfigV2, type FilterEditorState, type FilterMetric, type NamedFormula, type RuleKind, type RuleNode,
-} from "@/rule-engine"
-import { ExpressionInput, type ExpressionInputProps } from "@/FilterExpressionInput"
-import { functionCompletion, selectRuleLeft } from "@/filter-expression"
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { Check, ChevronDown, Code, Copy, Filter, Plus, Redo2, RotateCcw, Save, Trash2, Undo2, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Spinner } from '@/components/ui/spinner'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { FilterNameInput } from '@/FilterNameInput'
+import { ExpressionInput } from '@/FilterExpressionInput'
+import { RuleInspector, RuleOutline, RulePicker, type RuleTreeContext } from '@/FilterRuleEditor'
+import { FilterRulePreview } from '@/FilterRulePreview'
+import { RuleLibrary } from '@/RuleLibrary'
+import { addLibraryRule, conditionLibrary, renameValueReferences, rulePath, topLevelSelection, visualPresets, type LibraryItem } from '@/filter-builder'
+import { functionCompletion, type ExpressionTemplate } from '@/filter-expression'
+import { cn } from '@/lib/utils'
+import { duplicateRule, emptyFilterConfig, findRule, newRuleID, parseFilterConfig, removeRule, ruleCount, updateRule, type EditorExpression, type FilterCombination, type FilterConfigV2, type FilterDraftRevision, type FilterEditorState, type FilterLibraryPreferences, type FilterMetric, type FilterTruth, type NativeMarketRow, type RuleNode } from '@/rule-engine'
 
 type Props = {
   filters: FilterConfigV2; draft: FilterConfigV2 | null; editor: FilterEditorState
   onDraftChange: (draft: FilterConfigV2 | null) => void; onEditorChange: Dispatch<SetStateAction<FilterEditorState>>
   onApply: (filters: FilterConfigV2) => Promise<void>; combinations: FilterCombination[]; combinationId: string
   onSelectCombination: (id: string) => Promise<void>; onSaveCombination: (name: string, filters: FilterConfigV2) => Promise<FilterCombination>; onDeleteCombination: (id: string) => Promise<void>
-  metrics: FilterMetric[]; functions: string[]; units: Record<string, string>; expressions: Record<string, EditorExpression>; formula: string; diagnostics: string[]; valid: boolean; compiling: boolean; requiredHours: number
+  metrics: FilterMetric[]; functions: string[]; templates: ExpressionTemplate[]; units: Record<string, string>; expressions: Record<string, EditorExpression>; formula: string; diagnostics: string[]; valid: boolean; compiling: boolean; requiredHours: number
+  preferences: FilterLibraryPreferences; onPreferences: (preferences: FilterLibraryPreferences) => Promise<void>
+  rows: NativeMarketRow[]; results: Record<string, FilterTruth>; previewJSON: string | null; revision: number; onExplain: (id: string) => void
   matches: number; total: number; unknown: number; previewPending: boolean; history: { pending: number; completed: number; error: string } | null
 }
-
-function Picker({ value, choices, onChange, label }: { value: string; choices: string[][]; onChange: (value: string) => void; label: string }) {
-  return <Select value={value} onValueChange={onChange}><SelectTrigger className="w-full" aria-label={label}><SelectValue /></SelectTrigger><SelectContent position="popper"><SelectGroup>{choices.map(([key, title]) => <SelectItem key={key} value={key}>{title}</SelectItem>)}</SelectGroup></SelectContent></Select>
-}
-
-function CategoryValueInput(props: ExpressionInputProps) {
-  const [custom, setCustom] = useState(false)
-  const choices = props.choices ?? []
-  let literal: string | undefined
-  try { const decoded: unknown = JSON.parse(props.value); if (typeof decoded === "string") literal = decoded } catch { /* Custom expressions are compiled natively. */ }
-  if (props.expressions?.[props.value]?.kind === "text") literal = props.expressions[props.value].value
-  const selected = choices.find(choice => choice.value === literal)
-  const text = choices.length === 0
-  const expression = custom || (text ? literal === undefined : !selected)
-  return <FieldGroup className="gap-2">
-    <Field><FieldLabel>Right value</FieldLabel><Picker label="Right value" value={expression ? "expression" : text ? "literal" : selected!.value} choices={[...(text ? [["literal", "Text value"]] : choices.map(choice => [choice.value, choice.label])), ["expression", "Custom expression…"]]} onChange={value => {
-      setCustom(value === "expression")
-      if (value !== "expression") props.onChange(JSON.stringify(value === "literal" ? literal ?? "" : value))
-    }} />{!expression && <FieldDescription>{text ? "Text" : "Category"}</FieldDescription>}</Field>
-    {text && !expression && <Field><FieldLabel>Text value</FieldLabel><Input value={literal ?? ""} aria-label="Right text value" spellCheck={false} onChange={event => props.onChange(JSON.stringify(event.target.value))} /><FieldDescription>Exact text, including the full OKX instrument ID for a contract symbol.</FieldDescription></Field>}
-    {expression && <ExpressionInput {...props} />}
-  </FieldGroup>
-}
-
-function newBranch(kind: RuleKind): RuleNode {
-  const node = makeRule(kind)
-  if (["all", "any", "not", "every", "recent", "count"].includes(kind)) node.children = [makeRule()]
-  if (kind === "sequence") {
-    node.hours = 6
-    const first = { ...makeRule(), name: "break", left: "High", comparison: "gt", right: "PriorHigh(48)", captures: [{ id: newRuleID(), name: "level", expression: "PriorHigh(48)" }] }
-    const retest = { ...makeRule(), name: "retest", left: "Low", comparison: "lte", right: "break.level" }
-    const reclaim = { ...makeRule("crossup"), name: "reclaim", left: "Close", right: "break.level" }
-    node.children = [first, retest, reclaim]
-  }
-  return node
-}
-
-function captureScope(root: RuleNode, target: string, scope: NamedFormula[] = []): NamedFormula[] | null {
-  if (root.id === target) return scope
-  const next = [...scope]
-  for (const child of root.children) {
-    const found = captureScope(child, target, next)
-    if (found) return found
-    if (root.kind === "sequence") next.push(...child.captures.map(item => ({ ...item, name: `${child.name}.${item.name}` })))
-  }
-  return null
-}
-
-type TreeProps = { config: FilterConfigV2; edit: (config: FilterConfigV2) => void; metrics: FilterMetric[]; units: Record<string, string>; expressions: Record<string, EditorExpression>; editor: FilterEditorState; setEditor: Dispatch<SetStateAction<FilterEditorState>>; disabled: boolean; dragging: string | null; setDragging: (id: string | null) => void; drop: { parent: string; index: number } | null; setDrop: (drop: { parent: string; index: number } | null) => void }
-
-function RuleCard({ node, parent, index = 0, tree }: { node: RuleNode; parent?: RuleNode; index?: number; tree: TreeProps }) {
-  const { config, edit, metrics, editor, setEditor } = tree
-  const change = (next: Partial<RuleNode>) => edit({ ...config, root: updateRule(config.root, node.id, rule => ({ ...rule, ...next })) })
-  const stage = parent?.kind === "sequence"
-  const folded = editor.collapsed[node.id] ?? false
-  const definitions = [...config.definitions, ...(captureScope(config.root, node.id) ?? [])]
-  const propsUnit = (expression: string) => tree.units[expression] ?? metrics.find(item => item.key === expression)?.unit
-  const expressionProps = { metrics, definitions, units: tree.units, expressions: tree.expressions }
-  const family = !parent ? ["all", "any"] : ["all", "any", "sequence"].includes(node.kind) ? ["all", "any", "sequence"] : ["not", "every", "recent", "count"].includes(node.kind) ? ["not", "every", "recent", "count"] : ["condition", "crossup", "crossdown"]
-  const metric = metrics.find(item => item.key.toLowerCase() === node.left.trim().toLowerCase())
-  const rightChoices = tree.expressions[node.left]?.choices ?? metric?.choices ?? []
-  const categorical = metric ? !metric.numeric : ["category", "text"].includes(propsUnit(node.left) ?? "")
-  const selectLeft = (left: string, expression?: EditorExpression) => change(selectRuleLeft(node, left, metrics, tree.expressions, tree.units, expression))
-  const move = (direction: -1 | 1) => {
-    if (!parent || !parent.children[index + direction]) return
-    const root = moveRule(config.root, node.id, parent.id, direction > 0 ? index + 2 : index - 1)
-    edit({ ...config, root }); window.requestAnimationFrame(() => document.getElementById(`move-${node.id}`)?.focus())
-  }
-  const add = (kind: RuleKind) => {
-    const child = newBranch(kind)
-    if (node.kind === "sequence") { const names = new Set(node.children.map(item => item.name)); let i = 1; while (names.has(`stage${i}`)) i += 1; child.name = `stage${i}` }
-    change({ children: [...node.children, child] })
-  }
-  return <div className="relative" onDragOver={event => {
-    if (!tree.dragging || !parent) return
-    event.preventDefault(); event.stopPropagation()
-    const bounds = event.currentTarget.getBoundingClientRect(), gap = index + (event.clientY > bounds.top + bounds.height / 2 ? 1 : 0)
-    if (moveRule(config.root, tree.dragging, parent.id, gap) !== config.root) tree.setDrop({ parent: parent.id, index: gap })
-  }} onDrop={event => {
-    if (!tree.dragging || !tree.drop) return
-    event.preventDefault(); event.stopPropagation()
-    edit({ ...config, root: moveRule(config.root, tree.dragging, tree.drop.parent, tree.drop.index) }); tree.setDragging(null); tree.setDrop(null)
-  }}>
-    {parent && tree.drop?.parent === parent.id && tree.drop.index === index && <div data-filter-insertion-line aria-hidden="true" className="pointer-events-none absolute inset-x-0 -top-1 h-0.5 bg-primary" />}
-    <FieldSet data-rule-id={node.id} data-rule-kind={node.kind} className={cn("rounded-lg border p-3", tree.dragging === node.id && "opacity-50")} aria-label={node.name || `Rule ${index + 1}`}>
-      <FieldLegend className="sr-only">{node.name || node.kind}</FieldLegend>
-      <div className="flex items-center gap-2">
-        {parent && <Button id={`move-${node.id}`} type="button" variant="ghost" size="icon" draggable={!tree.disabled} aria-label={`Move ${node.name || "rule"}`} title="Drag between groups, or use ArrowUp / ArrowDown" onDragStart={event => { event.stopPropagation(); event.dataTransfer.setData("text/plain", node.id); event.dataTransfer.effectAllowed = "move"; tree.setDragging(node.id) }} onDragEnd={() => { tree.setDragging(null); tree.setDrop(null) }} onKeyDown={event => { if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); move(event.key === "ArrowUp" ? -1 : 1) } }}><GripVertical aria-hidden="true" /></Button>}
-        <div className="w-48"><Picker label="Rule type" value={node.kind} choices={ruleKinds.filter(item => family.includes(item.value) && (!categorical || !item.value.startsWith("cross") || item.value === node.kind)).map(item => [item.value, item.label])} onChange={kind => {
-          const next: Partial<RuleNode> = { kind: kind as RuleKind, children: node.children }
-          if (kind.startsWith("cross")) next.comparison = "gte"
-          if (kind === "sequence") next.children = node.children.map((child, i) => ({ ...child, name: /^[A-Za-z_][A-Za-z0-9_]*$/.test(child.name) ? child.name : `stage${i + 1}` }))
-          change(next)
-        }} /></div>
-        <Input value={node.name} placeholder={stage ? "Stage identifier" : "Optional rule name"} onChange={event => change({ name: event.target.value })} aria-label={stage ? "Stage name" : "Rule name"} className="max-w-72" />
-        <Badge variant="outline">{node.mode === "closed" ? "Closed" : "Live"}</Badge>
-        <div className="ml-auto flex items-center gap-1">
-          {parent && <Picker label="Wrap rule" value="wrap" choices={[["wrap", "Wrap in…"], ["not", "NOT"], ["every", "Every hour"], ["recent", "Recently"], ["count", "Occurrence count"], ["all", "AND group"], ["any", "OR group"], ...(["not", "every", "recent", "count", "all", "any"].includes(node.kind) && node.children.length === 1 ? [["unwrap", "Remove wrapper"]] : [])]} onChange={kind => { if (kind !== "wrap") edit({ ...config, root: kind === "unwrap" ? unwrapRule(config.root, node.id) : wrapRule(config.root, node.id, kind as RuleKind) }) }} />}
-          {parent && ["all", "any", "sequence"].includes(parent.kind) && <Button type="button" variant="ghost" size="icon" aria-label="Duplicate rule" onClick={() => edit({ ...config, root: duplicateRule(config.root, node.id) })}><Copy aria-hidden="true" /></Button>}
-          <Button type="button" variant="ghost" size="icon" aria-label={folded ? "Expand rule" : "Collapse rule"} aria-expanded={!folded} onClick={() => setEditor(current => ({ ...current, collapsed: { ...current.collapsed, [node.id]: !folded } }))}><ChevronDown aria-hidden="true" className={cn(folded && "-rotate-90")} /></Button>
-          {parent && <Button type="button" variant="ghost" size="icon" aria-label="Remove rule" onClick={() => edit({ ...config, root: removeRule(config.root, node.id) })}><X aria-hidden="true" /></Button>}
-        </div>
-      </div>
-      {!folded && <FieldGroup className="mt-3 gap-3">
-        {<FieldGroup className={cn("grid gap-3", stage ? "grid-cols-[16rem_12rem_1fr]" : "grid-cols-[16rem_1fr]")}>
-          <Field><FieldLabel>Evaluation hour</FieldLabel><ToggleGroup type="single" variant="outline" size="sm" spacing={0} value={node.mode} onValueChange={mode => { if (mode) change({ mode: mode as "live" | "closed" }) }} aria-label="Evaluation hour"><ToggleGroupItem value="live">Live</ToggleGroupItem><ToggleGroupItem value="closed">Closed</ToggleGroupItem></ToggleGroup></Field>
-          {stage && <Field><FieldLabel>Maximum gap (h)</FieldLabel><Input type="number" min="1" step="1" value={node.gapHours} aria-label="Maximum stage gap hours" disabled={index === 0} onChange={event => change({ gapHours: Number(event.target.value) })} /><FieldDescription>{index === 0 ? "The first stage uses the total sequence span." : "Maximum hours after the previous stage."}</FieldDescription></Field>}
-          <FieldDescription>Each closed anchor shifts this rule back one hour. Historical offsets remain relative to that anchor.</FieldDescription>
-        </FieldGroup>}
-        {["condition", "crossup", "crossdown"].includes(node.kind) && <FieldGroup className="grid grid-cols-[minmax(0,1fr)_13rem_minmax(0,1fr)] items-start gap-3">
-          <ExpressionInput label="Left expression" displayLabel="Indicator / expression" value={node.left} onChange={left => change({ left })} onSelectExpression={selectLeft} {...expressionProps} />
-          <Field><FieldLabel>Comparison</FieldLabel>{node.kind === "condition" ? <Picker label="Comparison" value={node.comparison} choices={categorical ? categoryComparisons : comparisons} onChange={comparison => change({ comparison })} /> : <FieldDescription>{node.kind === "crossup" ? "Previous ≤, current >" : "Previous ≥, current <"}</FieldDescription>}</Field>
-          {(node.kind !== "condition" || !unaryComparison(node.comparison)) && <FieldGroup>{node.kind === "condition" && categorical ? <CategoryValueInput label="Right expression" value={node.right} onChange={right => change({ right })} {...expressionProps} choices={rightChoices} unit={propsUnit(node.left)} /> : <ExpressionInput label={node.kind === "condition" && node.comparison === "between" ? "Minimum expression" : "Right expression"} value={node.right} onChange={right => change({ right })} {...expressionProps} unit={propsUnit(node.left)} />}{node.kind === "condition" && node.comparison === "between" && <ExpressionInput label="Maximum expression" value={node.upper} onChange={upper => change({ upper })} {...expressionProps} unit={propsUnit(node.left)} />}</FieldGroup>}
-        </FieldGroup>}
-        {["every", "recent", "count", "sequence"].includes(node.kind) && <FieldGroup className="grid grid-cols-[12rem_13rem_12rem_minmax(0,1fr)] gap-3">
-          <Field><FieldLabel>{node.kind === "sequence" ? "Maximum span (h)" : "Window hours"}</FieldLabel><Input type="number" min="1" step="1" value={node.hours} aria-label="Window hours" onChange={event => change({ hours: Number(event.target.value) })} /></Field>
-          {node.kind === "count" && <><Field><FieldLabel>Count comparison</FieldLabel><Picker label="Count comparison" value={node.comparison} choices={comparisons.filter(([key]) => ["eq", "neq", "gt", "gte", "lt", "lte", "between"].includes(key))} onChange={comparison => change({ comparison })} /></Field><Field><FieldLabel>Count threshold</FieldLabel><Input type="number" min="0" step="1" value={node.minimum} aria-label="Count threshold" onChange={event => change({ minimum: Number(event.target.value) })} /></Field>{node.comparison === "between" && <Field><FieldLabel>Maximum count</FieldLabel><Input type="number" min="0" step="1" value={node.upper} aria-label="Maximum count" onChange={event => change({ upper: event.target.value })} /></Field>}</>}
-          {node.kind !== "count" && <FieldDescription>{node.kind === "sequence" ? "Stages run in strict hourly order. The final stage must match the anchor hour. Wrap this sequence in Recently to search earlier completions." : "Includes the anchor and preceding hourly slots. Missing slots are never skipped."}</FieldDescription>}
-        </FieldGroup>}
-        {stage && <FieldSet><FieldLegend>Capture values at this stage</FieldLegend><FieldGroup className="gap-2">{node.captures.map(item => <FieldGroup key={item.id} className="grid grid-cols-[12rem_minmax(0,1fr)_auto] items-start gap-2"><Field><FieldLabel>Capture name</FieldLabel><Input value={item.name} aria-label="Capture name" onChange={event => change({ captures: node.captures.map(current => current.id === item.id ? { ...current, name: event.target.value } : current) })} /></Field><ExpressionInput label="Captured expression" value={item.expression} onChange={expression => change({ captures: node.captures.map(current => current.id === item.id ? { ...current, expression } : current) })} {...expressionProps} /><Button type="button" variant="ghost" size="icon" className="mt-6" aria-label="Remove capture" onClick={() => change({ captures: node.captures.filter(current => current.id !== item.id) })}><X aria-hidden="true" /></Button></FieldGroup>)}</FieldGroup><Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => change({ captures: [...node.captures, { id: newRuleID(), name: `value${node.captures.length + 1}`, expression: "Price" }] })}><Plus data-icon="inline-start" aria-hidden="true" />Add capture</Button></FieldSet>}
-        {node.children.length > 0 && <FieldGroup className="gap-2">{node.children.map((child, childIndex) => <RuleCard key={child.id} node={child} parent={node} index={childIndex} tree={tree} />)}</FieldGroup>}
-        {canReceiveChildren(node) && <div className="flex items-center gap-2" onDragOver={event => { if (tree.dragging && moveRule(config.root, tree.dragging, node.id, node.children.length) !== config.root) { event.preventDefault(); event.stopPropagation(); tree.setDrop({ parent: node.id, index: node.children.length }) } }} onDrop={event => { if (tree.dragging) { event.preventDefault(); event.stopPropagation(); edit({ ...config, root: moveRule(config.root, tree.dragging, node.id, node.children.length) }); tree.setDragging(null); tree.setDrop(null) } }}>
-          <Button type="button" variant="outline" size="sm" onClick={() => add("condition")}><Plus data-icon="inline-start" aria-hidden="true" />Add {node.kind === "sequence" ? "stage" : "condition"}</Button>
-          <div className="w-48"><Picker label="Add rule or group" value="add" choices={[["add", "Add rule / group…"], ...ruleKinds.filter(item => item.value !== "condition").map(item => [item.value, item.label])]} onChange={kind => { if (kind !== "add") add(kind as RuleKind) }} /></div>
-          {tree.dragging && <Badge variant="outline">Drop into this group</Badge>}
-          {tree.drop?.parent === node.id && tree.drop.index === node.children.length && <div data-filter-insertion-line aria-hidden="true" className="h-0.5 flex-1 bg-primary" />}
-        </div>}
-      </FieldGroup>}
-    </FieldSet>
-  </div>
-}
-
+const firstCondition = (n: RuleNode): RuleNode => ['condition', 'crossup', 'crossdown'].includes(n.kind) ? n : n.children.length ? firstCondition(n.children[0]) : n
 export function MarketFilters(props: Props) {
   const { filters, draft: override, editor, onEditorChange, onDraftChange, metrics, combinations, combinationId } = props
-  const formulaInput = useRef<HTMLTextAreaElement>(null)
-  const [completionOpen, setCompletionOpen] = useState(false)
-  const draft = override ?? filters
-  const [saving, setSaving] = useState(false), [saveError, setSaveError] = useState(""), [feedback, setFeedback] = useState("")
-  const nameDraft = editor.combinationName
-  const setNameDraft = (value: { id: string; value: string } | null) => onEditorChange(current => ({ ...current, combinationName: value }))
+  const formulaInput = useRef<HTMLTextAreaElement>(null), lastEdit = useRef(''), coalesceTimer = useRef<number | undefined>(undefined)
+  const [completionOpen, setCompletionOpen] = useState(false), [libraryOpen, setLibraryOpen] = useState(false)
+  const [saving, setSaving] = useState(false), [saveError, setSaveError] = useState(''), [feedback, setFeedback] = useState('')
   const [dragging, setDragging] = useState<string | null>(null), [drop, setDrop] = useState<{ parent: string; index: number } | null>(null)
-  const selected = combinations.find(item => item.id === combinationId), name = nameDraft?.id === combinationId ? nameDraft.value : selected?.name ?? ""
-  const dirty = override !== null || editor.source !== null
-  const edit = (config: FilterConfigV2) => { onEditorChange(current => ({ ...current, source: null })); onDraftChange(config); setSaveError(""); setFeedback("") }
-  const perform = async (action: () => Promise<void>, success: string) => {
-    setSaving(true); setSaveError("")
-    try { await action(); setFeedback(success) } catch (cause) { setSaveError(cause instanceof Error ? cause.message : "Cannot save filters.") } finally { setSaving(false) }
+  const pendingName = Object.keys(editor.nameDrafts).length > 0
+  const draft = override ?? filters, dirty = override !== null || editor.source !== null || pendingName
+  useEffect(() => () => window.clearTimeout(coalesceTimer.current), [])
+  const selectedCombination = combinations.find(item => item.id === combinationId)
+  const name = editor.combinationName?.id === combinationId ? editor.combinationName.value : selectedCombination?.name ?? ''
+  const selectedRule = findRule(draft.root, editor.selectedRuleId ?? '') ?? (editor.source !== null ? firstCondition(draft.root) : draft.root)
+  const guided = props.preferences.layout === 'guided'
+  const record = (source: string | null, selectedId?: string, nextConfig = draft) => {
+    const field = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement ? document.activeElement.getAttribute('aria-label') ?? document.activeElement.id : ''
+    const coalesce = Boolean(field && lastEdit.current === field)
+    const previous: FilterDraftRevision = { config: draft, source: editor.source, expressionDrafts: editor.expressionDrafts }
+    const sources = new Set<string>(nextConfig.definitions.map(d => d.expression))
+    const names = new Set<string>(nextConfig.definitions.map(d => d.id))
+    const collect = (node: RuleNode) => { names.add(node.id); sources.add(node.left); sources.add(node.right); sources.add(node.upper); node.captures.forEach(c => { sources.add(c.expression); names.add(c.id) }); node.children.forEach(collect) }
+    collect(nextConfig.root)
+    onEditorChange(current => ({ ...current, source, selectedRuleId: selectedId ?? current.selectedRuleId, past: coalesce ? current.past : [...current.past, previous].slice(-40), future: [], nameDrafts: Object.fromEntries(Object.entries(current.nameDrafts).filter(([id]) => names.has(id))), expressionDrafts: Object.fromEntries(Object.entries(current.expressionDrafts).filter(([key]) => sources.has(key))) }))
+    lastEdit.current = field; window.clearTimeout(coalesceTimer.current); coalesceTimer.current = window.setTimeout(() => { lastEdit.current = '' }, 700); setSaveError(''); setFeedback('')
   }
-  const load = (id: string) => { const combination = combinations.find(item => item.id === id); if (combination) void perform(async () => { await props.onSelectCombination(id); edit(parseFilterConfig(combination.filterConfigJSON ?? combination.filtersJSON)); setNameDraft(null) }, "Combination loaded for preview.") }
+  const edit = (config: FilterConfigV2, selectedId?: string) => { record(null, selectedId, config); onDraftChange(config) }
+  const travel = (direction: 'undo' | 'redo') => {
+    const list = direction === 'undo' ? editor.past : editor.future, next = list[list.length - 1]
+    if (!next) return
+    const current = { config: draft, source: editor.source, expressionDrafts: editor.expressionDrafts }
+    onEditorChange(value => ({ ...value, source: next.source, nameDrafts: {}, expressionDrafts: next.expressionDrafts ?? {}, past: direction === 'undo' ? value.past.slice(0, -1) : [...value.past, current], future: direction === 'redo' ? value.future.slice(0, -1) : [...value.future, current], selectedIds: [] }))
+    onDraftChange(next.config); lastEdit.current = ''; setSaveError(''); setFeedback('')
+  }
+  const perform = async (action: () => Promise<void>, success: string) => { setSaving(true); setSaveError(''); try { await action(); setFeedback(success) } catch (cause) { setSaveError(cause instanceof Error ? cause.message : 'Cannot save filters.') } finally { setSaving(false) } }
+  const preferences = (next: FilterLibraryPreferences) => { void props.onPreferences(next).catch(cause => setSaveError(cause instanceof Error ? cause.message : 'Cannot save condition library preferences.')) }
+  const load = (id: string) => { const combination = combinations.find(item => item.id === id); if (combination) void perform(async () => { await props.onSelectCombination(id); edit(parseFilterConfig(combination.filterConfigJSON ?? combination.filtersJSON)); onEditorChange(current => ({ ...current, combinationName: null, selectedRuleId: null, selectedIds: [] })) }, 'Combination loaded for preview.') }
+  const select = (id: string) => onEditorChange(current => ({ ...current, selectedRuleId: id, collapsed: { ...current.collapsed, ...Object.fromEntries(rulePath(draft.root, id).map(node => [node.id, false])) } }))
+  const add = (item: LibraryItem) => { const next = addLibraryRule(draft, selectedRule.id, item); edit(next.config, next.selectedId) }
+  const preset = (id: string) => { const item = conditionLibrary(metrics, props.templates).find(item => item.id === id); if (item) { add(item); preferences({ ...props.preferences, recent: [id, ...props.preferences.recent.filter(item => item !== id)].slice(0, 12) }) } }
+  const bulkIds = topLevelSelection(draft.root, editor.selectedIds)
+  const bulk = (action: 'live' | 'closed' | 'copy' | 'delete') => {
+    let root = draft.root
+    for (const id of bulkIds) root = action === 'copy' ? duplicateRule(root, id) : action === 'delete' ? removeRule(root, id) : updateRule(root, id, n => ({ ...n, mode: action }))
+    edit({ ...draft, root }); if (action === 'delete') onEditorChange(current => ({ ...current, selectedIds: [] }))
+  }
   const insertFormula = (expression: string) => {
     const source = editor.source ?? props.formula, start = formulaInput.current?.selectionStart ?? source.length, end = formulaInput.current?.selectionEnd ?? start
-    onEditorChange(current => ({ ...current, source: source.slice(0, start) + expression + source.slice(end) }))
-    setCompletionOpen(false)
+    record(source.slice(0, start) + expression + source.slice(end)); setCompletionOpen(false)
     window.requestAnimationFrame(() => { formulaInput.current?.focus(); formulaInput.current?.setSelectionRange(start + expression.length, start + expression.length) })
   }
-  const tree: TreeProps = { config: draft, edit, metrics, units: props.units, expressions: props.expressions, editor, setEditor: onEditorChange, disabled: saving, dragging, setDragging, drop, setDrop }
-  return <Collapsible open={editor.open} onOpenChange={open => onEditorChange(current => ({ ...current, open }))} className="border-b px-4 py-3">
-    <div className="flex items-center gap-3"><CollapsibleTrigger asChild><Button variant="ghost" size="sm"><Filter data-icon="inline-start" aria-hidden="true" />Filters<ChevronDown data-icon="inline-end" aria-hidden="true" className={cn(!editor.open && "-rotate-90")} /></Button></CollapsibleTrigger><Badge variant="outline">{ruleCount(draft.root)} conditions</Badge><span className="text-xs text-muted-foreground" role="status">{props.matches} / {props.total} markets · {props.unknown} Unknown{props.compiling ? " · Compiling…" : !props.valid ? " · Invalid draft" : props.previewPending ? " · Updating preview…" : dirty ? " · Draft preview" : " · Applied"}</span></div>
-    <CollapsibleContent className="pt-3">
-      <fieldset disabled={saving} className="flex flex-col gap-4"><legend className="sr-only">Market filter editor</legend>
-        <FieldGroup className="grid grid-cols-[20rem_20rem_auto_auto_auto_minmax(0,1fr)] items-end gap-3">
-          <Field><FieldLabel>Saved combinations</FieldLabel><div className="flex items-center gap-1"><Select value={selected?.id ?? ""} onValueChange={load} disabled={!combinations.length}><SelectTrigger className="w-full" aria-label="Saved combinations"><SelectValue placeholder="Choose a combination…" /></SelectTrigger><SelectContent position="popper"><SelectGroup>{combinations.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select><Button type="button" variant="ghost" size="icon" disabled={!selected} aria-label="Reload selected combination" onClick={() => { if (selected) load(selected.id) }}><RotateCcw aria-hidden="true" /></Button></div></Field>
-          <Field><FieldLabel>Combination name</FieldLabel><Input value={name} maxLength={80} aria-label="Combination name" placeholder="Name this combination…" onChange={event => setNameDraft({ id: combinationId, value: event.target.value })} /></Field>
-          <Button type="button" variant="outline" disabled={!props.valid || !name.trim()} onClick={() => { void perform(async () => { await props.onSaveCombination(name.trim(), draft); setNameDraft(null) }, "Combination saved. Apply filters to confirm.") }}><Save data-icon="inline-start" aria-hidden="true" />{combinations.some(item => item.name.toLowerCase() === name.trim().toLowerCase()) ? "Update combination" : "Save combination"}</Button>
-          <Button type="button" variant="ghost" disabled={!selected} aria-label="Delete combination" onClick={() => { if (selected) void perform(async () => { await props.onDeleteCombination(selected.id); setNameDraft(null) }, "Combination deleted; current rules remain.") }}><Trash2 aria-hidden="true" /></Button>
-          <div className="w-60"><Picker label="Rule example" value="example" choices={[["example", "Start from an example…"], ...formulaExamples.map((item, i) => [String(i), item.label])]} onChange={value => { if (value !== "example") onEditorChange(current => ({ ...current, tab: "formula", source: formulaExamples[Number(value)].source })) }} /></div>
-        </FieldGroup>
-        <Tabs value={editor.tab} onValueChange={tab => onEditorChange(current => ({ ...current, tab: tab as "rules" | "formula" }))}><TabsList><TabsTrigger value="rules"><Filter data-icon="inline-start" aria-hidden="true" />Rules</TabsTrigger><TabsTrigger value="formula"><Code data-icon="inline-start" aria-hidden="true" />Formula</TabsTrigger></TabsList>
-          <TabsContent value="rules" className="pt-2"><FieldGroup className="gap-3">
-            <FieldSet><FieldLegend>Named formulas</FieldLegend><FieldDescription>Reuse numeric or category expressions throughout this combination.</FieldDescription><FieldGroup className="mt-2 gap-2">{draft.definitions.map(item => <FieldGroup key={item.id} className="grid grid-cols-[16rem_minmax(0,1fr)_auto] items-start gap-3"><Field><FieldLabel>Formula name</FieldLabel><Input value={item.name} aria-label="Formula name" spellCheck={false} onChange={event => edit({ ...draft, definitions: draft.definitions.map(current => current.id === item.id ? { ...current, name: event.target.value } : current) })} /></Field><ExpressionInput label="Formula expression" value={item.expression} metrics={metrics} units={props.units} expressions={props.expressions} definitions={draft.definitions.filter(current => current.id !== item.id)} onChange={expression => edit({ ...draft, definitions: draft.definitions.map(current => current.id === item.id ? { ...current, expression } : current) })} /><Button type="button" variant="ghost" size="icon" className="mt-6" aria-label="Remove formula" onClick={() => edit({ ...draft, definitions: draft.definitions.filter(current => current.id !== item.id) })}><X aria-hidden="true" /></Button></FieldGroup>)}</FieldGroup><Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => { let i = 1; while (draft.definitions.some(item => item.name === `formula${i}`)) i += 1; edit({ ...draft, definitions: [...draft.definitions, { id: newRuleID(), name: `formula${i}`, expression: "Price" }] }) }}><Plus data-icon="inline-start" aria-hidden="true" />Add named formula</Button></FieldSet>
-            <RuleCard node={draft.root} tree={tree} />
-            {!draft.root.children.length && <Empty><EmptyHeader><EmptyTitle>All contracts in the universe</EmptyTitle><EmptyDescription>No hidden turnover, spread, listing age, or symbol restrictions. Add a condition or use an example.</EmptyDescription></EmptyHeader></Empty>}
-          </FieldGroup></TabsContent>
-          <TabsContent value="formula" className="pt-2"><FieldGroup><Field data-invalid={props.diagnostics.length > 0}><FieldLabel>Rule formula</FieldLabel><Textarea ref={formulaInput} onKeyDown={event => { if (event.ctrlKey && event.key === " ") { event.preventDefault(); setCompletionOpen(true) } }} value={editor.source ?? props.formula} rows={12} aria-label="Rule formula" aria-invalid={props.diagnostics.length > 0} spellCheck={false} onChange={event => onEditorChange(current => ({ ...current, source: event.target.value }))} /><FieldDescription>Declare reusable values with let name = expression;. Use AND / OR / NOT, parentheses, parameterized indicators, and time functions. Closed shifts its argument back one hour.</FieldDescription></Field>
-            <Popover open={completionOpen} onOpenChange={setCompletionOpen}><PopoverTrigger asChild><Button type="button" variant="outline" size="sm"><Plus data-icon="inline-start" aria-hidden="true" />Insert metric / function (Ctrl+Space)</Button></PopoverTrigger><PopoverContent className="w-[32rem] p-0"><Command><CommandInput placeholder="Search expressions…" /><CommandList><CommandEmpty>No expressions found.</CommandEmpty><CommandGroup heading="Named formulas">{draft.definitions.map(item => <CommandItem key={item.id} value={item.name} onSelect={() => insertFormula(item.name)}>{item.name}<span className="ml-auto text-muted-foreground">{props.units[item.name] ?? "value"}</span></CommandItem>)}</CommandGroup><CommandGroup heading="Functions">{props.functions.map(item => <CommandItem key={item} value={item} onSelect={() => insertFormula(functionCompletion(item))}>{item}</CommandItem>)}</CommandGroup><CommandGroup heading="Metrics">{metrics.map(item => <CommandItem key={item.key} value={`${item.key} ${item.label}`} onSelect={() => insertFormula(item.key)}>{item.label}<span className="ml-auto text-muted-foreground">{item.unit}</span></CommandItem>)}</CommandGroup></CommandList></Command></PopoverContent></Popover>
-          </FieldGroup></TabsContent>
-        </Tabs>
-        {props.diagnostics.length > 0 && <FieldError role="alert">{props.diagnostics.join(" ")} Last valid preview remains active.</FieldError>}
-        <div className="flex items-center gap-2"><Button type="button" disabled={!props.valid || props.compiling} onClick={() => { void perform(async () => { await props.onApply(draft); onEditorChange(current => ({ ...current, source: null })) }, "Filters applied and saved.") }}>{saving ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <Check data-icon="inline-start" aria-hidden="true" />}Apply filters</Button><Button type="button" variant="outline" disabled={!dirty} onClick={() => { onEditorChange(current => ({ ...current, source: null })); onDraftChange(null); setSaveError(""); setFeedback("Saved filters restored.") }}>Discard changes</Button><Button type="button" variant="ghost" onClick={() => edit(emptyFilterConfig())}>Reset draft</Button><span className="ml-auto text-xs text-muted-foreground">Required history: {props.requiredHours}h · only True matches</span></div>
-      </fieldset>
-      {props.history && props.history.pending > 0 && <p className="mt-2 text-xs text-muted-foreground" role="status">Loading rule history for {props.history.pending} contracts · {props.history.completed} completed. Results update as data arrives.</p>}
-      {props.history?.error && <FieldError>{props.history.error} Available history remains usable.</FieldError>}
-      {saveError && <FieldError role="alert">{saveError}</FieldError>}{feedback && <p className="mt-2 text-xs text-muted-foreground" role="status">{feedback}</p>}
-    </CollapsibleContent>
+  const rememberExpression = (expression: EditorExpression) => onEditorChange(current => ({ ...current, expressionDrafts: { ...current.expressionDrafts, [expression.source]: expression } }))
+  const tree: RuleTreeContext = { config: draft, edit, select, selectedId: selectedRule.id, metrics, units: props.units, expressions: props.expressions, templates: props.templates, editor, setEditor: onEditorChange, disabled: saving, guided, rememberExpression, dragging, setDragging, drop, setDrop }
+  const preview = <FilterRulePreview nodeId={selectedRule.id} rows={props.rows} results={props.results} filtersJSON={props.previewJSON} revision={props.revision} instId={editor.explainId} onSelect={id => onEditorChange(current => ({ ...current, explainId: id }))} onExplain={props.onExplain} metrics={metrics} expressions={props.expressions} units={props.units} templates={props.templates} valid={props.valid} />
+  return <Collapsible open={editor.open} onOpenChange={open => onEditorChange(current => ({ ...current, open }))} className="border-b px-4 py-3" onKeyDown={event => {
+    if (event.defaultPrevented) return
+    const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement
+    if (event.ctrlKey && event.key === ' ') { event.preventDefault(); setLibraryOpen(true) }
+    if (!typing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); travel(event.shiftKey ? 'redo' : 'undo') }
+    if (!typing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'd') { event.preventDefault(); edit({ ...draft, root: duplicateRule(draft.root, selectedRule.id) }) }
+  }}>
+    <div className="flex items-center gap-3"><CollapsibleTrigger asChild><Button variant="ghost" size="sm"><Filter data-icon="inline-start" aria-hidden="true" />Filters<ChevronDown data-icon="inline-end" aria-hidden="true" className={cn(!editor.open && '-rotate-90')} /></Button></CollapsibleTrigger><Badge variant="outline">{ruleCount(draft.root)} {ruleCount(draft.root) === 1 ? 'condition' : 'conditions'}</Badge><span className="text-xs text-muted-foreground" role="status">{props.matches} / {props.total} markets · {props.unknown} Unknown{props.compiling ? ' · Compiling…' : !props.valid ? ' · Invalid draft' : props.previewPending ? ' · Updating preview…' : dirty ? ' · Draft preview' : ' · Applied'}</span></div>
+    <CollapsibleContent className="pt-3"><fieldset disabled={saving} className="flex flex-col gap-4"><legend className="sr-only">Market filter editor</legend>
+      <FieldGroup className="grid grid-cols-[20rem_20rem_auto_auto_auto_minmax(0,1fr)] items-end gap-3"><Field><FieldLabel>Saved combinations</FieldLabel><div className="flex items-center gap-1"><Select value={selectedCombination?.id ?? ''} onValueChange={load} disabled={!combinations.length}><SelectTrigger className="w-full" aria-label="Saved combinations"><SelectValue placeholder="Choose a combination…" /></SelectTrigger><SelectContent position="popper"><SelectGroup>{combinations.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select><Button type="button" variant="ghost" size="icon" disabled={!selectedCombination} aria-label="Reload selected combination" onClick={() => { if (selectedCombination) load(selectedCombination.id) }}><RotateCcw aria-hidden="true" /></Button></div></Field>
+        <Field><FieldLabel>Combination name</FieldLabel><Input value={name} maxLength={80} aria-label="Combination name" placeholder="Name this combination…" onChange={event => onEditorChange(current => ({ ...current, combinationName: { id: combinationId, value: event.target.value } }))} /></Field><Button type="button" variant="outline" disabled={!props.valid || pendingName || !name.trim()} onClick={() => { void perform(async () => { await props.onSaveCombination(name.trim(), draft); onEditorChange(current => ({ ...current, combinationName: null })) }, 'Combination saved. Apply filters to confirm.') }}><Save data-icon="inline-start" aria-hidden="true" />{combinations.some(item => item.name.toLowerCase() === name.trim().toLowerCase()) ? 'Update combination' : 'Save combination'}</Button><Button type="button" variant="ghost" disabled={!selectedCombination} aria-label="Delete combination" onClick={() => { if (selectedCombination) void perform(async () => { await props.onDeleteCombination(selectedCombination.id); onEditorChange(current => ({ ...current, combinationName: null })) }, 'Combination deleted; current rules remain.') }}><Trash2 aria-hidden="true" /></Button>
+      </FieldGroup>
+      <Tabs value={editor.tab} onValueChange={tab => onEditorChange(current => ({ ...current, tab: tab as 'rules' | 'formula' }))}><div className="flex items-center justify-between gap-3"><TabsList><TabsTrigger value="rules"><Filter data-icon="inline-start" aria-hidden="true" />Rules</TabsTrigger><TabsTrigger value="formula"><Code data-icon="inline-start" aria-hidden="true" />Formula</TabsTrigger></TabsList>{editor.tab === 'rules' && <ToggleGroup type="single" variant="outline" size="sm" spacing={0} value={props.preferences.layout} onValueChange={layout => { if (layout) preferences({ ...props.preferences, layout: layout as FilterLibraryPreferences['layout'] }) }} aria-label="Rule layout"><ToggleGroupItem value="sentences">Sentence rows</ToggleGroupItem><ToggleGroupItem value="guided">Guided cards</ToggleGroupItem></ToggleGroup>}</div>
+        <TabsContent value="rules" className="pt-3"><FieldGroup className="gap-3"><div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Start with a condition</span>{visualPresets.filter(p => ['preset:oi', 'preset:body', 'preset:volume', 'preset:sequence'].includes(p.id)).map(p => <Button key={p.id} type="button" variant="outline" size="sm" onClick={() => preset(p.id)}>{p.label}</Button>)}</div>
+          <div className="flex items-center gap-2"><RuleLibrary metrics={metrics} templates={props.templates} preferences={props.preferences} onPreferences={preferences} onAdd={add} open={libraryOpen} onOpenChange={setLibraryOpen} /><Button type="button" variant="outline" onClick={() => preset('rule:all')}><Plus data-icon="inline-start" aria-hidden="true" />Add group</Button><div className="w-64"><RulePicker label="Rule example" value="example" choices={[["example", "More ready-to-use conditions…"], ...visualPresets.map(p => [p.id, p.label])]} onChange={value => { if (value !== 'example') preset(value) }} /></div><span className="text-xs text-muted-foreground">Ctrl+Space to find a condition</span><div className="ml-auto flex items-center gap-1"><Button type="button" variant="ghost" size="icon" aria-label="Undo filter edit" disabled={!editor.past.length} onClick={() => travel('undo')}><Undo2 aria-hidden="true" /></Button><Button type="button" variant="ghost" size="icon" aria-label="Redo filter edit" disabled={!editor.future.length} onClick={() => travel('redo')}><Redo2 aria-hidden="true" /></Button></div></div>
+          {bulkIds.length > 0 && <div className="flex items-center gap-2"><Badge variant="outline">{bulkIds.length} selected</Badge><Button type="button" variant="outline" size="sm" onClick={() => bulk('live')}>Set Live</Button><Button type="button" variant="outline" size="sm" onClick={() => bulk('closed')}>Set Closed</Button><Button type="button" variant="outline" size="sm" onClick={() => bulk('copy')}><Copy data-icon="inline-start" aria-hidden="true" />Duplicate selected</Button><Button type="button" variant="outline" size="sm" onClick={() => bulk('delete')}><Trash2 data-icon="inline-start" aria-hidden="true" />Remove selected</Button><Button type="button" variant="ghost" size="sm" onClick={() => onEditorChange(current => ({ ...current, selectedIds: [] }))}>Clear selection</Button></div>}
+          <div className={cn('grid items-start gap-4', !guided && 'grid-cols-[minmax(0,1fr)_minmax(36rem,0.85fr)]')} data-rule-layout={props.preferences.layout}>
+            <div className="flex min-w-0 flex-col gap-3"><RuleOutline node={draft.root} tree={tree} />{!draft.root.children.length && <Empty><EmptyHeader><EmptyTitle>All contracts in the universe</EmptyTitle><EmptyDescription>Choose a ready-to-use condition or search the complete library. Every market restriction is visible in the rule tree.</EmptyDescription></EmptyHeader></Empty>}{guided && preview}</div>
+            {!guided && <aside className="flex min-w-0 flex-col gap-4 rounded-lg border p-4" aria-label="Selected rule editor"><RuleInspector key={selectedRule.id} node={selectedRule} tree={tree} />{props.diagnostics.length > 0 && <FieldError role="alert">{props.diagnostics.join(' ')}</FieldError>}{preview}</aside>}
+          </div>
+          <Collapsible><CollapsibleTrigger asChild><Button type="button" variant="ghost" size="sm"><ChevronDown data-icon="inline-start" aria-hidden="true" />Reusable values{draft.definitions.length > 0 ? ` (${draft.definitions.length})` : ''}</Button></CollapsibleTrigger><CollapsibleContent className="pt-3"><FieldSet><FieldLegend>Reusable values</FieldLegend><FieldDescription>Build a value with indicators and calculation blocks, give it a name, then select it in any condition.</FieldDescription><FieldGroup className="mt-3 gap-3">{draft.definitions.map(item => <FieldGroup key={item.id} className="grid grid-cols-[16rem_minmax(0,1fr)_auto] items-start gap-3"><Field><FieldLabel>Value name</FieldLabel><FilterNameInput id={item.id} name={item.name} label="Value name" editor={editor} setEditor={onEditorChange} onCommit={name => {
+        const next = renameValueReferences(draft, { [item.name]: name }, props.expressions)
+        edit({ ...next, definitions: next.definitions.map(c => c.id === item.id ? { ...c, name } : c) })
+      }} /><FieldDescription>Spaces become underscores; references update automatically.</FieldDescription></Field><ExpressionInput label="Reusable value" value={item.expression} metrics={metrics} units={props.units} expressions={props.expressions} templates={props.templates} onExpressionDraft={rememberExpression} definitions={draft.definitions.filter(c => c.id !== item.id)} onChange={expression => edit({ ...draft, definitions: draft.definitions.map(c => c.id === item.id ? { ...c, expression } : c) })} /><Button type="button" variant="ghost" size="icon" className="mt-6" aria-label="Remove reusable value" onClick={() => edit({ ...draft, definitions: draft.definitions.filter(c => c.id !== item.id) })}><X aria-hidden="true" /></Button></FieldGroup>)}</FieldGroup><Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => { let i = 1; while (draft.definitions.some(item => item.name === `value${i}`)) i++; edit({ ...draft, definitions: [...draft.definitions, { id: newRuleID(), name: `value${i}`, expression: 'Price' }] }) }}><Plus data-icon="inline-start" aria-hidden="true" />Add reusable value</Button></FieldSet></CollapsibleContent></Collapsible>
+        </FieldGroup></TabsContent>
+        <TabsContent value="formula" className="pt-3"><FieldGroup><Field data-invalid={props.diagnostics.length > 0}><FieldLabel>Rule formula</FieldLabel><Textarea ref={formulaInput} value={editor.source ?? props.formula} rows={12} aria-label="Rule formula" aria-invalid={props.diagnostics.length > 0} spellCheck={false} onChange={event => record(event.target.value)} onKeyDown={event => { if (event.ctrlKey && event.key === ' ') { event.preventDefault(); setCompletionOpen(true) } }} /><FieldDescription>Optional formula editing uses the same rule tree as Rules. Declare reusable values with let; use AND / OR / NOT, parameterized indicators and time functions.</FieldDescription></Field><Popover open={completionOpen} onOpenChange={setCompletionOpen}><PopoverTrigger asChild><Button type="button" variant="outline" size="sm"><Plus data-icon="inline-start" aria-hidden="true" />Insert metric / function (Ctrl+Space)</Button></PopoverTrigger><PopoverContent className="w-[32rem] p-0"><Command><CommandInput placeholder="Search expressions…" /><CommandList><CommandEmpty>No expressions found.</CommandEmpty><CommandGroup heading="Reusable values">{draft.definitions.map(item => <CommandItem key={item.id} value={item.name} onSelect={() => insertFormula(item.name)}>{item.name}</CommandItem>)}</CommandGroup><CommandGroup heading="Functions">{props.functions.map(item => <CommandItem key={item} value={item} onSelect={() => insertFormula(functionCompletion(item, props.templates))}>{item}</CommandItem>)}</CommandGroup><CommandGroup heading="Metrics">{metrics.map(item => <CommandItem key={item.key} value={`${item.key} ${item.label}`} onSelect={() => insertFormula(item.key)}>{item.label}<span className="ml-auto text-muted-foreground">{item.unit}</span></CommandItem>)}</CommandGroup></CommandList></Command></PopoverContent></Popover></FieldGroup></TabsContent>
+      </Tabs>
+      {props.diagnostics.length > 0 && <FieldError role="alert">{props.diagnostics.join(' ')} Last valid preview remains active.</FieldError>}{pendingName && <FieldDescription>Press Enter or leave the name field to update its references before applying.</FieldDescription>}
+      <div className="flex items-center gap-2"><Button type="button" disabled={!props.valid || props.compiling || pendingName} onClick={() => { void perform(async () => { await props.onApply(draft); onEditorChange(current => ({ ...current, source: null })) }, 'Filters applied and saved.') }}>{saving ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <Check data-icon="inline-start" aria-hidden="true" />}Apply filters</Button><Button type="button" variant="outline" disabled={!dirty} onClick={() => { record(null); onDraftChange(null); setFeedback('Saved filters restored.') }}>Discard changes</Button><Button type="button" variant="ghost" onClick={() => { edit(emptyFilterConfig()); onEditorChange(current => ({ ...current, selectedRuleId: null, selectedIds: [] })) }}>Reset draft</Button><span className="ml-auto text-xs text-muted-foreground">Required history: {props.requiredHours}h · only True matches</span></div>
+    </fieldset>{props.history && props.history.pending > 0 && <p className="mt-2 text-xs text-muted-foreground" role="status">Loading rule history for {props.history.pending} contracts · {props.history.completed} completed.</p>}{props.history?.error && <FieldError>{props.history.error} Available history remains usable.</FieldError>}{saveError && <FieldError role="alert">{saveError}</FieldError>}{feedback && <p className="mt-2 text-xs text-muted-foreground" role="status">{feedback}</p>}</CollapsibleContent>
   </Collapsible>
 }

@@ -8,19 +8,22 @@ import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { arithmeticExpression, arithmeticOperations, expressionName, expressionSource, expressionTemplates, numberExpression, rawExpression, templateExpression, withExpressionArguments } from "@/filter-expression"
+import { arithmeticExpression, arithmeticOperations, expressionName, expressionSource, expressionTemplates, numberExpression, rawExpression, templateExpression, withExpressionArguments, type ExpressionTemplate } from "@/filter-expression"
+import { expressionLabel, humanName } from "@/filter-builder"
 import type { EditorExpression, FilterMetric, NamedFormula } from "@/rule-engine"
 
 export type ExpressionInputProps = {
   label: string; displayLabel?: string; value: string; onChange: (value: string, expression?: EditorExpression) => void; onSelectExpression?: (value: string, expression?: EditorExpression) => void
   metrics: FilterMetric[]; definitions: NamedFormula[]; choices?: { value: string; label: string }[]; unit?: string
   units?: Record<string, string>; expressions?: Record<string, EditorExpression>; expression?: EditorExpression
+  templates?: ExpressionTemplate[]
+  onExpressionDraft?: (expression: EditorExpression) => void
 }
 function ExpressionSelect({ label, value, choices, onChange }: { label: string; value: string; choices: string[][]; onChange: (value: string) => void }) {
   return <Select value={value} onValueChange={onChange}><SelectTrigger className="w-full" aria-label={label}><SelectValue /></SelectTrigger><SelectContent position="popper"><SelectGroup>{choices.map(([key, title]) => <SelectItem key={key} value={key}>{title}</SelectItem>)}</SelectGroup></SelectContent></Select>
 }
 
-export function ExpressionInput({ label, displayLabel = label, value, onChange, onSelectExpression, metrics, definitions, choices = [], unit, units = {}, expressions = {}, expression }: ExpressionInputProps) {
+export function ExpressionInput({ label, displayLabel = label, value, onChange, onSelectExpression, metrics, definitions, choices = [], unit, units = {}, expressions = {}, expression, templates = expressionTemplates, onExpressionDraft }: ExpressionInputProps) {
   const [open, setOpen] = useState(false), [partsOpen, setPartsOpen] = useState(true)
   const [custom, setCustom] = useState(false)
   const [edited, setEdited] = useState<EditorExpression | null>(null)
@@ -31,36 +34,42 @@ export function ExpressionInput({ label, displayLabel = label, value, onChange, 
   const reading = metrics.find(metric => metric.key.toLowerCase() === value.trim().toLowerCase())
   const resolved = expressions[value] ?? expression
   const tree = resolved && resolved.kind !== "raw" ? resolved : edited?.source === value ? edited : resolved ?? rawExpression(value, reading?.unit ?? units[value] ?? "")
-  const template = expressionTemplates.find(item => item.name.toLowerCase() === expressionName(tree))
-  const numericConstant = Number.isFinite(Number(value)) && Boolean(value.trim()) || resolved?.unit === "constant"
+  const template = templates.find(item => item.name.toLowerCase() === expressionName(tree))
+  const numericConstant = Number.isFinite(Number(value)) && Boolean(value.trim()) || resolved?.unit === "constant" || tree.kind === "number"
   const resolvedUnit = reading?.unit ?? resolved?.unit ?? units[value] ?? (tree.unit === "source unit" ? "" : tree.unit)
   const description = numericConstant ? unit ? `${unit} (constant)` : "Numeric constant" : resolvedUnit || unit || "Enter an expression to resolve its unit"
-  const visualLabel = reading?.label ?? definitions.find(item => item.name === value.trim())?.name ?? (tree.kind === "call" ? template?.label : tree.kind === "binary" ? "Arithmetic" : tree.kind === "unary" ? "Signed expression" : undefined)
-  const visual = Boolean(visualLabel) && !custom
+  const visualLabel = reading?.label ?? definitions.find(item => item.name === value.trim())?.name ?? (tree.kind === "raw" ? "Choose a value" : expressionLabel(tree, metrics, templates))
+  const textConstant = tree.kind === "text"
+  const visual = !custom && !numericConstant && !textConstant
   useLayoutEffect(() => { if (custom) input.current?.focus() }, [custom])
   const changeTree = (next: EditorExpression, selecting = false) => {
     next = { ...next, source: expressionSource(next) }; setEdited(next); setPartsOpen(true)
+    onExpressionDraft?.(next)
     if (selecting && onSelectExpression) onSelectExpression(next.source, next)
     else onChange(next.source, next)
   }
   const insert = (next: EditorExpression) => { changeTree(next, true); setCustom(false); selectedExpression.current = true; setOpen(false); trigger.current?.focus() }
-  const shared = { metrics, definitions, units, expressions }
-  const wrappers = expressionTemplates.filter(item => item.parameters[0].kind === "expression" && (!["category", "text"].includes(resolvedUnit) || ["closed", "live"].includes(item.name)))
+  const shared = { metrics, definitions, units, expressions, templates, onExpressionDraft }
+  const wrappers = templates.filter(item => item.parameters[0]?.kind === "expression" && (!["category", "text"].includes(resolvedUnit) || ["closed", "live"].includes(item.name)))
   const hasParts = ["binary", "unary"].includes(tree.kind) || tree.kind === "call" && template
   return <FieldGroup className="gap-2" data-expression-field={label} data-expression-source={value}>
     <Field>
       <FieldLabel htmlFor={fieldID}>{displayLabel}</FieldLabel>
       <div className="flex items-center gap-1">
-        {!visual && <Input id={fieldID} ref={input} value={value} onChange={event => { setCustom(true); setEdited(null); onChange(event.target.value) }} onKeyDown={event => { if (event.key === " " && event.ctrlKey) { event.preventDefault(); setOpen(true) } }} aria-label={label} autoComplete="off" spellCheck={false} />}
+        {!visual && <Input id={fieldID} ref={input} value={!custom && textConstant ? tree.value ?? "" : value} inputMode={!custom && numericConstant ? "decimal" : undefined} onChange={event => {
+          if (custom) { setEdited(null); onChange(event.target.value) }
+          else changeTree(textConstant ? { ...rawExpression(JSON.stringify(event.target.value), "text"), kind: "text", value: event.target.value } : numberExpression(event.target.value))
+        }} onKeyDown={event => { if (event.key === " " && event.ctrlKey) { event.preventDefault(); setOpen(true) } }} aria-label={label} autoComplete="off" spellCheck={false} />}
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild><Button ref={trigger} id={visual ? fieldID : undefined} type="button" variant="outline" size={visual ? "default" : "icon"} className={cn(visual && "min-w-0 flex-1 justify-between")} role="combobox" aria-expanded={open} aria-label={`Choose ${label}`} title="Choose an indicator, function, or named formula" onKeyDown={event => { if (event.key === "ArrowDown" || event.key === " " && event.ctrlKey) { event.preventDefault(); setOpen(true) } }}>{visual ? <><span className="truncate">{visualLabel}</span><ChevronsUpDown data-icon="inline-end" aria-hidden="true" /></> : <Search aria-hidden="true" />}</Button></PopoverTrigger>
           <PopoverContent data-expression-picker={label} className="w-[28rem] p-0" align="start" onCloseAutoFocus={event => { if (selectedExpression.current) { event.preventDefault(); selectedExpression.current = false } }}><Command>
             <CommandInput placeholder="Search indicators (e.g. OI Trend)…" />
             <CommandList><CommandEmpty>No matching expressions.</CommandEmpty>
+              <CommandGroup heading="Constants"><CommandItem value="Numeric value constant" onSelect={() => insert(numberExpression("0"))}>Numeric value</CommandItem><CommandItem value="Text value constant" onSelect={() => insert({ ...rawExpression('""', "text"), kind: "text", value: "" })}>Text value</CommandItem></CommandGroup>
               {choices.length > 0 && <CommandGroup heading="Values">{choices.map(choice => <CommandItem key={choice.value} value={`value ${choice.label}`} onSelect={() => insert({ ...rawExpression(JSON.stringify(choice.value), "category"), kind: "text", value: choice.value })}>{choice.label}</CommandItem>)}</CommandGroup>}
-              {[...new Set(metrics.map(metric => metric.group))].map(group => <CommandGroup key={group} heading={group}>{metrics.filter(metric => metric.group === group).map(metric => <CommandItem key={metric.key} data-metric-key={metric.key} value={`${metric.label} ${metric.key}`} keywords={[`${metric.group} ${metric.label}`, metric.description]} onSelect={() => insert({ ...rawExpression(metric.key, metric.unit), kind: "name", value: metric.key, choices: metric.choices })}>{metric.label}<span className="ml-auto text-muted-foreground">{metric.unit}</span></CommandItem>)}</CommandGroup>)}
-              {definitions.length > 0 && <CommandGroup heading="Named formulas / earlier captures">{definitions.map(item => <CommandItem key={item.id} value={item.name} onSelect={() => insert(expressions[item.name] ?? { ...rawExpression(item.name, units[item.name]), kind: "name", value: item.name })}>{item.name}<span className="ml-auto text-muted-foreground">{units[item.name] ?? "value"}</span></CommandItem>)}</CommandGroup>}
-              {["Parameterized indicators", "Expression functions"].map(group => <CommandGroup key={group} heading={group}>{expressionTemplates.filter(item => item.group === group).map(item => <CommandItem key={item.name} data-function-name={item.name} value={`${item.label} ${item.name}`} onSelect={() => insert(templateExpression(item))}>{item.label}<span className="ml-auto text-muted-foreground">{item.unit}</span></CommandItem>)}</CommandGroup>)}
+              {[...new Set(metrics.map(metric => metric.group))].map(group => <CommandGroup key={group} heading={group}>{metrics.filter(metric => metric.group === group).map(metric => <CommandItem key={metric.key} data-metric-key={metric.key} value={`${metric.label} ${metric.key}`} keywords={[`${metric.group} ${metric.label}`, metric.description, ...(metric.aliases ?? [])]} onSelect={() => insert({ ...rawExpression(metric.key, metric.unit), kind: "name", value: metric.key, choices: metric.choices })}>{metric.label}<span className="ml-auto text-muted-foreground">{metric.unit}</span></CommandItem>)}</CommandGroup>)}
+              {definitions.length > 0 && <CommandGroup heading="Reusable values / captured prices">{definitions.map(item => <CommandItem key={item.id} value={item.name} onSelect={() => insert(expressions[item.name] ?? { ...rawExpression(item.name, units[item.name]), kind: "name", value: item.name })}>{humanName(item.name)}<span className="ml-auto text-muted-foreground">{units[item.name] ?? "value"}</span></CommandItem>)}</CommandGroup>}
+              {[...new Set(templates.map(item => item.group))].map(group => <CommandGroup key={group} heading={group === "Expression functions" ? "Value blocks" : group}>{templates.filter(item => item.group === group).map(item => <CommandItem key={item.name} data-function-name={item.name} value={`${item.label} ${item.name}`} keywords={[item.description]} onSelect={() => insert(templateExpression(item))}>{item.label}<span className="ml-auto text-muted-foreground">{item.unit}</span></CommandItem>)}</CommandGroup>)}
               <CommandGroup heading="Arithmetic">{arithmeticOperations.map(([operation, title]) => <CommandItem key={operation} value={`arithmetic ${title}`} onSelect={() => insert(arithmeticExpression(operation))}>{title}</CommandItem>)}</CommandGroup>
             </CommandList>
           </Command></PopoverContent>
@@ -69,9 +78,14 @@ export function ExpressionInput({ label, displayLabel = label, value, onChange, 
       </div>
       <FieldDescription>{description}{reading?.description && <span className="block">{reading.description}</span>}</FieldDescription>
     </Field>
-    <div className="max-w-64"><ExpressionSelect label={`Transform ${label}`} value="transform" choices={[["transform", "Transform expression…"], ...wrappers.map(item => [item.name, item.label]), ...(!["category", "text"].includes(resolvedUnit) ? arithmeticOperations : [])]} onChange={operation => {
+    <div className="max-w-72"><ExpressionSelect label={`Transform ${label}`} value="transform" choices={[["transform", "Add calculation step…"], ...(!["category", "text"].includes(resolvedUnit) ? [["previous-mean", "Mean of previous closed hours"]] : []), ...wrappers.map(item => [item.name, item.label]), ...(!["category", "text"].includes(resolvedUnit) ? arithmeticOperations : [])]} onChange={operation => {
       if (operation === "transform") return
-      const wrapper = expressionTemplates.find(item => item.name === operation)
+      if (operation === "previous-mean") {
+        const mean = templates.find(item => item.name === "mean"), lag = templates.find(item => item.name === "lag")
+        if (mean && lag) changeTree(templateExpression(mean, templateExpression(lag, tree)))
+        return
+      }
+      const wrapper = templates.find(item => item.name === operation)
       changeTree(wrapper ? templateExpression(wrapper, tree) : arithmeticExpression(operation, tree))
     }} /></div>
     {hasParts && <Collapsible open={partsOpen} onOpenChange={setPartsOpen} className="rounded-lg border p-2">

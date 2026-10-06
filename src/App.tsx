@@ -23,14 +23,15 @@ import { MarketRowsViewport } from "@/MarketRowsViewport"
 import { MarketFilters } from "@/MarketFilters"
 import { FilterExplanation } from "@/FilterExplanation"
 import { keepSnapshotValue, reconcileMarketRows } from "@/market-snapshot"
-import { emptyFilterConfig, initialEditorState, parseFilterConfig, previewResponseIsCurrent, newRuleID, type CompileResponse, type ExplainResponse, type FilterCombination, type FilterConfigV2, type FilterEditorState, type FilterMetric, type FilterTruth, type NativeMarketRow } from "@/rule-engine"
+import { emptyFilterConfig, initialEditorState, initialLibraryPreferences, parseFilterConfig, previewResponseIsCurrent, newRuleID, type CompileResponse, type ExplainResponse, type FilterCombination, type FilterConfigV2, type FilterEditorState, type FilterLibraryPreferences, type FilterMetric, type FilterTruth, type NativeMarketRow } from "@/rule-engine"
+import { expressionTemplates, type ExpressionTemplate } from "@/filter-expression"
 
 type WindowAppearance = { frostedBackgroundEnabled: boolean; frostedBackgroundOpacity: number }
 type HistoryProgress = { pending: number; completed: number; error: string }
-type Snapshot = WindowAppearance & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
+type Snapshot = WindowAppearance & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; filterFunctionCatalog: ExpressionTemplate[]; filterLibraryPreferences: FilterLibraryPreferences; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
 type PreviewSnapshot = Snapshot & { filterResults: Record<string, FilterTruth>; filterToken: string; historyProgress: HistoryProgress }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = Partial<WindowAppearance> & { marketFiltersJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
+type SettingRequest = Partial<WindowAppearance> & { marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string } }): Promise<CompileResponse>
@@ -146,6 +147,9 @@ function App() {
   const [history, setHistory] = useState<HistoryProgress | null>(null)
   const [metrics, setMetrics] = useState<FilterMetric[]>([])
   const [functions, setFunctions] = useState<string[]>([])
+  const [templates, setTemplates] = useState<ExpressionTemplate[]>(expressionTemplates)
+  const [libraryPreferences, setLibraryPreferences] = useState<FilterLibraryPreferences>(initialLibraryPreferences)
+  const librarySaveEpoch = useRef(0), librarySavePending = useRef(false)
   const [filterCombinations, setFilterCombinations] = useState<FilterCombination[]>([])
   const [filterCombinationId, setFilterCombinationId] = useState("")
   const [rows, setRows] = useState<NativeMarketRow[]>([])
@@ -165,6 +169,7 @@ function App() {
   const explainMarket = useCallback((id: string) => { setExplainingId(id); setExplanationOpen(true) }, [])
   const draftJSON = JSON.stringify(filterDraft ?? listFilters)
   const compileKey = editor.source === null ? draftJSON : `source:${editor.source}`
+  const editorExpressions = useMemo(() => ({ ...editor.expressionDrafts, ...compilation.expressions }), [editor.expressionDrafts, compilation.expressions])
   const compiling = compilation.pending || compilation.key !== compileKey
   const valid = !compiling && compilation.diagnostics.length === 0 && Boolean(compilation.configJSON)
   useLayoutEffect(() => {
@@ -203,6 +208,8 @@ function App() {
     setFilterCombinationId(snapshot.selectedMarketFilterCombinationID)
     setMetrics(current => keepSnapshotValue(current, snapshot.filterMetricsCatalog))
     setFunctions(current => keepSnapshotValue(current, snapshot.filterFunctions))
+    setTemplates(current => keepSnapshotValue(current, snapshot.filterFunctionCatalog ?? expressionTemplates))
+    if (!librarySavePending.current) setLibraryPreferences(current => keepSnapshotValue(current, snapshot.filterLibraryPreferences ?? initialLibraryPreferences()))
     setUpdatedAt(snapshot.updatedAt)
     setError(snapshot.error)
     setReady(true)
@@ -289,6 +296,18 @@ function App() {
     setFilterDraft(null)
     setEditor(current => ({ ...current, source: null }))
   }
+  const saveLibraryPreferences = async (preferences: FilterLibraryPreferences) => {
+    const previous = libraryPreferences, epoch = ++librarySaveEpoch.current
+    librarySavePending.current = true
+    setLibraryPreferences(preferences)
+    try {
+      const snapshot = await window.webkit.messageHandlers.radar.postMessage({ filterLibraryPreferencesJSON: JSON.stringify(preferences) })
+      if (epoch === librarySaveEpoch.current) { librarySavePending.current = false; acceptSnapshot(snapshot) }
+    } catch (cause) {
+      if (epoch === librarySaveEpoch.current) { librarySavePending.current = false; setLibraryPreferences(previous) }
+      throw cause
+    }
+  }
   const saveFilterCombination = async (name: string, filters: FilterConfigV2) => {
     const snapshot = await window.webkit.messageHandlers.radar.postMessage({ saveMarketFilterCombination: { name, filtersJSON: JSON.stringify(filters) } })
     acceptSnapshot(snapshot)
@@ -365,8 +384,8 @@ function App() {
         </Badge>
         <span className="text-xs text-muted-foreground">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString("en-US")}` : "Waiting for data"}</span>
       </header>
-      <MarketFilters filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics} functions={functions} units={compilation.units ?? {}} expressions={compilation.expressions ?? {}} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />
-      <FilterExplanation open={explanationOpen} onOpenChange={setExplanationOpen} instId={explainingId} onSelect={setExplainingId} rows={rows} results={results} filtersJSON={previewJSON} revision={revision.current} />
+      <MarketFilters filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics} functions={functions} templates={templates} preferences={libraryPreferences} onPreferences={saveLibraryPreferences} rows={rows} results={results} previewJSON={previewJSON} revision={revision.current} onExplain={explainMarket} units={compilation.units ?? {}} expressions={editorExpressions} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />
+      <FilterExplanation open={explanationOpen} onOpenChange={setExplanationOpen} instId={explainingId} onSelect={setExplainingId} rows={rows} results={results} filtersJSON={previewJSON} revision={revision.current} metrics={metrics} expressions={editorExpressions} units={compilation.units ?? {}} templates={templates} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
       <section aria-label="Perpetual swap markets" className="flex-1">
         <Table className="table-auto" data-market-count={visible.length} aria-rowcount={visible.length + 1}>
