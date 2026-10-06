@@ -16,6 +16,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var rows: [[String: Any]]
     var contexts: [FilterMarketData]
     var previewDelay: UInt64 = 0
+    var filterSaveDelay: UInt64 = 0
+    var filterSaveError: String?
     var pulseRows = false
     var pulse = 0.0
     var includeChartBars = false
@@ -70,6 +72,18 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
             do { let filter = try FilterCompiler.compile(FilterConfigV2.decode(explain["filtersJSON"]!)); replyHandler(["instId": market.id, "filterToken": explain["token"]!, "revision": revision, "trace": FilterEvaluator(market: market, filter: filter).evaluate(explain: true).snapshot], nil) }
             catch { replyHandler(nil, String(describing: error)) }; return
         }
+        if let json = request["marketFiltersJSON"] as? String {
+            let delay = filterSaveDelay, error = filterSaveError
+            Task {
+                do {
+                    if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+                    if let error { replyHandler(nil, error); return }
+                    _ = try radar.setMarketFiltersJSON(json); revision += 1
+                    replyHandler(snapshot(), nil)
+                } catch { replyHandler(nil, String(describing: error)) }
+            }
+            return
+        }
         if let capture = request["captureChart"] as? [String: Any], let rgb = capture["backgroundRGB"] as? [Double] {
             chartSnapshotRGB = rgb
             replyHandler(["ok": true], nil)
@@ -97,7 +111,6 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
                 revision += 1
             }
             if let json = request["filterLibraryPreferencesJSON"] as? String { try radar.setFilterLibraryPreferences(json); revision += 1 }
-            if let json = request["marketFiltersJSON"] as? String { _ = try radar.setMarketFiltersJSON(json); revision += 1 }
             if let saved = request["saveMarketFilterCombination"] as? [String: String] { _ = try radar.saveMarketFilterCombination(name: saved["name"]!, filtersJSON: saved["filtersJSON"]!); revision += 1 }
             if let selected = request["selectedMarketFilterCombinationID"] as? String { _ = try radar.setSelectedMarketFilterCombinationID(selected); revision += 1 }
             if let id = request["deleteMarketFilterCombination"] as? String { _ = try radar.deleteMarketFilterCombination(id); revision += 1 }
@@ -1098,6 +1111,76 @@ final class RuleEditorUITests: XCTestCase {
     }
 
     @MainActor
+    func testUnsavedFilterWarningPersistsThroughCollapseAndFailedSave() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
+        window.contentView = view; present(window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let theme = appearance == .darkAqua ? "dark" : "light"
+            window.appearance = NSAppearance(named: appearance)
+            try await wait(view, "window.matchMedia('(prefers-color-scheme: dark)').matches === \(appearance == .darkAqua)")
+            try await wait(view, "document.querySelector('[data-filter-unsaved]') === null && document.querySelector('[data-filter-unsaved-badge]') === null")
+            try await click(view, "Filters")
+            try await click(view, "Formula")
+            try await input(view, "textarea", "Close > 0", textarea: true)
+            try await validDraft(view)
+            try await wait(view, "document.querySelector('[data-filter-unsaved]')?.textContent.includes('Apply filters to save them') && document.querySelector('[data-filter-unsaved-badge]')?.textContent.includes('Unsaved changes')")
+            let accessible = try await js(view, "document.querySelector('[data-filter-unsaved]')?.getAttribute('role') === 'status' && document.querySelector('[data-filter-unsaved]')?.getAttribute('aria-live') === 'polite'") as? Bool
+            XCTAssertEqual(accessible, true)
+            try await assertSharedSurfaces(view, opacity: 0.3)
+            try await screenshot(view, project.appendingPathComponent(".build/ui-qa/filters-unsaved-expanded-\(theme).png"))
+            try await click(view, "Filters")
+            try await wait(view, "document.querySelector('textarea') === null && document.querySelector('[data-filter-unsaved] button')?.disabled === false")
+            try await screenshot(view, project.appendingPathComponent(".build/ui-qa/filters-unsaved-collapsed-\(theme).png"))
+            window.setContentSize(NSSize(width: 720, height: 900))
+            try await wait(view, "window.innerWidth === 720")
+            let fits = try await js(view, """
+            (() => {
+              const alert = document.querySelector('[data-filter-unsaved]').getBoundingClientRect();
+              const description = document.querySelector('[data-filter-unsaved] [data-slot=alert-description]').getBoundingClientRect();
+              const action = document.querySelector('[data-filter-unsaved] button').getBoundingClientRect();
+              return document.documentElement.scrollWidth <= window.innerWidth + 1 && description.right < action.left && action.right <= alert.right && action.bottom <= alert.bottom;
+            })()
+            """) as? Bool
+            XCTAssertEqual(fits, true, "The unsaved warning and save action must fit the scaled native layout.")
+            try await screenshot(view, project.appendingPathComponent(".build/ui-qa/filters-unsaved-narrow-\(theme).png"))
+            window.setContentSize(NSSize(width: 1440, height: 900))
+            try await wait(view, "window.innerWidth === 1440")
+
+            let saved = bridge.radar.marketFiltersJSON, revision = bridge.revision
+            bridge.filterSaveDelay = 400_000_000
+            bridge.filterSaveError = "Filter save failed. Try again."
+            try await click(view, "Apply filters")
+            try await wait(view, "document.querySelector('[data-filter-unsaved]')?.getAttribute('aria-busy') === 'true' && document.querySelector('[data-filter-unsaved] button')?.disabled === true")
+            try await wait(view, "Array.from(document.querySelectorAll('[role=alert]')).some(x => x.textContent.includes('Filter save failed. Try again.')) && document.querySelector('[data-filter-unsaved] button')?.disabled === false")
+            XCTAssertEqual(bridge.radar.marketFiltersJSON, saved)
+            XCTAssertEqual(bridge.revision, revision)
+            try await screenshot(view, project.appendingPathComponent(".build/ui-qa/filters-unsaved-failure-\(theme).png"))
+            bridge.filterSaveDelay = 0; bridge.filterSaveError = nil
+            try await click(view, "Apply filters")
+            try await wait(view, "document.querySelector('[data-filter-unsaved]') === null && document.querySelector('[data-filter-unsaved-badge]') === null && document.body.innerText.includes('Filters applied and saved.')")
+            XCTAssertEqual(bridge.revision, revision + 1)
+            try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 500")
+
+            try await click(view, "Filters")
+            try await input(view, "textarea", "Close >", textarea: true)
+            try await wait(view, "document.querySelector('[data-filter-unsaved]')?.textContent.includes('Fix the rule errors') && document.querySelector('[data-filter-unsaved] button')?.disabled === true")
+            try await click(view, "Discard changes")
+            try await wait(view, "document.querySelector('[data-filter-unsaved]') === null && document.querySelector('[data-filter-unsaved-badge]') === null && Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 500")
+            try await click(view, "Filters")
+        }
+    }
+
+    @MainActor
     func testNativeRulesFormulaDraftRecoveryExplanationsAndLargeMarketResponsiveness() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -1120,6 +1203,7 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 500 && Array.from(document.querySelectorAll('button')).some(x => x.textContent.trim() === 'Apply filters' && !x.disabled)")
         try await click(view, "Save combination")
         try await wait(view, "document.body.innerText.includes('Combination saved')")
+        try await wait(view, "document.querySelector('[data-filter-unsaved]') !== null")
         XCTAssertEqual(bridge.radar.marketFilterCombinations.count, 1)
         try await click(view, "Filters")
         try await wait(view, "document.querySelector('[data-filter-name]')?.textContent === 'Unsaved draft' && document.querySelector('[data-filter-count]')?.textContent === '1 condition' && document.querySelector('[data-filter-rules]')?.textContent.includes('Relative Volume > 2') && document.querySelector('[aria-label=\"Combination name\"]') === null")

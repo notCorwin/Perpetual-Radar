@@ -13,6 +13,7 @@ const badgeVariants = cva(
           "bg-secondary text-secondary-foreground [a]:hover:bg-accent",
         destructive:
           "bg-destructive-surface text-destructive focus-visible:ring-destructive/20 [a]:hover:bg-destructive-hover",
+        warning: "border-warning-border bg-state-warning text-warning",
         outline:
           "border-border text-foreground [a]:hover:bg-state-accent",
         ghost:
@@ -38,7 +39,7 @@ function Badge({
   return (
     <Comp
       data-slot="badge"
-      data-surface={variant === "outline" || variant === "link" || variant === "ghost" ? "inherited" : "control"}
+      data-surface={variant === "outline" || variant === "link" || variant === "ghost" || variant === "warning" ? "inherited" : "control"}
       data-variant={variant}
       className={cn(badgeVariants({ variant }), className)}
       {...props}
