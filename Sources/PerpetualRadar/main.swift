@@ -14,6 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var filterExplainTask: Task<Void, Never>?
     private var startupError = ""
     private var webRoot: URL?
+    private var research: ResearchController?
+    private var leaseTimer: Timer?
+    private var terminating = false
+    private var terminationReady = false
+    private var quittingForUpdate = false
+    private var lifecycleTestServer: MonitorIPCServer?
     private lazy var checkUpdatesItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdatesNow), keyEquivalent: "")
     private lazy var automaticUpdatesItem = NSMenuItem(title: "Automatically Install Updates", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
     private let appearanceMenu = NSMenu(title: "Appearance")
@@ -28,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        try? FileManager.default.removeItem(at: MonitorRuntime.updateSuppressionURL)
         let launchInBackground = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_BACKGROUND"] == "1"
         if let path = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_PID_FILE"], !path.isEmpty {
             FileManager.default.createFile(atPath: path, contents: Data(String(ProcessInfo.processInfo.processIdentifier).utf8))
@@ -93,7 +100,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeAfterWake),
                                                         name: NSWorkspace.didWakeNotification, object: nil)
 
-        DistributedNotificationCenter.default().addObserver(self, selector: #selector(quitInterface), name: MonitorRuntime.quitUI, object: nil)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(quitInterface(_:)), name: MonitorRuntime.quitUI, object: nil)
+        do {
+            research = try ResearchController()
+            research?.onBusyChanged = { [weak self] busy in
+                guard let self else { return }; monitorClient.researchBusy = busy
+                Task { if !self.terminating { _ = try? await self.monitorClient.request(["serviceInfo": true]) } }
+            }
+        } catch { startupError = "Cannot open research cache: \(error.localizedDescription)" }
+        if MonitorRuntime.testChannel != nil {
+            // Packaged CI controls an isolated, hidden application instance.
+            lifecycleTestServer = try? MonitorIPCServer(name: MonitorRuntime.portName + ".interface-tests") { [weak self] data in
+                do {
+                    guard let self, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw FilterError("Invalid lifecycle fixture request.") }
+                    var value: [String: Any] = ["ok": true]
+                    if let workspace = body["workspace"] as? String {
+                        monitorClient.workspace = workspace; _ = try await monitorClient.request(["serviceInfo": true])
+                    }
+                    if let request = body["research"] as? [String: Any] { value = try await research?.handle(request) ?? [:] }
+                    if body["minimize"] as? Bool == true {
+                        let edge = NSScreen.screens.map { $0.frame.maxX }.max() ?? 1440
+                        NSApp.setActivationPolicy(.regular)
+                        window.setFrameOrigin(NSPoint(x: edge+1000, y: 0)); window.animationBehavior = .none
+                        window.orderBack(nil); window.miniaturize(nil)
+                    }
+                    value["minimized"] = window.isMiniaturized
+                    if body["close"] as? Bool == true { Task { try? await Task.sleep(for: .milliseconds(50)); self.window.performClose(nil) } }
+                    return try JSONSerialization.data(withJSONObject: ["value": value])
+                } catch { return (try? JSONSerialization.data(withJSONObject: ["error": error.localizedDescription])) ?? Data("{}".utf8) }
+            }
+        }
+        let leaseTimer = Timer(timeInterval: 2, target: self, selector: #selector(renewForegroundLease), userInfo: nil, repeats: true)
+        RunLoop.main.add(leaseTimer, forMode: .common); self.leaseTimer = leaseTimer
         Task {
             do {
                 try await monitorClient.ensureRunning()
@@ -123,10 +161,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
         filterPreviewTask?.cancel(); filterExplainTask?.cancel()
-        MonitorRuntime.defaults.set(true, forKey: AppUpdater.backgroundRelaunchKey)
+        leaseTimer?.invalidate(); lifecycleTestServer?.invalidate()
+        MonitorRuntime.defaults.set(MonitorRuntime.backgroundMonitoringEnabled, forKey: AppUpdater.backgroundRelaunchKey)
     }
 
-    @objc private func quitInterface() { NSApp.terminate(nil) }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationReady { return .terminateNow }
+        if terminating { return .terminateCancel }
+        terminating = true; leaseTimer?.invalidate()
+        if !quittingForUpdate && !MonitorRuntime.backgroundMonitoringEnabled {
+            try? FileManager.default.createDirectory(at: MonitorRuntime.updateSuppressionURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? Data().write(to: MonitorRuntime.updateSuppressionURL, options: .atomic)
+        }
+        Task {
+            try? await research?.stop()
+            if !MonitorRuntime.backgroundMonitoringEnabled { await monitorClient.shutdown() }
+            // A termination invoked by a dispatch/notification callback cannot
+            // drain another MainActor task inside AppKit's terminateLater loop.
+            // Finish checkpointing first, then request synchronous termination.
+            terminationReady = true; sender.terminate(nil)
+        }
+        return .terminateCancel
+    }
+    @objc private func renewForegroundLease() { if !terminating { Task { _ = try? await monitorClient.request(["serviceInfo": true]) } } }
+
+    @objc private func quitInterface(_ notification: Notification) { if !terminating { quittingForUpdate = notification.userInfo?["update"] as? Bool == true }; NSApp.terminate(nil) }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
@@ -159,6 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if !MonitorRuntime.backgroundMonitoringEnabled { NSApp.terminate(nil); return false }
+        Task { try? await research?.stop() }
         sender.orderOut(nil)
         MonitorRuntime.defaults.set(true, forKey: AppUpdater.backgroundRelaunchKey)
         NSApp.setActivationPolicy(.accessory)
@@ -176,7 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func updateRelaunchPresentation() {
         guard let window else { return }
-        MonitorRuntime.defaults.set(!window.isVisible || window.isMiniaturized || NSApp.isHidden, forKey: AppUpdater.backgroundRelaunchKey)
+        MonitorRuntime.defaults.set(MonitorRuntime.backgroundMonitoringEnabled && (!window.isVisible || window.isMiniaturized || NSApp.isHidden), forKey: AppUpdater.backgroundRelaunchKey)
     }
 
     func windowDidMiniaturize(_ notification: Notification) { updateRelaunchPresentation() }
@@ -250,6 +311,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let parameters = message.body as? [String: Any] else { replyHandler(nil, "Invalid request"); return }
+        if let workspace = parameters["foregroundWorkspace"] as? String {
+            monitorClient.workspace = workspace == "research" ? "research" : "radar"
+            Task {
+                do { _ = try await monitorClient.request(["serviceInfo": true]); replyHandler(["ok": true], nil) }
+                catch { replyHandler(nil, error.localizedDescription) }
+            }
+            return
+        }
+        if let request = parameters["research"] as? [String: Any] {
+            guard let research else { replyHandler(nil, startupError.isEmpty ? "Research cache is unavailable." : startupError); return }
+            Task {
+                do { replyHandler(try await research.handle(request, window: window), nil) }
+                catch { replyHandler(nil, error.localizedDescription) }
+            }
+            return
+        }
         if let requested = parameters["windowTintRGB"] {
             guard let rgb = requested as? [Double], windowBackground.setTint(rgb: rgb) else { replyHandler(nil, "Invalid window tint"); return }
             replyHandler(["ok": true], nil)

@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils"
 import { chartNavigationTarget, wrappedMarket } from "@/market-sort"
 import { finitePercentage, formatPercent, type PercentageValue } from "@/market-percent"
 
-type Bar = {
+export type Bar = {
   hour: number; open: number; high: number; low: number; close: number; confirmed: boolean
   vwap: number | null; ema: number | null; logBBUpper: number | null; logBBMiddle: number | null; logBBLower: number | null
   roc: PercentageValue; maroc: PercentageValue; rsi6: number | null; rsi12: number | null; rsi24: number | null
@@ -78,7 +78,7 @@ const priceTagWidth = (priceText: string, countdown: string) => {
   const fontSize = style.getPropertyValue("--chart-price-tag-text-size").trim()
   return Math.ceil(Math.max(chartTextWidth(priceText, fontSize), chartTextWidth(countdown, fontSize)) + padding * 2)
 }
-const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length - 1].close) => {
+export const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length - 1].close) => {
   const { panels } = chartLayout(0, height)
   const values = chartPriceValues(bars)
   const priceAxis = logarithmicChartAxis(Math.min(...values), Math.max(...values), axisLabelLimit(panels.price, 9))
@@ -103,7 +103,7 @@ const chartGutter = (bars: Bar[], height: number, liveClose = bars[bars.length -
   return fitPriceTag(axisGutter, priceTagWidth(price(liveClose), "00:00"), tagGap, tagStrokeWidth, minimumScale)
 }
 
-const Plot = memo(function Plot({ bars, liveBar, inspected, width, height, now, endHour }: { bars: Bar[]; liveBar: Bar; inspected: number | null; width: number; height: number; now: number; endHour: number }) {
+export const Plot = memo(function Plot({ bars, liveBar, inspected, width, height, now, endHour }: { bars: Bar[]; liveBar: Bar; inspected: number | null; width: number; height: number; now: number; endHour: number }) {
   const areaClipId = useId().replaceAll(":", "")
   const n = bars.length
   const active = bars[inspected ?? n - 1]

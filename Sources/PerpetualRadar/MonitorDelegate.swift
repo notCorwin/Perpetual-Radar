@@ -28,11 +28,17 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var update: AppUpdate?
     private var isCheckingUpdate = false
     private var isInstallingUpdate = false
+    private var installingAutomatically = false
     private var isPresentingUpdate = false
     private var automaticInstallRetryAfter: Date?
     private lazy var checkUpdatesItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdatesNow), keyEquivalent: "")
     private lazy var automaticUpdatesItem = NSMenuItem(title: "Automatically Install Updates", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
     private var fixture: MonitorFixture?
+    private var foregroundPID: Int32? = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_OWNER_PID"].flatMap(Int32.init)
+    private var foregroundWorkspace = "radar"
+    private var researchBusy = false
+    private var leaseTimer: Timer?
+    private var collectionAllowed: Bool { MonitorRuntime.backgroundMonitoringEnabled || foregroundPID != nil && foregroundWorkspace == "radar" }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
@@ -59,7 +65,10 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notifications?.onOpen = { [weak self] id in self?.openInterface(instId: id) }
         notifications?.onStateChanged = { [weak self] in self?.renderMenu() }
         Task { await notifications?.refresh() }
-        if radar?.monitoringPaused == false { startMonitoring() }
+        if !MonitorRuntime.backgroundMonitoringEnabled, loginStatus == "enabled" || loginStatus == "requiresApproval" { try? setLogin(false) }
+        reconcileMonitoring()
+        let leaseTimer = Timer(timeInterval: 2, target: self, selector: #selector(checkForegroundLease), userInfo: nil, repeats: true)
+        RunLoop.main.add(leaseTimer, forMode: .common); self.leaseTimer = leaseTimer
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeAfterWake), name: NSWorkspace.didWakeNotification, object: nil)
         if ProcessInfo.processInfo.environment["PERPETUAL_RADAR_UPDATE_ROLLBACK"] == "1" { automaticInstallRetryAfter = Date().addingTimeInterval(5 * 60) }
         if fixture == nil {
@@ -71,6 +80,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate(); updater.cancel()
+        leaseTimer?.invalidate()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         stopMonitoring(); server?.invalidate()
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
@@ -108,7 +118,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func renderMenu() {
-        let paused = radar?.monitoringPaused == true
+        let paused = radar?.monitoringPaused == true || !collectionAllowed
         status.title = paused ? "Monitoring paused" : (!startupError.isEmpty || !monitoringError.isEmpty ? "Monitoring unavailable; retrying" : "Monitoring saved filters · 1h")
         pauseItem.title = paused ? "Resume Monitoring" : "Pause Monitoring"; pauseItem.isEnabled = radar != nil
         let state = notifications?.authorization ?? .unavailable
@@ -118,7 +128,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         testItem.isEnabled = state.canDeliver
         loginItem.state = loginStatus == "enabled" ? .on : loginStatus == "requiresApproval" ? .mixed : .off
         loginItem.title = loginStatus == "requiresApproval" ? "Start at Login · Approval Needed…" : "Start at Login"
-        loginItem.isEnabled = loginStatus != "unavailable"
+        loginItem.isEnabled = MonitorRuntime.backgroundMonitoringEnabled && loginStatus != "unavailable"
         statusItem?.button?.toolTip = "Perpetual Radar · \(paused ? "Monitoring paused" : "Background monitoring")"
         renderUpdateItem()
         automaticUpdatesItem.state = AppDelegate.automaticUpdatesEnabled(in: MonitorRuntime.defaults) ? .on : .off
@@ -127,7 +137,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) { renderMenu(); Task { await notifications?.refresh() } }
 
     private func startMonitoring() {
-        guard let radar else { return }
+        guard let radar, monitor == nil, collectionAllowed else { return }
         if fixture == nil { radar.start() }
         activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Monitor OKX contracts and deliver saved-filter notifications after the interface quits")
         monitor = FilterMonitor(interval: fixture == nil ? .seconds(2) : .milliseconds(100), sample: { [weak self] in
@@ -146,11 +156,12 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setPaused(_ paused: Bool) throws {
         guard let radar, paused != radar.monitoringPaused else { return }
         try radar.setMonitoringPaused(paused)
-        if paused { stopMonitoring() } else { startMonitoring() }
+        reconcileMonitoring()
         renderMenu()
     }
 
     private func setLogin(_ enabled: Bool) throws {
+        guard !enabled || MonitorRuntime.backgroundMonitoringEnabled else { throw FilterError("Enable Background Monitoring before enabling Start at Login.") }
         guard loginStatus != "unavailable" else { throw FilterError("Start at Login requires the packaged app.") }
         do {
             if enabled {
@@ -171,7 +182,18 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func sendTest() { Task { await notifications?.sendTest() } }
     @objc private func openNotificationSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!) }
-    @objc private func resumeAfterWake(_ notification: Notification) { if radar?.monitoringPaused == false { radar?.resumeAfterWake() } }
+    @objc private func resumeAfterWake(_ notification: Notification) { if collectionAllowed && radar?.monitoringPaused == false { radar?.resumeAfterWake() } }
+    private func reconcileMonitoring() {
+        if collectionAllowed && radar?.monitoringPaused == false { startMonitoring() } else { stopMonitoring() }
+        renderMenu()
+    }
+    @objc private func checkForegroundLease() {
+        let alive = foregroundPID.map { kill($0, 0) == 0 || errno == EPERM } ?? false
+        if !alive {
+            foregroundPID = nil; researchBusy = false
+            if !MonitorRuntime.backgroundMonitoringEnabled { NSApp.terminate(nil) }
+        }
+    }
     @objc private func showInterface() { openInterface(instId: nil) }
     private func openInterface(instId: String?) {
         let configuration = NSWorkspace.OpenConfiguration(); configuration.activates = true
@@ -194,6 +216,8 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         result["notificationError"] = notifications?.error ?? "Launch the packaged macOS app to enable notifications."
         result["backgroundMonitoringError"] = startupError.isEmpty ? monitoringError : startupError
         result["monitoringPaused"] = radar?.monitoringPaused ?? false
+        result["backgroundMonitoringEnabled"] = MonitorRuntime.backgroundMonitoringEnabled
+        result["foregroundWorkspace"] = foregroundWorkspace
         result["serviceSession"] = sessionID
         result["launchAtLogin"] = loginStatus; result["launchAtLoginError"] = loginError
         result["updateMenuTitle"] = checkUpdatesItem.title; result["updateMenuEnabled"] = !isCheckingUpdate && !isInstallingUpdate
@@ -202,6 +226,21 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handle(_ parameters: [String: Any]) async throws -> [String: Any] {
+        if let lease = parameters["foregroundLease"] as? [String: Any], let pid = lease["pid"] as? Int32, pid > 0 {
+            foregroundPID = pid
+            foregroundWorkspace = lease["workspace"] as? String == "research" ? "research" : "radar"
+            researchBusy = lease["researchBusy"] as? Bool == true
+            if isInstallingUpdate && installingAutomatically && (researchBusy || foregroundWorkspace == "research") {
+                guard updater.cancel() else { throw FilterError("An update is completing its app replacement. Open Research after the app restarts.") }
+                isInstallingUpdate = false; installingAutomatically = false; updateState = "available"; renderUpdateItem()
+            }
+            reconcileMonitoring()
+        }
+        if let enabled = parameters["backgroundMonitoringEnabled"] as? Bool {
+            MonitorRuntime.defaults.set(enabled, forKey: "BackgroundMonitoring")
+            if !enabled, loginStatus == "enabled" || loginStatus == "requiresApproval" { try setLogin(false) }
+            reconcileMonitoring()
+        }
         if parameters["serviceInfo"] as? Bool == true {
             var info = decorated([:])
             info["pid"] = ProcessInfo.processInfo.processIdentifier; info["appPath"] = MonitorRuntime.appURL.path
@@ -362,14 +401,18 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func installUpdate(_ update: AppUpdate, automatically: Bool) {
         guard !isInstallingUpdate else { return }
-        isInstallingUpdate = true
+        guard !researchBusy && (!automatically || foregroundPID == nil || foregroundWorkspace != "research") else {
+            if !automatically { showUpdateAlert("Research Is Running", "Pause research before installing an update. Its checkpoint and cache will be retained.") }
+            return
+        }
+        isInstallingUpdate = true; installingAutomatically = automatically
         updateState = "installing"
         renderUpdateItem()
         updater.downloadAndInstall(update) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success:
-                DistributedNotificationCenter.default().postNotificationName(MonitorRuntime.quitUI, object: nil, userInfo: nil, deliverImmediately: true)
+                DistributedNotificationCenter.default().postNotificationName(MonitorRuntime.quitUI, object: nil, userInfo: ["update": true], deliverImmediately: true)
                 NSApp.terminate(nil)
             case .failure(let error):
                 isInstallingUpdate = false

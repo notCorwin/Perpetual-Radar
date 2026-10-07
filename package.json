@@ -6,11 +6,11 @@
   "scripts": {
     "build": "tsc -b && vite build",
     "lint": "oxlint src && node --experimental-strip-types scripts/check-surfaces.ts",
-    "test": "swift test && node --experimental-strip-types --test src/*.test.ts",
-    "ci:local": "npm test && npm run lint && CI=1 npm run app && RADAR_UI_TESTS=1 RADAR_SERVICE_TESTS=1 swift test --filter 'RuleEditorUITests|MonitorServiceTests'",
+    "test": "scripts/test-native.sh && node --experimental-strip-types --test src/*.test.ts",
+    "ci:local": "npm test && npm run lint && CI=1 npm run app && RADAR_UI_TESTS=1 RADAR_SERVICE_TESTS=1 scripts/test-native.sh --filter 'RuleEditorUITests|MonitorServiceTests'",
     "app": "scripts/build-app.sh",
-    "test:ui": "npm run build && RADAR_UI_TESTS=1 swift test --filter RuleEditorUITests",
-    "test:ui:visual": "npm run build && RADAR_UI_TESTS=1 RADAR_VISUAL_TESTS=1 swift test --filter RuleEditorUITests.testAllSurfaceFamiliesAndChartCaptureInNativeWebKit"
+    "test:ui": "npm run build && RADAR_UI_TESTS=1 scripts/test-native.sh --filter RuleEditorUITests",
+    "test:ui:visual": "npm run build && RADAR_UI_TESTS=1 RADAR_VISUAL_TESTS=1 scripts/test-native.sh --filter RuleEditorUITests.testAllSurfaceFamiliesAndChartCaptureInNativeWebKit"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

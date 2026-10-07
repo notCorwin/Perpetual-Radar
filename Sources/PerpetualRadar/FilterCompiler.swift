@@ -197,6 +197,7 @@ struct CompiledFilter: Sendable {
     var requiredHours = 0
     var needsStats = false
     var needsQuotes = false
+    var metrics = Set<String>()
     var units: [String: String] = [:]
     var editorExpressions: [String: FilterEditorExpression] = [:]
     var formula: String { config.definitions.map { "let \($0.name) = \($0.expression);" }.joined(separator: "\n") + (config.definitions.isEmpty ? "" : "\n\n") + config.root.formula }
@@ -275,6 +276,7 @@ struct FilterCompiler {
             if scope.contains(name) { return true }
             if parsedDefinitions[name] != nil { return try definitionKind(name) }
             guard let key = FilterCatalog.key(name) else { throw FilterError("Unknown metric or formula: \(name).") }
+            compiled.metrics.insert(key)
             if ["oiUSD", "oiChange", "oiTrend", "buy", "sell", "buyVsSell", "takerRatio"].contains(key) { compiled.needsStats = true }
             if key == "turnover" || key == "spread" { compiled.needsQuotes = true }
             if key.hasPrefix("opportunity") { compiled.needsStats = true }

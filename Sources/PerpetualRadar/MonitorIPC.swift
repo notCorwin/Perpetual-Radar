@@ -8,6 +8,11 @@ enum MonitorRuntime {
     static let testChannel = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_TEST_CHANNEL"]
     static let portName = "com.perpetualradar.monitor.\(getuid())\(testChannel.map { ".\($0)" } ?? "")"
     static let quitUI = Notification.Name(portName + ".quit-ui")
+    static var updateSuppressionURL: URL {
+        let directory = storeURL?.deletingLastPathComponent() ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("PerpetualRadar")
+        return directory.appendingPathComponent("suppress-update-relaunch")
+    }
+    static var backgroundMonitoringEnabled: Bool { defaults.bool(forKey: "BackgroundMonitoring") }
     static var defaults: UserDefaults {
         let suite = testChannel.map { "RadarServiceTests.\($0)" } ?? "com.perpetualradar.macos"
         // Foundation rejects an explicit suite matching the running app's bundle ID.
@@ -164,10 +169,28 @@ enum MonitorIPC {
 final class MonitorClient {
     private var launchTask: Task<Void, Error>?
     private var launchedProcess: Process?
+    var workspace = "radar"
+    var researchBusy = false
+    private var shuttingDown = false
+    private var lease: [String: Any] { ["pid": ProcessInfo.processInfo.processIdentifier, "workspace": workspace, "researchBusy": researchBusy] }
 
     func request(_ body: [String: Any]) async throws -> [String: Any] {
+        guard !shuttingDown else { throw CancellationError() }
         try await ensureRunning()
-        return try await MonitorIPC.request(body)
+        var request = body; request["foregroundLease"] = lease
+        return try await MonitorIPC.request(request)
+    }
+
+    func shutdown() async {
+        shuttingDown = true; launchTask?.cancel()
+        if CFMessagePortCreateRemote(nil, MonitorRuntime.portName as CFString) != nil {
+            _ = try? await MonitorIPC.request(["stopForReplacement": true])
+            for _ in 0..<60 {
+                if CFMessagePortCreateRemote(nil, MonitorRuntime.portName as CFString) == nil { break }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        if let process = launchedProcess { if process.isRunning { process.terminate() }; process.waitUntilExit() }
     }
 
     func ensureRunning() async throws {
@@ -181,7 +204,9 @@ final class MonitorClient {
     private func connectOrLaunch() async throws {
         if let info = try? await MonitorIPC.request(["serviceInfo": true]) {
             if info["appPath"] as? String == MonitorRuntime.appURL.path,
-               info["revision"] as? String == (Bundle.main.object(forInfoDictionaryKey: "CFBundleSourceRevision") as? String ?? "development") { return }
+               info["revision"] as? String == (Bundle.main.object(forInfoDictionaryKey: "CFBundleSourceRevision") as? String ?? "development") {
+                _ = try await MonitorIPC.request(["foregroundLease": lease, "serviceInfo": true]); return
+            }
             _ = try await MonitorIPC.request(["stopForReplacement": true])
             for _ in 0..<100 {
                 if CFMessagePortCreateRemote(nil, MonitorRuntime.portName as CFString) == nil { break }
@@ -195,6 +220,7 @@ final class MonitorClient {
                 : URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
             var environment = ProcessInfo.processInfo.environment
             environment["PERPETUAL_RADAR_ROLE"] = "monitor"
+            environment["PERPETUAL_RADAR_OWNER_PID"] = String(ProcessInfo.processInfo.processIdentifier)
             environment.removeValue(forKey: "PERPETUAL_RADAR_PID_FILE")
             environment.removeValue(forKey: "PERPETUAL_RADAR_READY_FILE")
             process.environment = environment
@@ -203,13 +229,14 @@ final class MonitorClient {
         } else {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = false
+            configuration.environment = ["PERPETUAL_RADAR_OWNER_PID": String(ProcessInfo.processInfo.processIdentifier)]
             if let rollback = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_UPDATE_ROLLBACK"] {
-                configuration.environment = ["PERPETUAL_RADAR_UPDATE_ROLLBACK": rollback]
+                configuration.environment["PERPETUAL_RADAR_UPDATE_ROLLBACK"] = rollback
             }
             _ = try await NSWorkspace.shared.openApplication(at: MonitorRuntime.helperURL, configuration: configuration)
         }
         for _ in 0..<200 {
-            if (try? await MonitorIPC.request(["serviceInfo": true])) != nil { return }
+            if (try? await MonitorIPC.request(["serviceInfo": true, "foregroundLease": lease])) != nil { return }
             try await Task.sleep(for: .milliseconds(50))
         }
         throw FilterError("Cannot start Perpetual Radar Monitor. Relaunch the app to retry.")

@@ -8,6 +8,9 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Toggle } from "@/components/ui/toggle"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Research } from "@/Research"
+import type { ResearchInputs, ResearchRequest, ResearchResponse } from "@/research-types"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
@@ -27,13 +30,15 @@ import { emptyFilterConfig, initialEditorState, initialLibraryPreferences, parse
 import { expressionTemplates, type ExpressionTemplate } from "@/filter-expression"
 
 type WindowAppearance = { frostedBackgroundEnabled: boolean; frostedBackgroundOpacity: number }
-type NotificationSettings = { notificationsEnabled: boolean; notificationAuthorization: "notDetermined" | "denied" | "authorized" | "quiet" | "unavailable"; notificationError: string; backgroundMonitoringError: string; monitoringPaused: boolean; launchAtLogin: "enabled" | "disabled" | "requiresApproval" | "unavailable"; launchAtLoginError: string }
+type NotificationSettings = { backgroundMonitoringEnabled: boolean; notificationsEnabled: boolean; notificationAuthorization: "notDetermined" | "denied" | "authorized" | "quiet" | "unavailable"; notificationError: string; backgroundMonitoringError: string; monitoringPaused: boolean; launchAtLogin: "enabled" | "disabled" | "requiresApproval" | "unavailable"; launchAtLoginError: string }
 type HistoryProgress = { pending: number; completed: number; error: string }
 type Snapshot = WindowAppearance & NotificationSettings & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; serviceSession?: string; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; filterFunctionCatalog: ExpressionTemplate[]; filterLibraryPreferences: FilterLibraryPreferences; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
 type PreviewSnapshot = Snapshot & { filterResults: Record<string, FilterTruth>; filterToken: string; historyProgress: HistoryProgress }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = Partial<WindowAppearance> & { notificationsEnabled?: boolean; monitoringPaused?: boolean; launchAtLogin?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
+type SettingRequest = Partial<WindowAppearance> & { backgroundMonitoringEnabled?: boolean; notificationsEnabled?: boolean; monitoringPaused?: boolean; launchAtLogin?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
+  postMessage(request: { research: ResearchRequest }): Promise<ResearchResponse>
+  postMessage(request: { foregroundWorkspace: "radar" | "research" }): Promise<{ ok: boolean }>
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string } }): Promise<CompileResponse>
   postMessage(request: { previewMarketFilters: { filtersJSON: string; token: string } }): Promise<PreviewSnapshot>
@@ -131,7 +136,7 @@ const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain }: { row
   return <MarketRowsViewport ids={rows.map(row => row.instId)}>{index => <MarketRowView row={rows[index]} index={index} onSelect={onSelect} onExplain={onExplain} />}</MarketRowsViewport>
 })
 
-function App() {
+function RadarApp({ active, onResearch }: { active: boolean; onResearch: (inputs: ResearchInputs) => void }) {
   const revision = useRef(-1)
   const serviceSession = useRef<string | undefined>(undefined)
   const backgroundOpacityDraftDirty = useRef(false)
@@ -163,7 +168,7 @@ function App() {
   const [frostedBackgroundOpacity, setFrostedBackgroundOpacity] = useState(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3)
   const [backgroundOpacityDraft, setBackgroundOpacityDraft] = useState(String(window.radarAppearance?.frostedBackgroundOpacity ?? 0.3))
   const [backgroundOpacityError, setBackgroundOpacityError] = useState("")
-  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ notificationsEnabled: true, notificationAuthorization: "notDetermined", notificationError: "", backgroundMonitoringError: "", monitoringPaused: false, launchAtLogin: "disabled", launchAtLoginError: "" })
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ backgroundMonitoringEnabled: false, notificationsEnabled: true, notificationAuthorization: "notDetermined", notificationError: "", backgroundMonitoringError: "", monitoringPaused: false, launchAtLogin: "disabled", launchAtLoginError: "" })
   const [notificationPending, setNotificationPending] = useState(false)
   const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
@@ -216,6 +221,7 @@ function App() {
     setFrostedBackgroundEnabled(snapshot.frostedBackgroundEnabled)
     setFrostedBackgroundOpacity(snapshot.frostedBackgroundOpacity)
     setNotificationSettings(current => keepSnapshotValue(current, {
+      backgroundMonitoringEnabled: snapshot.backgroundMonitoringEnabled ?? false,
       notificationsEnabled: snapshot.notificationsEnabled ?? true,
       notificationAuthorization: snapshot.notificationAuthorization ?? "notDetermined",
       notificationError: snapshot.notificationError ?? "",
@@ -241,6 +247,7 @@ function App() {
     return true
   }
   useEffect(() => {
+    if (!active) return
     let stopped = false
     const load = async () => {
       try {
@@ -258,9 +265,9 @@ function App() {
     let timer: number
     void load()
     return () => { stopped = true; window.clearTimeout(timer) }
-  }, [])
+  }, [active])
   useEffect(() => {
-    if (!ready) return
+    if (!active || !ready) return
     const epoch = ++compileEpoch.current
     let stopped = false
     setCompilation(current => ({ ...current, key: compileKey, pending: true, diagnostics: [] }))
@@ -281,9 +288,9 @@ function App() {
     return () => { stopped = true; window.clearTimeout(timer) }
     // Formula compilation replaces the visual draft. Its own source remains the input until a visual edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, compileKey])
+  }, [active, ready, compileKey])
   useEffect(() => {
-    if (!lastValidJSON) return
+    if (!active || !lastValidJSON) return
     let stopped = false
     let timer: number
     const epoch = ++previewEpoch.current
@@ -308,7 +315,7 @@ function App() {
     }
     void refresh()
     return () => { stopped = true; window.clearTimeout(timer) }
-  }, [lastValidJSON])
+  }, [active, lastValidJSON])
 
   const matchedRows = useMemo(() => rows.filter(row => results[row.instId] === "true"), [rows, results])
   const searchedRows = useMemo(() => rows.filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase())), [rows, query])
@@ -386,13 +393,14 @@ function App() {
     </Button>
   }
 
-  if (selected) return <MarketChart instId={selected} listOrder={listOrder} turnoverOrder={turnoverOrder} onSelect={setSelected} onBack={() => setSelected(null)} />
+  if (selected && active) return <MarketChart instId={selected} listOrder={listOrder} turnoverOrder={turnoverOrder} onSelect={setSelected} onBack={() => setSelected(null)} />
 
   return (
     <MarketListViewport>
     <main className="flex min-h-[inherit] flex-col">
       <header className="flex items-center gap-3 border-b px-4 py-3 whitespace-nowrap">
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
+        <Button variant="outline" onClick={() => onResearch({ filters: listFilters, combinations: filterCombinations, metrics, templates })}>Research</Button>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
         <Popover onOpenChange={open => { if (!open && backgroundOpacityDraftDirty.current) saveBackgroundOpacity(); if (open) void updateNotifications({ notificationAction: "refresh" }) }}>
@@ -400,6 +408,7 @@ function App() {
           <PopoverContent align="end">
             <PopoverHeader><PopoverTitle>Settings</PopoverTitle><PopoverDescription>Customize monitoring, notifications and the window background.</PopoverDescription></PopoverHeader>
             <FieldGroup>
+              <Field><FieldLabel>Run mode</FieldLabel><ToggleGroup type="single" variant="outline" disabled={notificationPending} value={notificationSettings.backgroundMonitoringEnabled ? "background" : "onDemand"} onValueChange={value => { if (value) void updateNotifications({ backgroundMonitoringEnabled: value === "background" }) }} aria-label="Run mode"><ToggleGroupItem value="onDemand">On-demand</ToggleGroupItem><ToggleGroupItem value="background">Background Monitoring</ToggleGroupItem></ToggleGroup><FieldDescription>Background Monitoring allows the helper to keep collecting after closing or quitting. Start at Login requires this mode.</FieldDescription></Field>
               <Field>
                 <Field orientation="horizontal">
                   <FieldLabel htmlFor="filter-notifications">Filter notifications</FieldLabel>
@@ -412,12 +421,12 @@ function App() {
                   <Button variant="outline" size="sm" disabled={notificationPending || !notificationSettings.notificationsEnabled || !["authorized", "quiet"].includes(notificationSettings.notificationAuthorization)} onClick={() => void updateNotifications({ notificationAction: "test" })}>Test notification</Button>
                   <Button variant="ghost" size="sm" disabled={notificationPending} onClick={() => void updateNotifications({ notificationAction: "openSettings" })}>Notification Settings</Button>
                 </div>
-                <FieldDescription>Monitoring continues after closing the window or Cmd+Q. Use Quit Completely in the menu bar to stop everything.</FieldDescription>
+                <FieldDescription>{notificationSettings.backgroundMonitoringEnabled ? "Monitoring continues after closing the window or Cmd+Q. Use Quit Completely in the menu bar to stop everything." : "On-demand: closing the window or Cmd+Q saves research checkpoints and stops everything. Minimize to keep running."}</FieldDescription>
                 {(notificationSettings.notificationError || notificationSettings.backgroundMonitoringError) && <FieldError role="alert">{notificationSettings.notificationError || notificationSettings.backgroundMonitoringError}</FieldError>}
               </Field>
               <Field>
                 <Field orientation="horizontal">
-                  <FieldLabel htmlFor="background-monitoring">Background monitoring</FieldLabel>
+                  <FieldLabel htmlFor="background-monitoring">Monitoring</FieldLabel>
                   <Toggle id="background-monitoring" variant="outline" pressed={!notificationSettings.monitoringPaused} disabled={notificationPending} onPressedChange={enabled => void updateNotifications({ monitoringPaused: !enabled })} aria-label="Enable background monitoring">{notificationSettings.monitoringPaused ? "Paused" : "Running"}</Toggle>
                 </Field>
                 <FieldDescription>Pausing stops collection and alerts. Resuming establishes a fresh baseline.</FieldDescription>
@@ -425,7 +434,7 @@ function App() {
               <Field>
                 <Field orientation="horizontal">
                   <FieldLabel htmlFor="launch-at-login">Start at Login</FieldLabel>
-                  <Toggle id="launch-at-login" variant="outline" pressed={notificationSettings.launchAtLogin === "enabled" || notificationSettings.launchAtLogin === "requiresApproval"} disabled={notificationPending || notificationSettings.launchAtLogin === "unavailable"} onPressedChange={enabled => void updateNotifications({ launchAtLogin: enabled })} aria-label="Start monitoring at login">{notificationSettings.launchAtLogin === "enabled" ? "On" : notificationSettings.launchAtLogin === "requiresApproval" ? "Approval needed" : "Off"}</Toggle>
+                  <Toggle id="launch-at-login" variant="outline" pressed={notificationSettings.launchAtLogin === "enabled" || notificationSettings.launchAtLogin === "requiresApproval"} disabled={notificationPending || !notificationSettings.backgroundMonitoringEnabled || notificationSettings.launchAtLogin === "unavailable"} onPressedChange={enabled => void updateNotifications({ launchAtLogin: enabled })} aria-label="Start monitoring at login">{notificationSettings.launchAtLogin === "enabled" ? "On" : notificationSettings.launchAtLogin === "requiresApproval" ? "Approval needed" : "Off"}</Toggle>
                 </Field>
                 <FieldDescription>Start the menu bar monitor after signing in, with the main window closed.</FieldDescription>
                 {notificationSettings.launchAtLogin === "requiresApproval" && <Button variant="outline" size="sm" disabled={notificationPending} onClick={() => void updateNotifications({ launchAtLogin: true })}>Open Login Items</Button>}
@@ -511,6 +520,25 @@ function App() {
     </main>
     </MarketListViewport>
   )
+}
+
+function App() {
+  const [workspace, setWorkspace] = useState<"radar" | "research">("radar")
+  const [inputs, setInputs] = useState<ResearchInputs | null>(null)
+  const [workspaceError, setWorkspaceError] = useState("")
+  const changeWorkspace = async (value: "radar" | "research", nextInputs?: ResearchInputs) => {
+    setWorkspaceError("")
+    try {
+      await window.webkit.messageHandlers.radar.postMessage({ foregroundWorkspace: value })
+      if (nextInputs) setInputs(nextInputs)
+      setWorkspace(value)
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "Cannot switch workspace.") }
+  }
+  return <Fragment>
+    {workspaceError && <p role="alert" className="p-3 text-destructive">{workspaceError}</p>}
+    <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} onResearch={value => void changeWorkspace("research", value)} /></div>
+    {workspace === "research" && inputs && <Research inputs={inputs} onBack={() => void changeWorkspace("radar")} />}
+  </Fragment>
 }
 
 export default App

@@ -30,6 +30,88 @@ final class MonitorServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testPackagedOnDemandResearchMinimizeCloseQuitCrashAndManualResume() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["RADAR_SERVICE_TESTS"] == "1", "Package the app and set RADAR_SERVICE_TESTS=1.")
+        let app = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/app/Perpetual Radar.app")
+        let channel = UUID().uuidString, name = "com.perpetualradar.monitor.\(getuid()).\(channel)", suite = "RadarServiceTests.\(channel)"
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(channel), defaults = UserDefaults(suiteName: suite)!
+        let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let store = try ResearchStore(directory: directory.appendingPathComponent("Research"))
+        try ResearchFixture.seed(store, bars: ResearchFixture.bars(through: ResearchFixture.hour+3048*hourMS))
+        let spec = try ResearchFixture.spec(through: ResearchFixture.hour+3000*hourMS), plan = ResearchFixture.plan(spec)
+        try store.put(plan.id, kind: "plan", plan)
+        defaults.set(false, forKey: "BackgroundMonitoring"); defaults.set(false, forKey: "AutomaticallyInstallUpdates")
+        var processes: [Process] = [], helperPID: Int32?
+        defer {
+            processes.filter(\.isRunning).forEach { $0.terminate() }
+            if let helperPID { kill(helperPID, SIGTERM) }
+            defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory)
+        }
+        func launch() throws -> Process {
+            let process = Process(); process.executableURL = app.appendingPathComponent("Contents/MacOS/PerpetualRadar")
+            var environment = ProcessInfo.processInfo.environment
+            environment["PERPETUAL_RADAR_TEST_CHANNEL"] = channel; environment["PERPETUAL_RADAR_TEST_DIRECTORY"] = directory.path
+            environment["PERPETUAL_RADAR_BACKGROUND"] = "1"; process.environment = environment
+            process.standardOutput = FileHandle.nullDevice
+            let log = URL(fileURLWithPath: "/tmp/perp-research-packaged-\(processes.count).log")
+            FileManager.default.createFile(atPath: log.path, contents: Data()); process.standardError = try FileHandle(forWritingTo: log)
+            try process.run(); processes.append(process); return process
+        }
+        func request(_ body: [String: Any], interface: Bool = false) async throws -> [String: Any] {
+            try await MonitorIPC.request(body, name: name + (interface ? ".interface-tests" : ""))
+        }
+        func wait(_ label: String, _ condition: () async throws -> Bool) async throws {
+            for _ in 0..<240 { if (try? await condition()) == true { return }; try await Task.sleep(for: .milliseconds(50)) }
+            throw FilterError("On-demand lifecycle timed out at \(label); processes: \(processes.map { "\($0.processIdentifier):\($0.isRunning)" }), helper: \(String(describing: helperPID)), checkpoint: \(String(describing: try? store.objects("checkpoint", as: Checkpoint.self)))")
+        }
+        let ui = try launch()
+        try await wait("startup") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= 2 }
+        let info = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(info["pid"] as? Int32)
+        XCTAssertEqual(info["backgroundMonitoringEnabled"] as? Bool, false)
+        _ = try await request(["workspace": "research"], interface: true)
+        let samples = (try await request(["serviceInfo": true]))["samples"] as! Int
+        try await Task.sleep(for: .milliseconds(350))
+        let researchInfo = try await request(["serviceInfo": true])
+        XCTAssertEqual(researchInfo["samples"] as? Int, samples)
+        _ = try await request(["research": ["action": "prepare", "planID": plan.id]], interface: true)
+        try await wait("ready") { ((try await request(["research": ["action": "inventory"]], interface: true))["job"] as? [String: Any])?["phase"] as? String == "ready" }
+        let inventory = try await request(["research": ["action": "inventory"]], interface: true)
+        let studyID = try XCTUnwrap((inventory["job"] as? [String: Any])?["resultID"] as? String)
+        _ = try await request(["research": ["action": "run", "studyID": studyID]], interface: true)
+        _ = try await request(["minimize": true], interface: true)
+        try await wait("minimized") { (try await request([:], interface: true))["minimized"] as? Bool == true }
+        try await wait("checkpoint") { (try store.get("checkpoint:\(studyID)", as: Checkpoint.self))?.nextHour != nil }
+        _ = try await request(["close": true], interface: true)
+        let oldHelper = helperPID!
+        try await wait("closed") { !ui.isRunning && CFMessagePortCreateRemote(nil, name as CFString) == nil && kill(oldHelper,0) != 0 }
+        XCTAssertEqual(ui.terminationStatus, 0)
+        XCTAssertFalse(defaults.bool(forKey: AppUpdater.backgroundRelaunchKey))
+        XCTAssertEqual(try store.get("checkpoint:\(studyID)", as: Checkpoint.self)?.phase, "paused")
+        let checkpoint = try researchJSON(store.get("checkpoint:\(studyID)", as: Checkpoint.self))
+        helperPID = nil
+        let reopened = try launch()
+        try await wait("reopened") { (try await request(["serviceInfo": true]))["pid"] != nil }
+        let reopenedInfo = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(reopenedInfo["pid"] as? Int32)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try researchJSON(store.get("checkpoint:\(studyID)", as: Checkpoint.self)), checkpoint, "Reopening must not resume research automatically.")
+        _ = try await request(["workspace": "research", "research": ["action": "resume", "studyID": studyID]], interface: true)
+        try await Task.sleep(for: .milliseconds(150))
+        _ = try await request(["testQuitUI": true])
+        let quitHelper = helperPID!
+        try await wait("quit") { !reopened.isRunning && kill(quitHelper,0) != 0 }
+        XCTAssertEqual(try store.get("checkpoint:\(studyID)", as: Checkpoint.self)?.phase, "paused")
+        helperPID = nil
+        let crashing = try launch()
+        try await wait("crash-startup") { (try await request(["serviceInfo": true]))["pid"] != nil }
+        let crashingInfo = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(crashingInfo["pid"] as? Int32)
+        let orphan = helperPID!
+        kill(crashing.processIdentifier, SIGKILL)
+        try await wait("crash-exit") { !crashing.isRunning && kill(orphan,0) != 0 && CFMessagePortCreateRemote(nil, name as CFString) == nil }
+        helperPID = nil
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, foreground, "Packaged CI must never take focus.")
+    }
+
+    @MainActor
     func testPackagedMonitorSurvivesQuitNotifiesReopensPausesAndQuitsCompletely() async throws {
         try await checkPackagedMonitorLifecycle(preferencesMatchBundleIdentifier: false)
     }
@@ -73,6 +155,7 @@ final class MonitorServiceTests: XCTestCase {
             try signer.run(); signer.waitUntilExit()
             XCTAssertEqual(signer.terminationStatus, 0)
         }
+        defaults.set(true, forKey: "BackgroundMonitoring")
         defaults.set(false, forKey: "AutomaticallyInstallUpdates")
         defaults.set(false, forKey: AppUpdater.backgroundRelaunchKey)
         func launch(helper: Bool) throws -> Process {
@@ -92,14 +175,14 @@ final class MonitorServiceTests: XCTestCase {
             try process.run(); processes.append(process); return process
         }
         func request(_ body: [String: Any]) async throws -> [String: Any] { try await MonitorIPC.request(body, name: name) }
-        func wait(_ condition: () async throws -> Bool) async throws {
+        func wait(_ label: String, _ condition: () async throws -> Bool) async throws {
             for _ in 0..<200 { if (try? await condition()) == true { return }; try await Task.sleep(for: .milliseconds(50)) }
             let logs = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { $0.pathExtension == "log" }.map { (try? String(contentsOf: $0, encoding: .utf8)) ?? "" }.joined(separator: "\n")
-            XCTFail("Background lifecycle condition timed out. \(logs)")
+            XCTFail("Background lifecycle timed out at \(label); processes: \(processes.map { "\($0.processIdentifier):\($0.isRunning)" }); \(logs)")
             throw FilterError("Lifecycle timeout")
         }
         let ui = try launch(helper: false)
-        try await wait { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= 2 }
+        try await wait("startup") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= 2 }
         var info = try await request(["serviceInfo": true])
         let helperPID = try XCTUnwrap(info["pid"] as? Int32)
         monitorPID = helperPID
@@ -113,22 +196,22 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertEqual(saved["filterConfigJSON"] as? String, config)
         XCTAssertEqual(saved["frostedBackgroundOpacity"] as? Double, 0.55)
         let baseline = (try await request(["serviceInfo": true]))["samples"] as! Int
-        try await wait { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= baseline + 2 }
+        try await wait("rule-samples") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= baseline + 2 }
         _ = try await request(["testQuitUI": true])
-        try await wait { !ui.isRunning }
+        try await wait("ui-quit") { !ui.isRunning }
         XCTAssertEqual(ui.terminationStatus, 0)
         XCTAssertTrue(defaults.bool(forKey: AppUpdater.backgroundRelaunchKey), "Interface writes must use the shared preference domain.")
         _ = try await request(["testPrice": 110.0])
-        try await wait { ((try await request(["serviceInfo": true]))["delivered"] as? [[String: String]])?.count == 1 }
+        try await wait("notification-enter") { ((try await request(["serviceInfo": true]))["delivered"] as? [[String: String]])?.count == 1 }
         _ = try await request(["testPrice": 100.0])
-        try await wait { ((try await request(["serviceInfo": true]))["delivered"] as? [[String: String]])?.count == 2 }
+        try await wait("notification-exit") { ((try await request(["serviceInfo": true]))["delivered"] as? [[String: String]])?.count == 2 }
         info = try await request(["serviceInfo": true])
         let delivered = try XCTUnwrap(info["delivered"] as? [[String: String]])
         XCTAssertEqual(delivered.map { $0["direction"]! }, ["entered", "exited"])
         XCTAssertEqual(delivered.map { $0["instId"]! }, ["BTC-USDT-SWAP", "BTC-USDT-SWAP"])
         try FileManager.default.removeItem(at: directory.appendingPathComponent("ui-ready"))
         let reopened = try launch(helper: false)
-        try await wait { FileManager.default.fileExists(atPath: directory.appendingPathComponent("ui-ready").path) }
+        try await wait("reopen") { FileManager.default.fileExists(atPath: directory.appendingPathComponent("ui-ready").path) }
         XCTAssertNotEqual(reopened.processIdentifier, ui.processIdentifier)
         info = try await request(["serviceInfo": true])
         XCTAssertEqual(info["pid"] as? Int32, helperPID, "Reopening must reuse the existing collector.")
@@ -142,16 +225,16 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertTrue(info["monitoringPaused"] as? Bool == true)
         XCTAssertEqual(info["samples"] as? Int, pausedSamples)
         _ = try await request(["monitoringPaused": false])
-        try await wait { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 > pausedSamples + 1 }
+        try await wait("unpause") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 > pausedSamples + 1 }
         info = try await request(["serviceInfo": true])
         XCTAssertEqual((info["delivered"] as? [[String: String]])?.count, 2, "Resuming establishes a quiet baseline.")
         let duplicate = try launch(helper: true)
-        try await wait { !duplicate.isRunning }
+        try await wait("duplicate-helper") { !duplicate.isRunning }
         info = try await request(["serviceInfo": true])
         XCTAssertEqual(info["pid"] as? Int32, helperPID)
         _ = try await request(["monitoringPaused": true])
         kill(helperPID, SIGTERM)
-        try await wait {
+        try await wait("helper-restart") {
             let candidate = try await request(["serviceInfo": true])
             guard let pid = candidate["pid"] as? Int32, pid != helperPID else { return false }
             monitorPID = pid; return true
@@ -164,7 +247,7 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertEqual(afterRestart["frostedBackgroundOpacity"] as? Double, 0.55)
         let quittingPID = monitorPID!
         _ = try await request(["quitCompletely": true])
-        try await wait { !reopened.isRunning && CFMessagePortCreateRemote(nil, name as CFString) == nil && kill(quittingPID, 0) != 0 }
+        try await wait("quit-completely") { !reopened.isRunning && CFMessagePortCreateRemote(nil, name as CFString) == nil && kill(quittingPID, 0) != 0 }
         XCTAssertEqual(reopened.terminationStatus, 0)
         XCTAssertNotEqual(kill(quittingPID, 0), 0, "Quit Completely must terminate the helper too.")
         monitorPID = nil

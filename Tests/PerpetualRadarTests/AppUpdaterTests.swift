@@ -226,6 +226,21 @@ final class AppUpdaterTests: XCTestCase {
         }
     }
 
+    func testExplicitOnDemandQuitPreventsUpdateRelaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("NoRelaunch-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("Radar.app"), backup = root.appendingPathComponent("backup.app"), log = root.appendingPathComponent("open.log"), suppress = root.appendingPathComponent("suppress")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        try Data().write(to: suppress)
+        let opener = try makeFakeOpener(in: root, fail: false)
+        let helper = try runRelaunchHelper(app: app, oldPID: Int32.max, backup: backup, opener: opener, log: log, suppress: suppress)
+        helper.waitUntilExit()
+        XCTAssertEqual(helper.terminationStatus, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
     private func makeFakeOpener(in root: URL, fail: Bool) throws -> URL {
         let opener = root.appendingPathComponent("open")
         let body = fail ? "exit 1" : """
@@ -244,7 +259,7 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     private func runRelaunchHelper(
-        app: URL, oldPID: Int32, backup: URL, opener: URL, log: URL, background: Bool = false
+        app: URL, oldPID: Int32, backup: URL, opener: URL, log: URL, background: Bool = false, suppress: URL? = nil
     ) throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -256,6 +271,7 @@ final class AppUpdaterTests: XCTestCase {
         environment["PERPETUAL_RADAR_TEST_LOG"] = log.path
         environment["PERPETUAL_RADAR_TEST_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         environment["PERPETUAL_RADAR_BACKGROUND"] = background ? "1" : "0"
+        if let suppress { environment["PERPETUAL_RADAR_SUPPRESS_RELAUNCH_FILE"] = suppress.path }
         process.environment = environment
         try process.run()
         return process

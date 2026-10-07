@@ -1,7 +1,7 @@
 import Foundation
 
-struct FilterStat: Sendable { var oi: Double?, sell: Double?, buy: Double? }
-struct FilterQuote: Sendable {
+struct FilterStat: Codable, Sendable { var oi: Double?, sell: Double?, buy: Double? }
+struct FilterQuote: Codable, Sendable {
     var turnover: Double?
     var spread: Double?
     var timestamp: Int64
@@ -16,6 +16,7 @@ struct FilterMarketData: Sendable {
     var quotes: [Int64: FilterQuote]
     var current: [String: FilterScalar] = [:]
     var previousEMA: Double?
+    var historicalClose = false
 }
 
 final class FilterEvaluator {
@@ -23,7 +24,8 @@ final class FilterEvaluator {
     let filter: CompiledFilter
     private var cache: [String: FilterScalar] = [:]
     private var breaksCache: [String: (highBreakout: BreakResult, lowBreakdown: BreakResult)] = [:]
-    init(market: FilterMarketData, filter: CompiledFilter) { self.market = market; self.filter = filter }
+    init(market: FilterMarketData, filter: CompiledFilter, sharedReadings: [String: FilterScalar] = [:]) { self.market = market; self.filter = filter; cache = sharedReadings }
+    var sharedReadings: [String: FilterScalar] { cache.filter { $0.key.hasPrefix("metric|") || $0.key.hasPrefix("indicator|") } }
     func evaluate(explain: Bool = false) -> FilterTrace {
         let root = filter.config.root
         if ["all", "any"].contains(root.kind), root.children.isEmpty {
@@ -39,7 +41,8 @@ final class FilterEvaluator {
     }
     private func unknown(_ reason: String, at hour: Int64) -> FilterScalar { .unknown("\(reason) [\(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(hour) / 1000)))].") }
     private func bar(_ hour: Int64) -> Candle? {
-        guard let bar = market.candles[hour], hour == market.hour ? !bar.confirmed : bar.confirmed else { return nil }; return bar
+        guard hour <= market.hour, let bar = market.candles[hour],
+              market.historicalClose ? bar.confirmed : (hour == market.hour ? !bar.confirmed : bar.confirmed) else { return nil }; return bar
     }
     private func numeric(_ number: Double?, _ reason: String, at hour: Int64) -> FilterScalar { guard let number, !number.isNaN else { return unknown(reason, at: hour) }; return .number(number) }
     private func relation(_ a: FilterScalar, _ b: FilterScalar) -> FilterScalar {
@@ -56,7 +59,7 @@ final class FilterEvaluator {
     }
     func metric(_ name: String, at hour: Int64) -> FilterScalar {
         guard let key = FilterCatalog.key(name) else { return .unknown("Unknown metric: \(name).") }
-        if hour == market.hour, let value = market.current[key] { return value }
+        if !market.historicalClose, hour == market.hour, let value = market.current[key] { return value }
         return cached("metric|\(key)|\(hour)") { read(key, at: hour) }
     }
     private func read(_ key: String, at hour: Int64) -> FilterScalar {
@@ -190,7 +193,7 @@ final class FilterEvaluator {
                 return number(rsi(market.candles, hour, n, historyHours: warmup))
             }
             if name == "ema" {
-                if n == 200, let previous = market.previousEMA {
+                if n == 200, !market.historicalClose, let previous = market.previousEMA {
                     if hour == market.hour { return number(updatedEMA200(previous, close: bar(hour)?.close)) }
                     if hour == market.hour - hourMS { return number(previous) }
                     var value = previous

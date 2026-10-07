@@ -175,7 +175,8 @@ final class AppUpdater: @unchecked Sendable {
     }
 
     @MainActor
-    func cancel() {
+    @discardableResult
+    func cancel() -> Bool {
         var shouldCancelTask = false
         generationLock.lock()
         if !installationInProgress {
@@ -186,6 +187,7 @@ final class AppUpdater: @unchecked Sendable {
         if shouldCancelTask {
             cancelTask()
         }
+        return shouldCancelTask
     }
 
     @MainActor
@@ -993,6 +995,10 @@ final class AppUpdater: @unchecked Sendable {
         attempt=$((attempt + 1))
         /bin/sleep 0.1
     done
+    if [ "${PERPETUAL_RADAR_BACKGROUND:-0}" != 1 ] && [ -n "${PERPETUAL_RADAR_SUPPRESS_RELAUNCH_FILE:-}" ] && [ -f "$PERPETUAL_RADAR_SUPPRESS_RELAUNCH_FILE" ]; then
+        /bin/rm -rf "$3"
+        exit 0
+    fi
     opener="${4:-/usr/bin/open}"
     open_app() {
         app_to_open="$1"
@@ -1056,6 +1062,7 @@ final class AppUpdater: @unchecked Sendable {
             "/usr/bin/open"
         ]
         var environment = ProcessInfo.processInfo.environment
+        environment["PERPETUAL_RADAR_SUPPRESS_RELAUNCH_FILE"] = MonitorRuntime.updateSuppressionURL.path
         environment["PERPETUAL_RADAR_BACKGROUND"] = MonitorRuntime.defaults.bool(forKey: backgroundRelaunchKey) ? "1" : "0"
         process.environment = environment
         process.standardOutput = FileHandle.nullDevice

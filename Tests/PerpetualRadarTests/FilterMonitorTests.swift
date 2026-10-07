@@ -60,6 +60,10 @@ final class FilterMonitorTests: XCTestCase {
 
     @MainActor
     func testNativeMonitoringContinuesAfterClosingWindowRecoversFromErrorsAndStopsOnQuit() async throws {
+        // The native test runner isolates this explicit background-mode case
+        // from the user's default on-demand app preferences.
+        let defaults = MonitorRuntime.defaults, previousMode = MonitorRuntime.defaults.object(forKey: "BackgroundMonitoring")
+        defaults.set(true, forKey: "BackgroundMonitoring")
         let app = NSApplication.shared, delegate = AppDelegate()
         app.setActivationPolicy(.accessory)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
@@ -79,7 +83,8 @@ final class FilterMonitorTests: XCTestCase {
         }, onChanges: { changes += $0 }, onError: { errors.append($0) })
         defer {
             monitor.stop(); window.delegate = nil; window.close()
-            MonitorRuntime.defaults.set(previousPreference, forKey: AppUpdater.backgroundRelaunchKey)
+            defaults.set(previousPreference, forKey: AppUpdater.backgroundRelaunchKey)
+            defaults.set(previousMode, forKey: "BackgroundMonitoring")
         }
         monitor.start(); monitor.start()
         let firstSampleDeadline = Date().addingTimeInterval(3)

@@ -16,7 +16,7 @@ function Truth({ value }: { value: FilterTruth | undefined }) {
   return <Badge variant="outline" className={cn(value === "true" ? "text-positive" : value === "false" ? "text-destructive" : "text-muted-foreground")}><Icon aria-hidden="true" />{value === "true" ? "True" : value === "false" ? "False" : "Unknown"}</Badge>
 }
 
-function TraceNode({ trace, config, context }: { trace: FilterTrace; config: FilterConfigV2 | null; context: ReadingContext }) {
+export function TraceNode({ trace, config, context }: { trace: FilterTrace; config: FilterConfigV2 | null; context: ReadingContext }) {
   const [limit, setLimit] = useState(50)
   const node = config ? findRule(config.root, trace.id) : null
   return <details open className="rounded-lg border p-3">

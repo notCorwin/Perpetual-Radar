@@ -104,6 +104,13 @@ final class Store {
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
     }
 
+    func query(_ sql: String, _ values: [Any?] = [], read: (OpaquePointer) -> Void) throws {
+        let stmt = try statement(sql)
+        defer { sqlite3_finalize(stmt) }
+        bind(values, to: stmt)
+        try readRows(stmt) { read(stmt) }
+    }
+
     private func columns(_ table: String) throws -> Set<String> {
         let stmt = try statement("PRAGMA table_info(\(table))")
         defer { sqlite3_finalize(stmt) }

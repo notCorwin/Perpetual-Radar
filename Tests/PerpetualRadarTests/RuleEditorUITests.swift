@@ -39,6 +39,10 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var notificationSettingsOpenCount = 0
     var notificationPermissionRequests = 0
     var notificationError = ""
+    var backgroundMonitoringEnabled = true
+    var foregroundWorkspace = "radar"
+    var radarRequests = 0
+    var research: ResearchController?
     var launchAtLogin = "disabled"
     var loginSettingsOpenCount = 0
     let worker = FilterEvaluationWorker()
@@ -67,13 +71,20 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         result["notificationAuthorization"] = notificationAuthorization
         result["notificationError"] = notificationError; result["backgroundMonitoringError"] = ""
         result["monitoringPaused"] = radar.monitoringPaused
+        result["backgroundMonitoringEnabled"] = backgroundMonitoringEnabled
         result["launchAtLogin"] = launchAtLogin; result["launchAtLoginError"] = ""
         return result
     }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let request = message.body as! [String: Any]
-        if request["notificationsEnabled"] != nil || request["notificationAction"] != nil || request["monitoringPaused"] != nil || request["launchAtLogin"] != nil {
+        if let workspace = request["foregroundWorkspace"] as? String { foregroundWorkspace = workspace; replyHandler(["ok": true], nil); return }
+        if let parameters = request["research"] as? [String: Any], let research {
+            Task { do { replyHandler(try await research.handle(parameters), nil) } catch { replyHandler(nil, error.localizedDescription) } }; return
+        }
+        radarRequests += 1
+        if request["backgroundMonitoringEnabled"] != nil || request["notificationsEnabled"] != nil || request["notificationAction"] != nil || request["monitoringPaused"] != nil || request["launchAtLogin"] != nil {
             do {
+                if let enabled = request["backgroundMonitoringEnabled"] as? Bool { backgroundMonitoringEnabled = enabled; if !enabled { launchAtLogin = "disabled" }; revision += 1 }
                 if let enabled = request["notificationsEnabled"] as? Bool { try radar.setNotificationsEnabled(enabled); revision += 1 }
                 if let paused = request["monitoringPaused"] as? Bool { try radar.setMonitoringPaused(paused); revision += 1 }
                 if let enabled = request["launchAtLogin"] as? Bool {
@@ -194,6 +205,85 @@ final class RuleEditorUITests: XCTestCase {
             window.setFrameOrigin(NSPoint(x: edge + 1000, y: 0))
             window.orderBack(nil)
         }
+    }
+
+    @MainActor
+    func testResearchPrepareRunFrozenChartPaginationAndRadarIsolationInNativeWebKit() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        let directory = bridge.directory.appendingPathComponent("Research"), store = try ResearchStore(directory: directory)
+        try ResearchFixture.seed(store)
+        bridge.research = try ResearchController(directory: directory, transport: ResearchFixtureTransport(), radarURL: bridge.directory.appendingPathComponent("absent"), exportDestination: { kind, _ in directory.appendingPathComponent("research-\(kind).csv") })
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let view = WKWebView(frame: .zero, configuration: configuration), background = WindowBackgroundView(contentView: view)
+        bridge.windowBackground = background; window.contentView = background; present(window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        try await click(view, "Research")
+        try await wait(view, "document.querySelector('[data-research]') !== null")
+        XCTAssertEqual(bridge.foregroundWorkspace, "research")
+        try await Task.sleep(for: .milliseconds(300))
+        let radarRequests = bridge.radarRequests
+        try await Task.sleep(for: .milliseconds(2300))
+        XCTAssertEqual(bridge.radarRequests, radarRequests, "Radar polling and live chart loads must stop while researching.")
+        try await input(view, "#study-name", "WKWebView experiment")
+        _ = try await openMenu(view, selector: "#study-rule")
+        try await option(view, "All verified exchange markets")
+        try await click(view, "Long"); try await click(view, "Every matching hour")
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"; formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        try await input(view, "#study-from", formatter.string(from: Date(timeIntervalSince1970: Double(ResearchFixture.hour)/1000)))
+        try await input(view, "#study-through", formatter.string(from: Date(timeIntervalSince1970: Double(ResearchFixture.hour+192*hourMS)/1000)))
+        try await click(view, "Review data plan")
+        try await wait(view, "document.body.innerText.includes('This range is fully cached.')")
+        try await click(view, "Prepare Data")
+        try await wait(view, "document.body.innerText.includes('Frozen dataset') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Run Study')")
+        try await click(view, "Run Study")
+        try await wait(view, "document.querySelector('table[aria-label=\"Signal events\"] tbody tr') !== null", seconds: 30)
+        try await assertSharedSurfaces(view, opacity: bridge.radar.frostedBackgroundOpacity)
+        XCTAssertEqual(bridge.radarRequests, radarRequests)
+        for kind in ["summary", "events"] {
+            try await click(view, "Export \(kind) CSV")
+            let destination = directory.appendingPathComponent("research-\(kind).csv")
+            let deadline = Date().addingTimeInterval(5)
+            while !FileManager.default.fileExists(atPath: destination.path), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertTrue(try String(contentsOf: destination, encoding: .utf8).contains("data_digest"))
+            try await wait(view, "Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Export \(kind) CSV' && !b.disabled)")
+        }
+        try await click(view, "Next events")
+        try await wait(view, "document.body.innerText.includes('51–')")
+        let inspect = try await js(view, "document.querySelector('table[aria-label=\"Signal events\"] tbody button').getAttribute('aria-label')") as! String
+        try await click(view, inspect)
+        try await wait(view, "document.querySelector('section[aria-label=\"Frozen event chart\"] svg') !== null")
+        try await click(view, "Copy chart")
+        try await wait(view, "document.body.innerText.includes('Copied')")
+        XCTAssertEqual(bridge.chartSnapshotRGB.count, 3)
+        let frozen = try await js(view, "document.querySelector('svg[aria-label^=\"Frozen 96-hour\"]').outerHTML") as? String
+        bridge.revision += 1; bridge.rows[0]["price"] = 1_000_000
+        try await Task.sleep(for: .milliseconds(1100))
+        let unchanged = try await js(view, "document.querySelector('svg[aria-label^=\"Frozen 96-hour\"]').outerHTML") as? String
+        XCTAssertEqual(frozen, unchanged, "Frozen chart values must ignore all live feed changes.")
+        try await dismissFloating(view)
+        try await click(view, "Score calibration"); try await click(view, "Partial inputs")
+        try await wait(view, "document.querySelector('table[aria-label=\"Study statistics\"]') !== null")
+        try await click(view, "Studies & cache")
+        try await click(view, "Copy configuration")
+        try await wait(view, "document.querySelector('#study-name')?.value === 'WKWebView experiment copy'")
+        try await click(view, "Compare rules")
+        _ = try await openMenu(view, selector: "#study-comparison")
+        try await option(view, "Current applied rules")
+        try await click(view, "Review data plan"); try await wait(view, "document.body.innerText.includes('This range is fully cached.')")
+        try await click(view, "Prepare Data"); try await wait(view, "Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Run Study')")
+        try await click(view, "Run Study")
+        try await wait(view, "document.querySelector('table[aria-label=\"Signal events\"]') !== null", seconds: 30)
+        try await click(view, "Radar")
+        try await wait(view, "document.querySelector('[data-research]') === null")
+        XCTAssertEqual(bridge.foregroundWorkspace, "radar")
+        try await Task.sleep(for: .milliseconds(2300))
+        XCTAssertGreaterThan(bridge.radarRequests, radarRequests)
     }
 
     @MainActor

@@ -8,7 +8,7 @@ export function MarketListViewport({ children }: { children: ReactNode }) {
     const viewport = viewportRef.current
     const content = contentRef.current
     if (!viewport || !content) return
-    const table = content.querySelector("table")
+    const tables = new Set<HTMLTableElement>()
     let designWidth = Number.parseFloat(getComputedStyle(viewport).getPropertyValue("--market-list-design-width"))
     let scale = 1
     let frame: number | null = null
@@ -19,7 +19,7 @@ export function MarketListViewport({ children }: { children: ReactNode }) {
       if (!available) return
       const width = Math.max(available, designWidth)
       content.style.width = `${width}px`
-      const required = table ? table.getBoundingClientRect().width / scale : width
+      const required = Math.max(width, ...Array.from(tables, table => table.getBoundingClientRect().width / scale))
       if (required > width + 0.5) {
         // Retain enough room for the widest loaded row, including while filtering the list.
         designWidth = Math.ceil(required)
@@ -42,13 +42,22 @@ export function MarketListViewport({ children }: { children: ReactNode }) {
     const observer = new ResizeObserver(schedule)
     observer.observe(viewport)
     observer.observe(content)
-    if (table) observer.observe(table)
+    const watchTables = () => {
+      for (const table of content.querySelectorAll('table')) {
+        if (!tables.has(table)) { tables.add(table); observer.observe(table) }
+      }
+      for (const table of tables) { if (!table.isConnected) { observer.unobserve(table); tables.delete(table) } }
+      schedule()
+    }
+    const mutations = new MutationObserver(watchTables)
+    mutations.observe(content, { childList: true, subtree: true })
+    watchTables()
     window.addEventListener("resize", schedule)
     fit()
     void document.fonts.ready.then(schedule)
     return () => {
       stopped = true
-      observer.disconnect()
+      observer.disconnect(); mutations.disconnect()
       window.removeEventListener("resize", schedule)
       if (frame !== null) window.cancelAnimationFrame(frame)
       for (const token of ['--market-list-scale', '--market-list-layout-width', '--market-list-layout-height']) document.documentElement.style.removeProperty(token)
