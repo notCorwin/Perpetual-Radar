@@ -318,15 +318,15 @@ final class RuleEditorUITests: XCTestCase {
                 try await assertSharedSurfaces(view, opacity: opacity)
                 XCTAssertEqual(try XCTUnwrap(nativeTintView.layer?.backgroundColor).alpha, opacity, accuracy: 1e-6, "The window tint keeps its own opacity while components weight their own defaults.")
             }
-            // The same global weight must preserve independently configured
-            // defaults, including a fully opaque floating material at weight 1.
-            _ = try await js(view, "document.documentElement.style.setProperty('--control-default-opacity','0.8'); document.documentElement.style.setProperty('--panel-default-opacity','0.6'); document.documentElement.style.setProperty('--floating-default-opacity','1'); true")
-            try await assertSharedSurfaces(view, opacity: 1, defaultOpacities: [0.8, 0.6, 1])
+            // Separate material and primary defaults must remain independent
+            // under the same weight, even when overridden from the theme.
+            _ = try await js(view, "for (const [role, alpha] of Object.entries({control:0.5,panel:0.35,floating:0.9,primary:0.25})) document.documentElement.style.setProperty(`--${role}-default-opacity`, String(alpha)); true")
+            try await assertSharedSurfaces(view, opacity: 1, defaultOpacities: [0.5, 0.35, 0.9, 0.25])
             try await input(view, "#background-opacity", "0.5")
             _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
             try await wait(view, "document.documentElement.style.getPropertyValue('--window-background-opacity') === '0.5'")
-            try await assertSharedSurfaces(view, opacity: 0.5, defaultOpacities: [0.8, 0.6, 1])
-            _ = try await js(view, "for (const role of ['control','panel','floating']) document.documentElement.style.removeProperty(`--${role}-default-opacity`); true")
+            try await assertSharedSurfaces(view, opacity: 0.5, defaultOpacities: [0.5, 0.35, 0.9, 0.25])
+            _ = try await js(view, "for (const role of ['control','panel','floating','primary']) document.documentElement.style.removeProperty(`--${role}-default-opacity`); true")
             try await assertSharedSurfaces(view, opacity: 0.5)
             _ = try await js(view, "document.querySelector('#frosted-background').click(); true")
             try await wait(view, "document.documentElement.dataset.frostedBackground === 'false'")
@@ -378,7 +378,7 @@ final class RuleEditorUITests: XCTestCase {
     }
 
     @MainActor
-    private func assertSharedSurfaces(_ view: WKWebView, opacity: Double, defaultOpacities: [Double] = [0.2, 0.3, 0.55]) async throws {
+    private func assertSharedSurfaces(_ view: WKWebView, opacity: Double, defaultOpacities: [Double] = [0.8, 0.6, 1, 0.4]) async throws {
         // Wait for control color transitions; inspect the renderer rather than
         // matching generated classes or the source token formulas.
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -406,23 +406,38 @@ final class RuleEditorUITests: XCTestCase {
           }
           const input = document.querySelector('#background-opacity');
           if (input && (getComputedStyle(input).backdropFilter || getComputedStyle(input).webkitBackdropFilter) !== 'none') issues.push('Settings input must reuse its floating owner');
-          const defaults = Object.fromEntries(['control','panel','floating','state-hover','state-selection','state-accent','state-secondary','state-warning','table-header','overlay'].map(role => [role, Number(root.getPropertyValue(`--${role}-default-opacity`))]));
+          const defaults = Object.fromEntries(['control','panel','floating','primary','state-hover','state-selection','state-accent','state-secondary','state-warning','table-header','overlay'].map(role => [role, Number(root.getPropertyValue(`--${role}-default-opacity`))]));
           const checkAlpha = (label, color, baseline) => {
             const actual = read(color)[3]/255, expected = baseline*p;
             if (Math.abs(actual-expected) > 1/255) issues.push(`${label}: alpha=${actual}, expected own default ${baseline} * global weight ${p}`);
           };
           for (const [role, tokens] of Object.entries({
-            control: ['control','control-hover','selection','primary-surface','primary-surface-hover','secondary','muted','accent','destructive-surface','destructive-hover','chart-annotation'],
-            panel: ['card','sidebar'], floating: ['popover'],
+            control: ['control','control-hover','selection','secondary','muted','accent','destructive-surface','destructive-hover','chart-annotation'],
+            panel: ['card','sidebar'], floating: ['popover'], primary: ['primary-surface','primary-surface-hover'],
             'state-hover': ['state-hover'], 'state-selection': ['state-selection'], 'state-accent': ['state-accent'],
             'state-secondary': ['state-secondary'], 'state-warning': ['state-warning'], 'table-header': ['table-header'], overlay: ['overlay']
           })) {
             for (const token of tokens) checkAlpha(`--${token}`, root.getPropertyValue(`--${token}`), defaults[role]);
           }
-          for (const element of document.querySelectorAll('[data-slot="input"], [data-slot="textarea"], [data-slot="input-group"], [data-slot="tabs-list"][data-surface="control"], [data-slot="select-trigger"], [data-slot="table-header"], [data-slot="table-footer"], [data-slot="dialog-footer"], [data-slot="dialog-overlay"], [data-surface="floating"]')) {
+          for (const element of document.querySelectorAll('[data-slot="input"], [data-slot="textarea"], [data-slot="input-group"], [data-slot="tabs-list"][data-surface="control"], [data-slot="select-trigger"], [data-slot="table-header"], [data-slot="table-footer"], [data-slot="dialog-footer"], [data-slot="dialog-overlay"], [data-surface="floating"], [data-slot="button"][data-variant="default"], [data-slot="badge"][data-variant="default"]')) {
             if (!element.getBoundingClientRect().width || !element.getBoundingClientRect().height) continue;
-            const role = element.dataset.surface === 'floating' ? 'floating' : element.dataset.slot === 'dialog-footer' ? 'state-hover' : element.dataset.slot === 'dialog-overlay' ? 'overlay' : ['table-header','table-footer'].includes(element.dataset.slot) ? 'table-header' : 'control';
+            const role = element.dataset.surface === 'floating' ? 'floating' : ['button','badge'].includes(element.dataset.slot) ? 'primary' : element.dataset.slot === 'dialog-footer' ? 'state-hover' : element.dataset.slot === 'dialog-overlay' ? 'overlay' : ['table-header','table-footer'].includes(element.dataset.slot) ? 'table-header' : 'control';
             checkAlpha(element.dataset.slot, getComputedStyle(element).backgroundColor, defaults[role]);
+          }
+          // Raising neutral control alpha must not turn primary fills into
+          // saturated backgrounds with unreadable foreground text at weight 1.
+          if (p === 1) {
+            const luminance = rgb => rgb.map(c => { const s=c/255; return s<=0.04045 ? s/12.92 : ((s+0.055)/1.055)**2.4; }).reduce((sum,c,i)=>sum+c*[0.2126,0.7152,0.0722][i],0);
+            const foreground = luminance(read(root.getPropertyValue('--primary-surface-foreground')).slice(0,3));
+            for (const token of ['--primary-surface','--primary-surface-hover']) {
+              const fill = read(root.getPropertyValue(token));
+              for (const base of ['--background','--popover-base']) {
+                const background = read(root.getPropertyValue(base)), alpha=fill[3]/255;
+                const painted = luminance(fill.slice(0,3).map((c,i)=>c*alpha+background[i]*(1-alpha)));
+                const contrast = (Math.max(foreground,painted)+0.05)/(Math.min(foreground,painted)+0.05);
+                if (contrast < 4.5) issues.push(`${token} over ${base}: primary text contrast=${contrast}`);
+              }
+            }
           }
           return { issues, opacity: p, alphas: ['--control','--card','--popover','--primary-surface','--chart-snapshot-background'].map(name => read(root.getPropertyValue(name))[3]/255), positive: read(root.getPropertyValue('--positive')), destructive: read(root.getPropertyValue('--destructive')) };
         })()
@@ -431,7 +446,7 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertEqual(values["issues"] as? [String], [], "Surface rendering contract: \(values)")
         XCTAssertEqual(values["opacity"] as? Double, opacity)
         let alphas = try XCTUnwrap(values["alphas"] as? [Double])
-        for (actual, expected) in zip(alphas, [defaultOpacities[0] * opacity, defaultOpacities[1] * opacity, defaultOpacities[2] * opacity, defaultOpacities[0] * opacity, 1]) {
+        for (actual, expected) in zip(alphas, [defaultOpacities[0] * opacity, defaultOpacities[1] * opacity, defaultOpacities[2] * opacity, defaultOpacities[3] * opacity, 1]) {
             XCTAssertEqual(actual, expected, accuracy: 1 / 255.0)
         }
         XCTAssertEqual(values["destructive"] as? [Int], [232, 85, 168, 255])
@@ -444,6 +459,10 @@ final class RuleEditorUITests: XCTestCase {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         if visualUI {
             guard #available(macOS 14.4, *) else { throw XCTSkip("Current-process window capture requires macOS 14.4.") }
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            guard CGDisplayIsAsleep(CGMainDisplayID()) == 0, session?["CGSSessionScreenIsLocked"] as? Bool != true else {
+                throw XCTSkip("Foreground pixel acceptance requires an awake, unlocked display; background material and interaction checks remain in local CI.")
+            }
         }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
@@ -473,6 +492,7 @@ final class RuleEditorUITests: XCTestCase {
             try await wait(view, "document.querySelector('#background-opacity') !== null")
             try await assertSharedSurfaces(view, opacity: 0.3)
             try await glassScreenshots(view, window: window, project: project, name: "settings-\(theme)")
+            if visualUI { try await assertBackdropPixels(view, project: project, theme: theme, selector: "[data-slot=\"popover-content\"]", name: "settings") }
             try await dismissFloating(view)
 
             try await click(view, "Filters")
@@ -483,7 +503,7 @@ final class RuleEditorUITests: XCTestCase {
             try await wait(view, "document.querySelector('[data-rule-library]') !== null")
             try await assertSharedSurfaces(view, opacity: 0.3)
             try await glassScreenshots(view, window: window, project: project, name: "library-\(theme)")
-            if visualUI { try await assertBackdropPixels(view, project: project, theme: theme) }
+            if visualUI { try await assertBackdropPixels(view, project: project, theme: theme, selector: "[data-rule-library]", name: "library") }
             try await input(view, "[data-rule-library] [cmdk-input]", "Price")
             _ = try await js(view, "document.querySelector('[data-library-id=\"metric:price\"]').click(); true")
             try await wait(view, "document.querySelector('[data-rule-library][data-state=\"open\"]') === null")
@@ -567,14 +587,15 @@ final class RuleEditorUITests: XCTestCase {
     }
 
     @MainActor
-    private func assertBackdropPixels(_ view: WKWebView, project: URL, theme: String) async throws {
+    private func assertBackdropPixels(_ view: WKWebView, project: URL, theme: String, selector: String, name: String) async throws {
+        let query = String(data: try JSONEncoder().encode(selector), encoding: .utf8)!
         let content = try await nativeRendererSnapshot(view)
-        _ = try await js(view, "(() => { const source=document.querySelector('[data-rule-library]'); window.radarOriginalFilter={source,filter:source.style.backdropFilter,webkit:source.style.webkitBackdropFilter}; source.style.backdropFilter='none'; source.style.webkitBackdropFilter='none'; return true; })()")
+        _ = try await js(view, "(() => { const source=document.querySelector(\(query)); window.radarOriginalFilter={source,filter:source.style.backdropFilter,webkit:source.style.webkitBackdropFilter}; source.style.backdropFilter='none'; source.style.webkitBackdropFilter='none'; return true; })()")
         try await Task.sleep(nanoseconds: 200_000_000)
         let unfilteredContent = try await nativeRendererSnapshot(view)
         _ = try await js(view, "(() => { const {source,filter,webkit}=window.radarOriginalFilter; source.style.backdropFilter=filter; source.style.webkitBackdropFilter=webkit; delete window.radarOriginalFilter; return true; })()")
         let normal = try XCTUnwrap(NSBitmapImageRep(data: content.tiffRepresentation!)), unfiltered = try XCTUnwrap(NSBitmapImageRep(data: unfilteredContent.tiffRepresentation!))
-        let contentBounds = try await js(view, "document.querySelector('[data-rule-library]').getBoundingClientRect().toJSON()") as? [String: Double]
+        let contentBounds = try await js(view, "document.querySelector(\(query)).getBoundingClientRect().toJSON()") as? [String: Double]
         let contentRect = try XCTUnwrap(contentBounds), contentScale = Double(normal.pixelsWide) / view.bounds.width
         var difference = 0.0, samples = 0
         for y in stride(from: contentRect["y"]! + 32, to: contentRect["bottom"]! - 32, by: 3) {
@@ -583,13 +604,13 @@ final class RuleEditorUITests: XCTestCase {
                 difference += abs(a.redComponent-b.redComponent) + abs(a.greenComponent-b.greenComponent) + abs(a.blueComponent-b.blueComponent); samples += 3
             }
         }
-        print("Glass actual app background pixel difference \(theme): \(difference / Double(samples))")
+        print("Glass actual app background pixel difference \(name) \(theme): \(difference / Double(samples))")
         XCTAssertGreaterThan(difference / Double(samples), 0.002, "The floating blur must affect the real scaled app content, not just a standalone backing fixture.")
         let bounds = try await js(view, """
         (() => {
           const fixture = document.createElement('div'); fixture.id = 'glass-pixel-fixture';
           fixture.style.cssText = 'position:absolute;inset:0;z-index:49;pointer-events:none;background:repeating-linear-gradient(90deg,#000 0px,#000 4px,#fff 4px,#fff 8px)';
-          const source = document.querySelector('[data-rule-library]');
+          const source = document.querySelector(\(query));
           source.dataset.qaGlassTest = 'true';
           const hideContent = document.createElement('style'); hideContent.id = 'glass-pixel-style';
           hideContent.textContent = '[data-qa-glass-test] > * { visibility:hidden!important }';
@@ -618,11 +639,11 @@ final class RuleEditorUITests: XCTestCase {
         let referenceBitmap = try XCTUnwrap(NSBitmapImageRep(data: reference.tiffRepresentation!))
         let sharp = try contrast(referenceBitmap)
         _ = try await js(view, "(() => { const {source,filter,webkit}=window.radarSurfaceFixture; source.style.backdropFilter=filter; source.style.webkitBackdropFilter=webkit; delete source.dataset.qaGlassTest; delete window.radarSurfaceFixture; document.querySelector('#glass-pixel-fixture').remove(); document.querySelector('#glass-pixel-style').remove(); return true; })()")
-        print("Glass backdrop pixel contrast \(theme): blurred=\(blurred), unfiltered=\(sharp)")
+        print("Glass backdrop pixel contrast \(name) \(theme): blurred=\(blurred), unfiltered=\(sharp)")
         XCTAssertGreaterThan(sharp, 0.15, "The reference must contain visible stripes with the same tint alpha.")
         XCTAssertLessThan(blurred, sharp * 0.25, "The real floating material must blur app pixels, not merely paint a translucent tint.")
         try FileManager.default.createDirectory(at: project.appendingPathComponent(".build/ui-qa"), withIntermediateDirectories: true)
-        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: project.appendingPathComponent(".build/ui-qa/glass-backdrop-pixels-\(theme).png"))
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: project.appendingPathComponent(".build/ui-qa/glass-backdrop-pixels-\(name)-\(theme).png"))
     }
 
     @MainActor

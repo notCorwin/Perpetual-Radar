@@ -92,18 +92,23 @@
     /* Each material owns its default alpha. The global setting is a weight:
        0 clears its paint, while 1 preserves the material's own default. */
     --surface-opacity-weight: var(--window-background-opacity);
-    --control-default-opacity: 0.2;
-    --panel-default-opacity: 0.3;
-    --floating-default-opacity: 0.55;
+    /* Floating surfaces must separate overlapping text; controls need a clear
+       fill, while larger panels retain more of the window's glass. Saturated
+       primary paint has its own lighter default to preserve text contrast. */
+    --control-default-opacity: 0.8;
+    --panel-default-opacity: 0.6;
+    --floating-default-opacity: 1;
+    --primary-default-opacity: 0.4;
     --control-opacity: calc(var(--control-default-opacity) * var(--surface-opacity-weight));
     --panel-opacity: calc(var(--panel-default-opacity) * var(--surface-opacity-weight));
     --floating-opacity: calc(var(--floating-default-opacity) * var(--surface-opacity-weight));
-    --state-hover-default-opacity: 0.05;
-    --state-selection-default-opacity: 0.14;
-    --state-accent-default-opacity: 0.1;
-    --state-secondary-default-opacity: 0.08;
-    --state-warning-default-opacity: 0.14;
-    --table-header-default-opacity: 0.03;
+    --primary-opacity: calc(var(--primary-default-opacity) * var(--surface-opacity-weight));
+    --state-hover-default-opacity: 0.12;
+    --state-selection-default-opacity: 0.28;
+    --state-accent-default-opacity: 0.18;
+    --state-secondary-default-opacity: 0.12;
+    --state-warning-default-opacity: 0.24;
+    --table-header-default-opacity: 0.08;
     --overlay-default-opacity: 0.12;
     --control-blur: calc((1 - var(--window-background-opacity)) * 12px);
     --panel-blur: calc((1 - var(--window-background-opacity)) * 16px);
@@ -122,8 +127,8 @@
     --state-warning: color-mix(in srgb, var(--warning) calc(var(--state-warning-default-opacity) * var(--surface-opacity-weight) * 100%), transparent);
     --warning-border: color-mix(in srgb, var(--warning) 45%, var(--border));
     --primary-hover: color-mix(in srgb, var(--primary), var(--foreground) 10%);
-    --primary-surface: color-mix(in srgb, var(--primary) calc(var(--control-opacity) * 100%), transparent);
-    --primary-surface-hover: color-mix(in srgb, var(--primary-hover) calc(var(--control-opacity) * 100%), transparent);
+    --primary-surface: color-mix(in srgb, var(--primary) calc(var(--primary-opacity) * 100%), transparent);
+    --primary-surface-hover: color-mix(in srgb, var(--primary-hover) calc(var(--primary-opacity) * 100%), transparent);
     --primary-surface-foreground: var(--foreground);
     --disabled-foreground: color-mix(in srgb, var(--foreground) 55%, var(--control-base));
     --destructive-surface: color-mix(in srgb, color-mix(in srgb, var(--destructive) 12%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
