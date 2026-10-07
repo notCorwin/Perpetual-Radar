@@ -3,6 +3,13 @@ import XCTest
 @testable import PerpetualRadar
 
 final class FrostedBackgroundTests: XCTestCase {
+    @MainActor
+    private func placeInBackground(_ window: NSWindow) {
+        NSApp.setActivationPolicy(.accessory)
+        let edge = NSScreen.screens.map { $0.frame.maxX }.max() ?? 1440
+        window.setFrameOrigin(NSPoint(x: edge + 1000, y: 0))
+    }
+
     func testDarkIsTheDefaultAppearanceWithoutReplacingAnExistingChoice() throws {
         let suite = "FrostedAppearanceTests-\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -150,6 +157,7 @@ final class FrostedBackgroundTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        placeInBackground(window)
         defer { window.close() }
         let content = NSView()
         let background = WindowBackgroundView(contentView: content)
@@ -200,6 +208,7 @@ final class FrostedBackgroundTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        placeInBackground(window)
         defer { window.close() }
         let background = WindowBackgroundView(contentView: NSView())
         window.contentView = background
@@ -235,6 +244,7 @@ final class FrostedBackgroundTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
                               styleMask: [.titled], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
+        placeInBackground(window)
         defer { window.close() }
         let content = NSView()
         let background = WindowBackgroundView(contentView: content)
