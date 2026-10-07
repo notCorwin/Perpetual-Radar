@@ -316,8 +316,18 @@ final class RuleEditorUITests: XCTestCase {
                 _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
                 try await wait(view, "Number(document.documentElement.style.getPropertyValue('--window-background-opacity')) === \(opacity)")
                 try await assertSharedSurfaces(view, opacity: opacity)
-                XCTAssertEqual(try XCTUnwrap(nativeTintView.layer?.backgroundColor).alpha, opacity, accuracy: 1e-6, "Only the shared window tint should apply the configured opacity.")
+                XCTAssertEqual(try XCTUnwrap(nativeTintView.layer?.backgroundColor).alpha, opacity, accuracy: 1e-6, "The window tint keeps its own opacity while components weight their own defaults.")
             }
+            // The same global weight must preserve independently configured
+            // defaults, including a fully opaque floating material at weight 1.
+            _ = try await js(view, "document.documentElement.style.setProperty('--control-default-opacity','0.8'); document.documentElement.style.setProperty('--panel-default-opacity','0.6'); document.documentElement.style.setProperty('--floating-default-opacity','1'); true")
+            try await assertSharedSurfaces(view, opacity: 1, defaultOpacities: [0.8, 0.6, 1])
+            try await input(view, "#background-opacity", "0.5")
+            _ = try await js(view, "document.querySelector('#background-opacity').dispatchEvent(new FocusEvent('focusout', {bubbles:true})); true")
+            try await wait(view, "document.documentElement.style.getPropertyValue('--window-background-opacity') === '0.5'")
+            try await assertSharedSurfaces(view, opacity: 0.5, defaultOpacities: [0.8, 0.6, 1])
+            _ = try await js(view, "for (const role of ['control','panel','floating']) document.documentElement.style.removeProperty(`--${role}-default-opacity`); true")
+            try await assertSharedSurfaces(view, opacity: 0.5)
             _ = try await js(view, "document.querySelector('#frosted-background').click(); true")
             try await wait(view, "document.documentElement.dataset.frostedBackground === 'false'")
             try await assertSharedSurfaces(view, opacity: 1)
@@ -368,7 +378,7 @@ final class RuleEditorUITests: XCTestCase {
     }
 
     @MainActor
-    private func assertSharedSurfaces(_ view: WKWebView, opacity: Double) async throws {
+    private func assertSharedSurfaces(_ view: WKWebView, opacity: Double, defaultOpacities: [Double] = [0.2, 0.3, 0.55]) async throws {
         // Wait for control color transitions; inspect the renderer rather than
         // matching generated classes or the source token formulas.
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -387,7 +397,7 @@ final class RuleEditorUITests: XCTestCase {
             const parent = element.parentElement?.closest('[data-surface="control"], [data-surface="panel"], [data-surface="floating"]');
             const nativeTable = document.documentElement.dataset.nativeWindowBackground === 'true' && element.closest('[data-slot="table-container"]');
             const inherited = role === 'inherited' || role !== 'floating' && (parent || nativeTable && role === 'control');
-            const expected = p === 1 || inherited || role !== 'floating' ? 0 : 24 * (1-p);
+            const expected = p === 1 || inherited ? 0 : ({control:12,panel:16,floating:24}[role] ?? 0) * (1-p);
             if (Math.abs(radius - expected) > 0.05 || expected === 0 && filter !== 'none') issues.push(`${element.dataset.slot ?? element.tagName} ${role}: filter=${filter}, expected=${expected}`);
             if (role === 'floating' && style.transitionProperty !== 'none') issues.push(`${element.dataset.slot ?? element.tagName}: implicit material transition`);
             if (p < 1 && role !== 'inherited' && read(style.backgroundColor)[3] === 255) issues.push(`${element.dataset.slot ?? element.tagName}: opaque component paint`);
@@ -396,17 +406,23 @@ final class RuleEditorUITests: XCTestCase {
           }
           const input = document.querySelector('#background-opacity');
           if (input && (getComputedStyle(input).backdropFilter || getComputedStyle(input).webkitBackdropFilter) !== 'none') issues.push('Settings input must reuse its floating owner');
-          const clearSurfaces = ['--control','--card','--popover','--primary-surface','--secondary','--muted','--destructive-surface','--sidebar','--chart-surface','--chart-annotation','--table-header'];
-          for (const name of clearSurfaces) if (read(root.getPropertyValue(name))[3] !== 0) issues.push(`${name}: resting component paint must be clear in every theme`);
-          const primaryText = read(root.getPropertyValue('--primary-surface-foreground'));
-          if (primaryText.join() !== read(root.getPropertyValue('--primary')).join()) issues.push('Primary actions must retain their accent without a fill');
-          for (const name of ['--control-hover','--selection','--accent','--primary-surface-hover','--destructive-hover','--state-hover','--state-selection','--state-warning']) {
-            const alpha = read(root.getPropertyValue(name))[3];
-            if (alpha === 0 || alpha === 255) issues.push(`${name}: interaction/status paint must stay translucent and visible`);
+          const defaults = Object.fromEntries(['control','panel','floating','state-hover','state-selection','state-accent','state-secondary','state-warning','table-header','overlay'].map(role => [role, Number(root.getPropertyValue(`--${role}-default-opacity`))]));
+          const checkAlpha = (label, color, baseline) => {
+            const actual = read(color)[3]/255, expected = baseline*p;
+            if (Math.abs(actual-expected) > 1/255) issues.push(`${label}: alpha=${actual}, expected own default ${baseline} * global weight ${p}`);
+          };
+          for (const [role, tokens] of Object.entries({
+            control: ['control','control-hover','selection','primary-surface','primary-surface-hover','secondary','muted','accent','destructive-surface','destructive-hover','chart-annotation'],
+            panel: ['card','sidebar'], floating: ['popover'],
+            'state-hover': ['state-hover'], 'state-selection': ['state-selection'], 'state-accent': ['state-accent'],
+            'state-secondary': ['state-secondary'], 'state-warning': ['state-warning'], 'table-header': ['table-header'], overlay: ['overlay']
+          })) {
+            for (const token of tokens) checkAlpha(`--${token}`, root.getPropertyValue(`--${token}`), defaults[role]);
           }
-          for (const element of document.querySelectorAll('[data-slot="input"], [data-slot="textarea"], [data-slot="input-group"], [data-slot="tabs-list"], [data-slot="table-header"], [data-slot="table-footer"], [data-slot="dialog-footer"], [data-surface="floating"]')) {
+          for (const element of document.querySelectorAll('[data-slot="input"], [data-slot="textarea"], [data-slot="input-group"], [data-slot="tabs-list"][data-surface="control"], [data-slot="select-trigger"], [data-slot="table-header"], [data-slot="table-footer"], [data-slot="dialog-footer"], [data-slot="dialog-overlay"], [data-surface="floating"]')) {
             if (!element.getBoundingClientRect().width || !element.getBoundingClientRect().height) continue;
-            if (read(getComputedStyle(element).backgroundColor)[3] !== 0) issues.push(`${element.dataset.slot}: resting component must reuse its parent background`);
+            const role = element.dataset.surface === 'floating' ? 'floating' : element.dataset.slot === 'dialog-footer' ? 'state-hover' : element.dataset.slot === 'dialog-overlay' ? 'overlay' : ['table-header','table-footer'].includes(element.dataset.slot) ? 'table-header' : 'control';
+            checkAlpha(element.dataset.slot, getComputedStyle(element).backgroundColor, defaults[role]);
           }
           return { issues, opacity: p, alphas: ['--control','--card','--popover','--primary-surface','--chart-snapshot-background'].map(name => read(root.getPropertyValue(name))[3]/255), positive: read(root.getPropertyValue('--positive')), destructive: read(root.getPropertyValue('--destructive')) };
         })()
@@ -415,7 +431,7 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertEqual(values["issues"] as? [String], [], "Surface rendering contract: \(values)")
         XCTAssertEqual(values["opacity"] as? Double, opacity)
         let alphas = try XCTUnwrap(values["alphas"] as? [Double])
-        for (actual, expected) in zip(alphas, [0.0, 0.0, 0.0, 0.0, 1.0]) {
+        for (actual, expected) in zip(alphas, [defaultOpacities[0] * opacity, defaultOpacities[1] * opacity, defaultOpacities[2] * opacity, defaultOpacities[0] * opacity, 1]) {
             XCTAssertEqual(actual, expected, accuracy: 1 / 255.0)
         }
         XCTAssertEqual(values["destructive"] as? [Int], [232, 85, 168, 255])

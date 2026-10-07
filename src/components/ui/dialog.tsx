@@ -110,7 +110,7 @@ function DialogFooter({
       data-slot="dialog-footer"
       data-surface="inherited"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-transparent p-4 sm:flex-row sm:justify-end",
+        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-state-hover p-4 sm:flex-row sm:justify-end",
         className
       )}
       {...props}
