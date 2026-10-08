@@ -223,7 +223,7 @@ final class ResearchDataProvider {
         guard !chosen.isEmpty else { throw FilterError("No verified eligible USDT swaps. Refresh the instrument catalog or choose a known instrument.") }
         let earliest = chosen.compactMap(\.listedAt).min()! / hourMS * hourMS + hourMS
         let first = spec.from ?? earliest
-        let rules = try spec.rules.map { try FilterCompiler.compile(FilterConfigV2.decode($0.filtersJSON)) }
+        let rules = try spec.allRules.map { try FilterCompiler.compile(FilterConfigV2.decode($0.filtersJSON)) }
         let warmup = ResearchVersion.warmup(rules)
         let last = min(spec.through + 48 * hourMS, researchNow() / hourMS * hourMS - hourMS)
         var plan = DataPlan(spec: spec, instruments: chosen, from: first, through: spec.through, warmupHours: warmup)

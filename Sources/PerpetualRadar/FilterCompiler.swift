@@ -417,7 +417,7 @@ struct FilterCompiler {
                 if let definition = compiled.definitions[name], !visiting.contains(name) { try scan(definition, reference: reference, offset: offset, visiting: visiting.union([name])) }
                 else if let key = FilterCatalog.key(name) {
                     if reference {
-                        guard !key.hasPrefix("Long") else { throw FilterError("Long position readings belong to the tracked contract, not BTC.") }
+                        guard !key.hasPrefix("Long") && !key.hasPrefix("Short") else { throw FilterError("Position readings belong to the tracked contract, not BTC.") }
                         btc?.metrics.insert(key)
                     } else { own.metrics.insert(key) }
                 }

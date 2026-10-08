@@ -42,7 +42,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var foregroundWorkspace = "radar"
     private var researchBusy = false
     private var leaseTimer: Timer?
-    private var collectionAllowed: Bool { MonitorRuntime.backgroundMonitoringEnabled || foregroundPID != nil && foregroundWorkspace == "radar" }
+    private var collectionAllowed: Bool { MonitorRuntime.backgroundMonitoringEnabled || foregroundPID != nil }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
@@ -95,7 +95,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func configureMenu() {
         let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
-        let show = NSMenuItem(title: "Show Perpetual Radar", action: #selector(showInterface), keyEquivalent: "")
+        let show = NSMenuItem(title: "Show Perpetual Swap Suite", action: #selector(showInterface), keyEquivalent: "")
         show.target = self; menu.addItem(show); menu.addItem(.separator())
         status.isEnabled = false; permission.isEnabled = false
         menu.addItem(status); menu.addItem(permission)
@@ -109,7 +109,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Process tests keep every native window and menu off the user's screen.
         guard fixture == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let image = NSImage(systemSymbolName: Self.symbolName, accessibilityDescription: "Perpetual Radar")
+        let image = NSImage(systemSymbolName: Self.symbolName, accessibilityDescription: "Perpetual Swap Suite")
         image?.isTemplate = true; item.button?.image = image
         item.menu = menu; statusItem = item
     }
@@ -136,7 +136,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.state = loginStatus == "enabled" ? .on : loginStatus == "requiresApproval" ? .mixed : .off
         loginItem.title = loginStatus == "requiresApproval" ? "Start at Login · Approval Needed…" : "Start at Login"
         loginItem.isEnabled = MonitorRuntime.backgroundMonitoringEnabled && loginStatus != "unavailable"
-        statusItem?.button?.toolTip = "Perpetual Radar · \(paused ? "Monitoring paused" : "Background monitoring")"
+        statusItem?.button?.toolTip = "Perpetual Swap Suite · \(paused ? "Monitoring paused" : "Background monitoring")"
         renderUpdateItem()
         automaticUpdatesItem.state = AppDelegate.automaticUpdatesEnabled(in: MonitorRuntime.defaults) ? .on : .off
     }
@@ -303,6 +303,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let radar = try collector.get()
         // A request can be the first successful open after a startup failure.
         if recovering { reconcileMonitoring() }
+        if let request = parameters["suite"] as? [String: Any] { return decorated(try await radar.suiteRequest(request)) }
         if let request = parameters["longDecision"] as? [String: Any] { return decorated(try await radar.longDecisionRequest(request)) }
         if let requested = parameters["monitoringPaused"] {
             guard let paused = requested as? Bool else { throw FilterError("Invalid monitoring setting.") }
@@ -414,7 +415,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         presentUpdate(found)
                     }
                 } else if !silently {
-                    showUpdateAlert("Up to Date", "You have the latest version of Perpetual Radar.")
+                    showUpdateAlert("Up to Date", "You have the latest version of Perpetual Swap Suite.")
                 }
             case .failure(let error):
                 updateState = update == nil ? "failed" : "available"

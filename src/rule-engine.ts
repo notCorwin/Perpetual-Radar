@@ -15,7 +15,7 @@ export type FilterLibraryPreferences = { favorites: string[]; recent: string[]; 
 export const initialLibraryPreferences = (): FilterLibraryPreferences => ({ favorites: [], recent: [], layout: "sentences" })
 export type FilterCombination = { id: string; name: string; filtersJSON: string; filterConfigJSON?: string }
 export type EditorExpression = { kind: "number" | "text" | "name" | "unary" | "binary" | "call" | "raw"; source: string; unit: string; value?: string; operation?: string; arguments: EditorExpression[]; choices: FilterMetricChoice[] }
-export type CompileResponse = { configJSON?: string; formula?: string; diagnostics: string[]; requiredHours?: number; units?: Record<string, string>; expressions?: Record<string, EditorExpression> }
+export type CompileResponse = { configJSON?: string; formula?: string; diagnostics: string[]; requiredHours?: number; units?: Record<string, string>; expressions?: Record<string, EditorExpression>; allowedMetrics?: string[] }
 export type FilterTrace = { id: string; label: string; result: FilterTruth; hour: number; readings: Record<string, string>; reason: string; children: FilterTrace[]; eventHours: number[]; readingSources?: Record<string, { instrument: string; hour: number; clock: string; updatedAt: number }[]>; referenceDriven?: boolean }
 export type ExplainResponse = { instId: string; filterToken: string; revision: number; trace: FilterTrace }
 export type NativeMarketRow = MarketRow & { opportunity: OpportunityResult }

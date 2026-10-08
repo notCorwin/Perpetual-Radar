@@ -46,12 +46,16 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var longEvaluationRequests = 0
     var longEvaluationDelay: UInt64 = 0
     var longReadError: String?
+    var suiteEvaluationRequests = 0
+    var suiteEvaluationDelay: UInt64 = 0
+    var suiteReadError: String?
     var researchReadError: String?
     var research: ResearchController?
     var launchAtLogin = "disabled"
     var loginSettingsOpenCount = 0
     let worker = FilterEvaluationWorker()
     let longWorker = LongDecisionWorker()
+    let suiteWorker = SuiteEvaluationWorker()
     init(root: URL) throws {
         self.root = root; suite = "RuleUI-\(UUID())"
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
@@ -84,6 +88,29 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let request = message.body as! [String: Any]
         if let workspace = request["foregroundWorkspace"] as? String { foregroundWorkspace = workspace; replyHandler(["ok": true], nil); return }
+        if let parameters = request["suite"] as? [String: Any] {
+            Task {
+                do {
+                    if parameters["mode"] as? String == "research", let research {
+                        replyHandler(try await research.handle(["action":"suite","request":parameters]),nil); return
+                    }
+                    let action = parameters["action"] as? String ?? "inventory"
+                    if ["inventory","evaluate"].contains(action), let suiteReadError { replyHandler(nil,suiteReadError); return }
+                    let delay = action == "evaluate" ? suiteEvaluationDelay : 0
+                    if action == "evaluate" { suiteEvaluationRequests += 1 }
+                    let store = try Store(url: directory.appendingPathComponent("radar.sqlite3"))
+                    var response = try store.manageSuite(parameters,mode: "radar")
+                    if ["evaluate","preview"].contains(parameters["action"] as? String ?? ""), let profile = try store.selectedSuiteProfile("radar") {
+                        for forming in [true,false] {
+                            let readings = try await suiteWorker.evaluate(contexts,profile: profile,positions: store.suitePositions(),forming: forming,available: !radar.monitoringPaused,detail: parameters["instrument"] as? String)
+                            response[forming ? "provisional" : "confirmed"] = try JSONSerialization.jsonObject(with: Data(researchJSON(readings).utf8))
+                        }
+                    }
+                    if delay > 0 { try await Task.sleep(nanoseconds:delay) }
+                    response["paused"] = radar.monitoringPaused; replyHandler(response,nil)
+                } catch { replyHandler(nil,error.localizedDescription) }
+            }; return
+        }
         if let parameters = request["research"] as? [String: Any], let research {
             if parameters["action"] as? String == "inventory", let researchReadError { replyHandler(nil, researchReadError); return }
             Task { do { replyHandler(try await research.handle(parameters), nil) } catch { replyHandler(nil, error.localizedDescription) } }; return
@@ -261,10 +288,11 @@ final class RuleEditorUITests: XCTestCase {
         let reference = FilterReferenceSnapshot(market: .init(id: btcReferenceID,hour: h,now: now,listedAt: 1,candles: bars,stats: [:],quotes: [:]), receivedAt: now)
         for index in bridge.contexts.indices { bridge.contexts[index].referenceBTC = reference }
         let store = try Store(url: bridge.directory.appendingPathComponent("radar.sqlite3"))
-        let first = try store.saveLongStrategy(.init(name: "Ordinary strategy",entryJSON: try FilterCompiler.compile(source: "Close > 0").config.json,exitJSON: try FilterCompiler.compile(source: "LongHeldHours > 1000").config.json))
-        let risk = try store.saveLongStrategy(.init(name: "BTC risk strategy",entryJSON: first.entryJSON,exitJSON: try FilterCompiler.compile(source: #"LongReturn < -5 OR BTC(ROC(1), "live") <= -2"#).config.json))
-        try store.setPreference(first.id,forKey: "longSelectedStrategy")
-        try store.trackLong(strategyID: risk.id,instrument: bridge.contexts[0].id,price: 110,timestamp: h+1,close: false)
+        let off = try FilterCompiler.compile(source:"1 > 2").config.json
+        let first = try store.saveSuiteProfile(.init(name:"Ordinary strategy",universeJSON:FilterConfigV2().json,phaseRules:["bullishSetup":try FilterCompiler.compile(source:"Close > 0").config.json,"bullishExhaustion":try FilterCompiler.compile(source:"LongHeldHours > 1000").config.json,"bearishReversal":off,"bearishExhaustion":off]))
+        var risk = first; risk.id="";risk.revision=0;risk.name="BTC risk strategy";risk.phaseRules["bullishExhaustion"]=try FilterCompiler.compile(source:#"LongReturn < -5 OR BTC(ROC(1), "live") <= -2"#).config.json
+        risk = try store.saveSuiteProfile(risk)
+        _ = try store.manageSuite(["action":"open","profileID":risk.id,"instrument":bridge.contexts[0].id,"direction":"Long","price":110.0,"timestamp":h+1],mode:"radar")
         configuration.userContentController.addScriptMessageHandler(bridge,contentWorld: .page,name: "radar")
         configuration.setURLSchemeHandler(bridge,forURLScheme: "radar")
         let window = BackgroundTestWindow(contentRect: NSRect(x: 0,y: 0,width: 1440,height: 1100),styleMask: [.titled,.resizable],backing: .buffered,defer: false)
@@ -304,16 +332,21 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertTrue(edited.contains(#"BTC(ROC(3), "closed")"#))
         // The native notification event opens the specified saved strategy,
         // even though another strategy was previously selected.
+        _ = try store.manageSuite(["action":"select","profileID":first.id],mode:"radar")
         _ = try await js(view,"window.radarNotificationStrategy = \(formulaQuote(risk.id)); window.dispatchEvent(new Event('radar-open-long')); true")
-        try await wait(view,"document.querySelector('[data-long-decisions]') !== null && document.querySelector('[aria-label=\"Saved Long strategy\"]')?.textContent.includes('BTC risk strategy') && document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('BTC risk')")
-        try await click(view,"Explain MKT000-USDT-SWAP decision")
-        try await wait(view,"document.querySelector('[role=dialog]')?.innerText.includes('Confirmed BTC risk') && document.querySelector('[role=dialog] [data-btc-reading-source]')?.innerText.includes('Live')")
+        try await wait(view,"document.querySelector('[aria-label=\"Saved phase strategies\"]')?.textContent.includes('BTC risk strategy') && document.querySelector('table[aria-label=\"Actual Long and Short positions\"]')?.innerText.includes('Inactive Strategy')")
+        try await click(view,"Activate saved strategy")
+        try await wait(view,"document.querySelector('table[aria-label=\"Actual Long and Short positions\"]')?.innerText.includes('Provisional · Exit Long')")
+        try await click(view,"Confirmed phases");try await input(view,"#phase-search","MKT000");try await click(view,"Explain")
+        try await wait(view,"document.querySelector('[role=dialog] [data-btc-reading-source]')?.innerText.includes('Closed')")
+        try await click(view,"Provisional live")
+        try await wait(view,"document.querySelector('[role=dialog]')?.innerText.includes('Exit Long') && document.querySelector('[role=dialog] [data-btc-reading-source]')?.innerText.includes('Live')")
         try await assertSharedSurfaces(view,opacity: bridge.radar.frostedBackgroundOpacity)
         XCTAssertFalse(bridge.rows.contains { $0["instId"] as? String == btcReferenceID })
     }
 
     @MainActor
-    func testLongFiltersLiveTrackingPairedBacktestEvidenceAndExportsInNativeWebKit() async throws {
+    func testSuitePhaseEditingActualPositionsCycleEvidenceAndExportsInNativeWebKit() async throws {
         guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
         let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
@@ -329,76 +362,88 @@ final class RuleEditorUITests: XCTestCase {
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar",contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view,"Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
-        try await click(view,"Long Decisions")
-        try await wait(view,"document.querySelector('[data-long-decisions]') !== null")
-        XCTAssertEqual(bridge.foregroundWorkspace,"radar","Long decisions keep the on-demand collector available.")
-        try await input(view,"#long-strategy-name","WK Long decisions")
-        try await click(view,"Formula")
-        try await input(view,"section[aria-label='Entry filter'] textarea","Close > 100",textarea: true)
-        try await click(view,"Exit filter")
-        try await click(view,"Formula")
-        try await input(view,"section[aria-label='Exit filter'] textarea","LongReturn >",textarea: true)
-        try await wait(view,"document.querySelector('[data-long-decisions] button').closest('main').innerText.includes('Last valid preview') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Save strategy' && b.disabled)")
-        try await input(view,"section[aria-label='Exit filter'] textarea","LongReturn >= 5 OR LongHeldHours >= 3",textarea: true)
-        try await click(view,"Save strategy")
-        try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Enter Long')")
-        XCTAssertEqual(bridge.radar.marketFiltersV2JSON,originalRadarRules,"Strategy edits must not change Radar filters.")
+        try await click(view,"Strategies & Positions")
+        try await wait(view,"document.querySelector('[data-suite-workspace=radar] #suite-strategy-name') !== null")
+        XCTAssertEqual(bridge.foregroundWorkspace,"radar")
+        try await input(view,"#suite-strategy-name","WK Suite")
+        for (label,formula) in [("Universe","Close > 0"),("Bullish Setup","Close >= 100"),("Bullish Exhaustion","LongReturn >= 5 OR LongHeldHours >= 3"),("Bearish Reversal","Close < 100"),("Bearish Exhaustion","ShortReturn >= 5 OR ShortHeldHours >= 3")] {
+            try await click(view,label); try await click(view,"Formula")
+            try await input(view,"section[aria-label='\(label)'] textarea",formula,textarea: true)
+            try await wait(view,"Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Keep filter' && !b.disabled && b.getBoundingClientRect().height>0)")
+        }
+        try await click(view,"Bullish Setup")
+        try await input(view,"section[aria-label='Bullish Setup'] textarea","LongReturn > 0",textarea:true)
+        try await wait(view,"document.body.innerText.includes('entry phases cannot use position readings') && document.body.innerText.includes('Last valid preview') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Save strategy' && b.disabled)")
+        try await input(view,"section[aria-label='Bullish Setup'] textarea","Close >= 100",textarea:true)
+        try await wait(view,"Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Keep filter' && !b.disabled && b.getBoundingClientRect().height>0)")
+        try await click(view,"Bearish Exhaustion")
+        try await input(view,"section[aria-label='Bearish Exhaustion'] textarea","ShortReturn >",textarea: true)
+        try await wait(view,"document.body.innerText.includes('Last valid preview') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Save strategy' && b.disabled)")
+        try await input(view,"section[aria-label='Bearish Exhaustion'] textarea","ShortReturn >= 5 OR ShortHeldHours >= 3",textarea: true)
+        try await click(view,"Save strategy"); try await wait(view,"document.body.innerText.includes('Strategy saved.')")
+        XCTAssertEqual(try Store(url:bridge.directory.appendingPathComponent("radar.sqlite3")).suiteProfiles("radar").first?.name,"WK Suite")
+        try await click(view,"Activate saved strategy"); try await click(view,"Confirmed phases")
+        try await wait(view,"document.querySelector('table[aria-label=\"Confirmed phase readings\"]')?.innerText.includes('Enter Long')")
+        XCTAssertEqual(bridge.radar.marketFiltersV2JSON,originalRadarRules)
         try await assertSharedSurfaces(view,opacity: bridge.radar.frostedBackgroundOpacity)
-        try await click(view,"Explain MKT000-USDT-SWAP decision")
-        try await wait(view,"document.querySelector('[role=dialog]')?.innerText.includes('Inactive while flat')")
+        try await input(view,"#phase-search","MKT000")
+        try await click(view,"Explain"); try await wait(view,"document.querySelector('[role=dialog]')?.innerText.includes('Bullish Exhaustion')")
         try await dismissFloating(view)
-        try await input(view,"#long-search","MKT000")
-        try await click(view,"Record entry")
-        try await input(view,"#long-record-price","110")
-        let actualTime = Date(timeIntervalSince1970: Double(bridge.contexts[0].hour-hourMS)/1000)
+        try await click(view,"Record entry…"); try await input(view,"#actual-price","110")
         let formatter = DateFormatter(); formatter.timeZone = TimeZone(secondsFromGMT: 0); formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
-        try await input(view,"#long-record-time",formatter.string(from: actualTime))
-        // Keep an older poll in flight while recording the entry. Its stale
-        // reply must be discarded without stopping subsequent price updates.
-        let evaluations = bridge.longEvaluationRequests, deadline = Date().addingTimeInterval(5)
-        bridge.longEvaluationDelay = 2_000_000_000
-        while bridge.longEvaluationRequests == evaluations, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        bridge.longEvaluationDelay = 0
-        XCTAssertGreaterThan(bridge.longEvaluationRequests,evaluations,"The entry must overlap an in-flight evaluation.")
-        try await click(view,"Save tracking record")
-        try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Hold Long')")
-        bridge.longReadError = "Monitor reconnect fixture"
-        try await wait(view,"document.querySelector('[data-long-decisions] [role=alert]')?.innerText.includes('Monitor reconnect fixture')")
-        bridge.longReadError = nil
-        try await wait(view,"!document.body.innerText.includes('Monitor reconnect fixture') && document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Hold Long')")
-        XCTAssertEqual(try Store(url: bridge.directory.appendingPathComponent("radar.sqlite3")).longPositions().filter { $0.exitedAt == nil }.count, 1)
-        var market = bridge.contexts[0]
-        let closed = market.hour-hourMS
+        let actualTime = Date(timeIntervalSince1970: Double(bridge.contexts[0].hour-hourMS)/1000)
+        try await input(view,"#actual-time",formatter.string(from: actualTime))
+        bridge.suiteEvaluationDelay = 2_000_000_000
+        let precedingPolls = bridge.suiteEvaluationRequests, pollDeadline = Date().addingTimeInterval(5)
+        while bridge.suiteEvaluationRequests == precedingPolls, Date() < pollDeadline { try await Task.sleep(for:.milliseconds(20)) }
+        XCTAssertGreaterThan(bridge.suiteEvaluationRequests,precedingPolls)
+        bridge.suiteEvaluationDelay = 0
+        try await click(view,"Save actual fill")
+        try await wait(view,"document.querySelector('table[aria-label=\"Confirmed phase readings\"]')?.innerText.includes('Hold Long')")
+        bridge.suiteReadError = "Strategy connection temporarily unavailable"
+        try await wait(view,"document.querySelector('[data-suite-workspace=radar] [role=alert]')?.innerText.includes('Strategy connection temporarily unavailable')")
+        bridge.suiteReadError = nil
+        try await wait(view,"!document.querySelector('[data-suite-workspace=radar] [role=alert]')?.innerText.includes('Strategy connection temporarily unavailable')")
+        var market = bridge.contexts[0]; let closed = market.hour-hourMS
         market.candles[closed] = Candle(hour: closed,high: 122,low: 100,close: 120,quoteVolume: 100,baseVolume: 1,open: 105)
         bridge.contexts[0] = market; bridge.revision += 1
-        try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Exit Long')")
-        try await click(view,"Record exit"); try await input(view,"#long-record-price","120"); try await click(view,"Save tracking record")
-        try await click(view,"Tracked positions")
-        try await wait(view,"document.querySelector('table[aria-label=\"Recorded Long exits\"] tbody')?.innerText.includes('MKT000-USDT-SWAP')")
-        try await click(view,"Backtest saved strategy")
-        try await wait(view,"document.querySelector('#study-name')?.value === 'WK Long decisions backtest'")
+        try await wait(view,"document.querySelector('table[aria-label=\"Confirmed phase readings\"]')?.innerText.includes('Exit Long')")
+        try await click(view,"Record exit…"); try await input(view,"#actual-price","120"); try await click(view,"Save actual fill")
+        try await click(view,"Positions"); try await wait(view,"document.querySelector('table[aria-label=\"Actual Long and Short positions\"] tbody')?.innerText.includes('Closed')")
+        try await click(view,"Record entry…"); try await input(view,"#position-symbol","MKT000-USDT-SWAP"); try await click(view,"Short")
+        try await input(view,"#actual-price","120"); try await input(view,"#actual-time",formatter.string(from: actualTime)); try await click(view,"Save actual fill")
+        try await wait(view,"document.querySelector('table[aria-label=\"Actual Long and Short positions\"] tbody')?.innerText.includes('Short')")
+        try await click(view,"Copy to Research"); try await wait(view,"document.body.innerText.includes('Independent copy created in Research.')")
+        XCTAssertEqual(try store.database.suiteProfiles("research").count,1)
+        try await click(view,"Backtest saved strategy"); try await wait(view,"document.querySelector('#study-name')?.value === 'WK Suite cycle study'")
+        try await input(view,"#capital-maintenanceRate","0.5"); try await input(view,"#capital-liquidationFeeBps","100")
         formatter.dateFormat = "yyyy-MM-dd"
         try await input(view,"#study-from",formatter.string(from: Date(timeIntervalSince1970: Double(ResearchFixture.hour)/1000)))
         try await input(view,"#study-through",formatter.string(from: Date(timeIntervalSince1970: Double(ResearchFixture.hour+192*hourMS)/1000)))
         try await click(view,"Review data plan"); try await wait(view,"document.body.innerText.includes('This range is fully cached.')")
         try await click(view,"Prepare Data"); try await wait(view,"document.body.innerText.includes('Frozen dataset') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Run Study')")
-        try await click(view,"Run Study")
-        try await wait(view,"document.querySelector('table[aria-label=\"Long backtest trades\"] tbody tr') !== null",seconds: 30)
+        try await click(view,"Run Study"); try await wait(view,"document.querySelector('table[aria-label=\"Cycle backtest trades\"] tbody tr') !== null",seconds: 30)
         try await assertSharedSurfaces(view,opacity: bridge.radar.frostedBackgroundOpacity)
-        try await click(view,"Inspect Long trade BTC-USDT-SWAP")
-        try await wait(view,"document.querySelector('section[aria-label=\"Frozen event chart\"] svg') !== null && document.querySelector('[role=dialog]')?.innerText.includes('Exit filter at the exit signal close')")
-        try await click(view,"Exit chart"); try await click(view,"Copy chart")
-        try await wait(view,"document.body.innerText.includes('Copied')"); XCTAssertEqual(bridge.chartSnapshotRGB.count,3)
+        for appearance in [NSAppearance.Name.aqua,.darkAqua] {
+            window.appearance=NSAppearance(named:appearance)
+            try await wait(view,"window.matchMedia('(prefers-color-scheme: dark)').matches === \(appearance == .darkAqua)")
+            try await assertSharedSurfaces(view,opacity:bridge.radar.frostedBackgroundOpacity)
+        }
+        let formulaCount = try await js(view,"document.querySelectorAll('table .katex').length") as! Int
+        XCTAssertGreaterThan(formulaCount,10)
+        let inspect = try await js(view,"document.querySelector('table[aria-label=\"Cycle backtest trades\"] tbody button').getAttribute('aria-label')") as! String
+        try await click(view,inspect); try await wait(view,"document.querySelector('section[aria-label=\"Frozen event chart\"] svg') !== null && document.querySelector('[role=dialog]')?.innerText.includes('All four phases and Universe')")
+        try await click(view,"Exit chart"); try await click(view,"Copy chart"); try await wait(view,"document.body.innerText.includes('Copied')"); XCTAssertEqual(bridge.chartSnapshotRGB.count,3)
         try await dismissFloating(view)
-        for kind in ["summary","events"] {
-            try await click(view,"Export \(kind) CSV")
+        for (label,kind) in [("Export summary CSV","summary"),("Export trades CSV","events"),("Export equity CSV","equity")] {
+            try await click(view,label)
             let file = directory.appendingPathComponent("long-\(kind).csv"), deadline = Date().addingTimeInterval(5)
             while !FileManager.default.fileExists(atPath: file.path), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
-            let csv = try String(contentsOf: file,encoding: .utf8); XCTAssertTrue(csv.contains("data_digest"))
+            let csv = try String(contentsOf: file,encoding: .utf8); XCTAssertTrue(csv.contains("data_digest")); XCTAssertTrue(csv.contains("spec_json"))
             if kind == "events" { XCTAssertTrue(csv.contains("exit_trace_json")) }
         }
-        try await click(view,"Long Decisions"); try await click(view,"Tracked positions")
-        try await wait(view,"document.querySelector('table[aria-label=\"Recorded Long exits\"] tbody')?.innerText.includes('MKT000-USDT-SWAP')")
+        try await click(view,"Strategies & Positions"); try await click(view,"Positions")
+        try await wait(view,"document.querySelector('table[aria-label=\"Actual Long and Short positions\"] tbody')?.innerText.includes('MKT000-USDT-SWAP')")
         XCTAssertEqual(bridge.foregroundWorkspace,"radar")
     }
 
@@ -425,6 +470,7 @@ final class RuleEditorUITests: XCTestCase {
         let radarRequests = bridge.radarRequests
         try await Task.sleep(for: .milliseconds(2300))
         XCTAssertEqual(bridge.radarRequests, radarRequests, "Radar polling and live chart loads must stop while researching.")
+        try await click(view, "Filters")
         try await input(view, "#study-name", "WKWebView experiment")
         bridge.researchReadError = "Research cache temporarily locked"
         try await wait(view,"document.querySelector('[data-research] [role=alert]')?.innerText.includes('Research cache temporarily locked')")

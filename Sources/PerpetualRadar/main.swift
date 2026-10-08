@@ -70,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         appearanceItem.submenu = appearanceMenu
         appMenu.addItem(appearanceItem)
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Perpetual Radar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit Perpetual Swap Suite", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         application.submenu = appMenu; menu.addItem(application)
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -95,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
-        window.title = "Perpetual Radar"
+        window.title = "Perpetual Swap Suite"
         window.isReleasedWhenClosed = false
         applyAppearance(Self.preferredAppearance())
         window.minSize = NSSize(width: 400, height: 300)
@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     if let workspace = body["workspace"] as? String {
                         monitorClient.workspace = workspace; _ = try await monitorClient.request(["serviceInfo": true])
                     }
+                    if let request = body["suite"] as? [String: Any], request["mode"] as? String == "research" { value = try await researchCache.get().handle(["action":"suite", "request":request]) }
                     if let request = body["research"] as? [String: Any] { value = try await researchCache.get().handle(request) }
                     if let request = body["monitor"] as? [String: Any] { value = try await monitorClient.request(request) }
                     if body["minimize"] as? Bool == true {
@@ -339,6 +340,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 do { _ = try await monitorClient.request(["serviceInfo": true]); replyHandler(["ok": true], nil) }
                 catch { replyHandler(nil, error.localizedDescription) }
             }
+            return
+        }
+        if let request = parameters["suite"] as? [String: Any], request["mode"] as? String == "research" {
+            Task { do { replyHandler(try await researchCache.get().handle(["action": "suite", "request": request], window: window), nil) } catch { replyHandler(nil, error.localizedDescription) } }
             return
         }
         if let request = parameters["research"] as? [String: Any] {

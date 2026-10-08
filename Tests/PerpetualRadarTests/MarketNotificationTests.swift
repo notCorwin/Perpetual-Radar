@@ -105,7 +105,7 @@ final class MarketNotificationTests: XCTestCase {
         await service.sendTest()
         XCTAssertEqual(service.error, "")
         XCTAssertEqual(transport.requests.count, 1)
-        XCTAssertEqual(transport.requests.first?.content.title, "Perpetual Radar")
+        XCTAssertEqual(transport.requests.first?.content.title, "Perpetual Swap Suite")
     }
 
     @MainActor

@@ -16,7 +16,7 @@ final class AppUpdaterTests: XCTestCase {
         let digest = String(repeating: "b", count: 64)
         let data = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "digest": "sha256:\(digest)",
             "published_at": "2026-09-27T00:00:00Z",
         ])
@@ -25,7 +25,7 @@ final class AppUpdaterTests: XCTestCase {
             return XCTFail("Expected an available update")
         }
         XCTAssertEqual(available?.revision, revision)
-        XCTAssertEqual(available?.assetURL.absoluteString, "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar")
+        XCTAssertEqual(available?.assetURL.absoluteString, "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar")
         XCTAssertEqual(available?.expectedSHA256, digest)
         XCTAssertEqual(available?.publishedAt, Date(timeIntervalSince1970: 1_790_467_200))
         guard case .success(let latest) = AppUpdater.parse(data: data, currentRevision: revision) else {
@@ -35,24 +35,24 @@ final class AppUpdaterTests: XCTestCase {
 
         let missingDigest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
         ])
         guard case .failure(.invalidResponse) = AppUpdater.parse(data: missingDigest, currentRevision: nil) else {
             return XCTFail("Expected an unsigned release to be rejected")
         }
         let wrongURL = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://example.com/Perpetual.Radar.app.tar",
+            "asset_url": "https://example.com/Perpetual.Swap.Suite.app.tar",
             "digest": "sha256:\(digest)",
         ])
         guard case .failure(.invalidResponse) = AppUpdater.parse(data: wrongURL, currentRevision: nil) else {
             return XCTFail("Expected an unexpected download location to be rejected")
         }
 
-        let immutableURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/build-\(revision)-123-1/Perpetual.Radar.app.tar"
+        let immutableURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/build-\(revision)-123-1/Perpetual.Swap.Suite.app.tar"
         let immutableManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "immutable_asset_url": immutableURL,
             "digest": "sha256:\(digest)",
         ])
@@ -61,10 +61,10 @@ final class AppUpdaterTests: XCTestCase {
         }
         XCTAssertEqual(immutableUpdate?.assetURL.absoluteString, immutableURL)
 
-        let versionedURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.\(revision).123-1.tar"
+        let versionedURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.\(revision).123-1.tar"
         let versionedManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "versioned_asset_url": versionedURL,
             "digest": "sha256:\(digest)",
         ])
@@ -75,7 +75,7 @@ final class AppUpdaterTests: XCTestCase {
 
         let invalidVersionedManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "versioned_asset_url": versionedURL.replacingOccurrences(of: revision, with: String(repeating: "c", count: 40)),
             "digest": "sha256:\(digest)",
         ])
@@ -86,7 +86,7 @@ final class AppUpdaterTests: XCTestCase {
         let wrongRevisionURL = immutableURL.replacingOccurrences(of: revision, with: String(repeating: "c", count: 40))
         let mismatchedManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "immutable_asset_url": wrongRevisionURL,
             "digest": "sha256:\(digest)",
         ])
@@ -109,23 +109,23 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     func testArchiveMustContainOnlyTheExpectedApp() {
-        XCTAssertEqual(AppUpdater.archiveAppRoot(from: "Perpetual Radar.app/\nPerpetual Radar.app/Contents/Info.plist\n"), "Perpetual Radar.app")
+        XCTAssertEqual(AppUpdater.archiveAppRoot(from: "Perpetual Swap Suite.app/\nPerpetual Swap Suite.app/Contents/Info.plist\n"), "Perpetual Swap Suite.app")
         XCTAssertNil(AppUpdater.archiveAppRoot(from: "Other.app/Contents/Info.plist\n"))
-        XCTAssertNil(AppUpdater.archiveAppRoot(from: "Perpetual Radar.app/Contents/Info.plist\n../other\n"))
+        XCTAssertNil(AppUpdater.archiveAppRoot(from: "Perpetual Swap Suite.app/Contents/Info.plist\n../other\n"))
     }
 
     func testInstallReplacesTheExpectedApp() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarTests-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
-        let current = root.appendingPathComponent("Perpetual Radar.app")
-        let release = root.appendingPathComponent("release/Perpetual Radar.app")
+        let current = root.appendingPathComponent("Perpetual Swap Suite.app")
+        let release = root.appendingPathComponent("release/Perpetual Swap Suite.app")
         let archive = root.appendingPathComponent("update.tar")
         try makeApp(at: current, marker: "old")
         try makeApp(at: release, marker: "new")
 
         let tar = Process()
         tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        tar.arguments = ["-cf", archive.path, "-C", release.deletingLastPathComponent().path, "Perpetual Radar.app"]
+        tar.arguments = ["-cf", archive.path, "-C", release.deletingLastPathComponent().path, "Perpetual Swap Suite.app"]
         try tar.run()
         tar.waitUntilExit()
         XCTAssertEqual(tar.terminationStatus, 0)
@@ -140,7 +140,7 @@ final class AppUpdaterTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarRelaunchTests-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let app = root.appendingPathComponent("Perpetual Radar.app")
+        let app = root.appendingPathComponent("Perpetual Swap Suite.app")
         let backup = root.appendingPathComponent("backup.app")
         let log = root.appendingPathComponent("open.log")
         try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
@@ -180,7 +180,7 @@ final class AppUpdaterTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarRelaunchTests-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let app = root.appendingPathComponent("Perpetual Radar.app")
+        let app = root.appendingPathComponent("Perpetual Swap Suite.app")
         let backup = root.appendingPathComponent("backup.app")
         let log = root.appendingPathComponent("open.log")
         try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
@@ -203,12 +203,12 @@ final class AppUpdaterTests: XCTestCase {
         for (fail, embeddedMonitor) in [(false, false), (true, false), (false, true), (true, true)] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("PerpetualRadarBackgroundRelaunchTests-\(UUID())")
             defer { try? FileManager.default.removeItem(at: root) }
-            let app = root.appendingPathComponent("Perpetual Radar.app"), backup = root.appendingPathComponent("backup.app"), log = root.appendingPathComponent("open.log")
+            let app = root.appendingPathComponent("Perpetual Swap Suite.app"), backup = root.appendingPathComponent("backup.app"), log = root.appendingPathComponent("open.log")
             try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
             if embeddedMonitor {
                 for bundle in [app, backup] {
-                    let executable = bundle.appendingPathComponent("Contents/Library/LoginItems/Perpetual Radar Monitor.app/Contents/MacOS/PerpetualRadar")
+                    let executable = bundle.appendingPathComponent("Contents/Library/LoginItems/Perpetual Swap Suite Monitor.app/Contents/MacOS/PerpetualRadar")
                     try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try Data("monitor".utf8).write(to: executable)
                     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
@@ -218,7 +218,7 @@ final class AppUpdaterTests: XCTestCase {
             let helper = try runRelaunchHelper(app: app, oldPID: Int32.max, backup: backup, opener: opener, log: log, background: true)
             helper.waitUntilExit()
             let arguments = try String(contentsOf: log, encoding: .utf8)
-            let openedPath = embeddedMonitor ? app.appendingPathComponent("Contents/Library/LoginItems/Perpetual Radar Monitor.app").path : app.path
+            let openedPath = embeddedMonitor ? app.appendingPathComponent("Contents/Library/LoginItems/Perpetual Swap Suite Monitor.app").path : app.path
             XCTAssertTrue(arguments.contains("-g\n-a\n\(openedPath)\n--env\nPERPETUAL_RADAR_BACKGROUND=1\n"))
             XCTAssertEqual(arguments.components(separatedBy: "\(openedPath)\n").count - 1, fail ? 2 : 1, "Each attempt opens the app once")
             if fail { XCTAssertTrue(arguments.contains("PERPETUAL_RADAR_UPDATE_ROLLBACK=1")) }
@@ -264,7 +264,7 @@ final class AppUpdaterTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
-            "-c", AppUpdater.defaultRelauncherScript, "Perpetual Radar updater",
+            "-c", AppUpdater.defaultRelauncherScript, "Perpetual Swap Suite updater",
             app.path, String(oldPID), backup.path, opener.path,
         ]
         var environment = ProcessInfo.processInfo.environment
@@ -289,7 +289,7 @@ final class AppUpdaterTests: XCTestCase {
             "CFBundleExecutable": "PerpetualRadar",
             "CFBundleIdentifier": "com.perpetualradar.macos",
             "CFBundleInfoDictionaryVersion": "6.0",
-            "CFBundleName": "Perpetual Radar",
+            "CFBundleName": "Perpetual Swap Suite",
             "CFBundlePackageType": "APPL",
         ], format: .xml, options: 0)
         try plist.write(to: contents.appendingPathComponent("Info.plist"))

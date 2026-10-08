@@ -98,11 +98,11 @@ final class AppUpdater: @unchecked Sendable {
     typealias InstallCompletion = @MainActor @Sendable (Result<Void, AppUpdateError>) -> Void
     typealias Relauncher = @Sendable (URL, URL) throws -> Void
 
-    private static let appName = "Perpetual Radar"
+    private static let appName = "Perpetual Swap Suite"
     private static let bundleIdentifier = "com.perpetualradar.macos"
     private static let executableName = "PerpetualRadar"
     private static let canonicalAssetURL = URL(
-        string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.tar"
+        string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar"
     )!
     private static let manifestURL = URL(
         string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/update.json"
@@ -620,8 +620,8 @@ final class AppUpdater: @unchecked Sendable {
         if isCanonicalAssetURL(url) { return true }
         let value = url.absoluteString
         let legacyPrefix = "https://github.com/notCorwin/Perpetual-Radar/releases/download/build-\(revision)-"
-        let legacySuffix = "/Perpetual.Radar.app.tar"
-        let versionedPrefix = "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Radar.app.\(revision)."
+        let legacySuffix = "/Perpetual.Swap.Suite.app.tar"
+        let versionedPrefix = "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.\(revision)."
         let versionedSuffix = ".tar"
         let run: Substring
         if value.hasPrefix(legacyPrefix), value.hasSuffix(legacySuffix) {
@@ -1004,7 +1004,7 @@ final class AppUpdater: @unchecked Sendable {
         app_to_open="$1"
         shift
         if [ "${PERPETUAL_RADAR_BACKGROUND:-0}" = 1 ]; then
-            monitor_app="$app_to_open/Contents/Library/LoginItems/Perpetual Radar Monitor.app"
+            monitor_app="$app_to_open/Contents/Library/LoginItems/Perpetual Swap Suite Monitor.app"
             if [ -x "$monitor_app/Contents/MacOS/PerpetualRadar" ]; then app_to_open="$monitor_app"; fi
             "$opener" -g -a "$app_to_open" --env "PERPETUAL_RADAR_BACKGROUND=1" "$@"
         else
@@ -1055,7 +1055,7 @@ final class AppUpdater: @unchecked Sendable {
         process.arguments = [
             "-c",
             defaultRelauncherScript,
-            "Perpetual Radar updater",
+            "Perpetual Swap Suite updater",
             appURL.path,
             String(ProcessInfo.processInfo.processIdentifier),
             backupURL.path,

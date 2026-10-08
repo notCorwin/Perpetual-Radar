@@ -9,7 +9,10 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/c
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import { LongDecisions } from "@/LongDecisions"
+import { SuiteWorkspace } from "@/SuiteWorkspace"
+import { useSuite } from "@/use-suite"
+import { SuitePhaseBadges } from "@/SuitePhaseBadges"
+import type { StrategyProfile, SuiteReading, SuiteRequest, SuiteResponse } from "@/suite-types"
 import type { LongRequest, LongResponse } from "@/long-decisions"
 import { Research } from "@/Research"
 import type { ResearchInputs, ResearchRequest, ResearchResponse, StudySpec } from "@/research-types"
@@ -26,6 +29,7 @@ import { MarketOpportunity } from "@/MarketOpportunity"
 import { MarketListViewport } from "@/MarketListViewport"
 import { MarketRowsViewport } from "@/MarketRowsViewport"
 import { MarketFilters } from "@/MarketFilters"
+import { SuitePhaseExplanation } from "@/SuitePhaseExplanation"
 import { FilterExplanation } from "@/FilterExplanation"
 import { keepSnapshotValue, reconcileMarketRows } from "@/market-snapshot"
 import { emptyFilterConfig, initialEditorState, initialLibraryPreferences, parseFilterConfig, previewResponseIsCurrent, newRuleID, type CompileResponse, type ExplainResponse, type FilterCombination, type FilterConfigV2, type FilterEditorState, type FilterLibraryPreferences, type FilterMetric, type FilterTruth, type NativeMarketRow } from "@/rule-engine"
@@ -40,11 +44,12 @@ type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
 type AppliedFilterSnapshot = { filterConfigJSON: string; revision: number; serviceSession?: string }
 type SettingRequest = Partial<WindowAppearance> & { backgroundMonitoringEnabled?: boolean; notificationsEnabled?: boolean; monitoringPaused?: boolean; launchAtLogin?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
+  postMessage(request: { suite: SuiteRequest }): Promise<SuiteResponse>
   postMessage(request: { longDecision: LongRequest }): Promise<LongResponse>
   postMessage(request: { research: ResearchRequest }): Promise<ResearchResponse>
   postMessage(request: { foregroundWorkspace: "radar" | "research" }): Promise<{ ok: boolean }>
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
-  postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string } }): Promise<CompileResponse>
+  postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string; suitePhase?: string } }): Promise<CompileResponse>
   postMessage(request: { previewMarketFilters: { filtersJSON: string; token: string; atClose?: boolean; strategyID?: string } }): Promise<PreviewSnapshot>
   postMessage(request: { explainMarketFilters: { instId: string; filtersJSON: string; token: string; atClose?: boolean; strategyID?: string } }): Promise<ExplainResponse>
   postMessage(request: { marketFiltersJSON: string }): Promise<AppliedFilterSnapshot>
@@ -89,12 +94,13 @@ function BreakReadings({ result, direction }: { result: BreakResult; direction: 
   </Fragment>
 }
 
-const MarketRowView = memo(function MarketRowView({ row, index, onSelect, onExplain }: { row: NativeMarketRow; index: number; onSelect: (id: string) => void; onExplain: (id: string) => void }) {
+const MarketRowView = memo(function MarketRowView({ row, index, onSelect, onExplain, confirmed, provisional }: { confirmed?: SuiteReading; provisional?: SuiteReading; row: NativeMarketRow; index: number; onSelect: (id: string) => void; onExplain: (id: string) => void }) {
   return <TableRow data-market-index={index} aria-rowindex={index + 2} interactive tabIndex={0} aria-label={`View ${row.instId} chart`} onClick={() => onSelect(row.instId)} onKeyDown={event => {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(row.instId) }
   }}>
     <TableCell className="pl-[var(--market-table-leading-inset)] text-left" title={row.instId}>
       <span className="font-medium">{row.instId.replace(/-USDT-SWAP$/, "")}</span>
+      {(confirmed || provisional) && <SuitePhaseBadges confirmed={confirmed} provisional={provisional} />}
       <div className="flex justify-start gap-2 text-xs tabular-nums">
         <span>{formatPrice(row.price)}</span>
         <span className={directionClass(row.priceChange)} title={`Price change from the previous completed hour. ${PERCENT_CHANGE_DESCRIPTION}`}>{formatPercent(row.priceChange)}</span>
@@ -137,8 +143,8 @@ const MarketRowView = memo(function MarketRowView({ row, index, onSelect, onExpl
     </TableCell>
   </TableRow>
 })
-const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain }: { rows: NativeMarketRow[]; onSelect: (id: string) => void; onExplain: (id: string) => void }) {
-  return <MarketRowsViewport ids={rows.map(row => row.instId)}>{index => <MarketRowView row={rows[index]} index={index} onSelect={onSelect} onExplain={onExplain} />}</MarketRowsViewport>
+const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain, confirmed = {}, provisional = {} }: { confirmed?: Record<string, SuiteReading>; provisional?: Record<string, SuiteReading>; rows: NativeMarketRow[]; onSelect: (id: string) => void; onExplain: (id: string) => void }) {
+  return <MarketRowsViewport ids={rows.map(row => row.instId)}>{index => <MarketRowView row={rows[index]} index={index} onSelect={onSelect} onExplain={onExplain} confirmed={confirmed[rows[index].instId]} provisional={provisional[rows[index].instId]} />}</MarketRowsViewport>
 })
 
 function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onResearch: (inputs: ResearchInputs) => void; onDecisions: (inputs: ResearchInputs) => void }) {
@@ -150,6 +156,13 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
   const compileEpoch = useRef(0)
   const previewEpoch = useRef(0)
   const [ready, setReady] = useState(false)
+  const suite = useSuite('radar', active)
+  const activeProfile = suite.snapshot.profiles.find(p => p.id === suite.snapshot.selectedID)
+  const activeProfileRef = useRef<StrategyProfile | undefined>(activeProfile)
+  activeProfileRef.current = activeProfile
+  const [phaseView, setPhaseView] = useState('candidates')
+  const confirmedPhases = useMemo(() => Object.fromEntries((suite.snapshot.confirmed ?? []).map(r => [r.instrument,r])), [suite.snapshot.confirmed])
+  const provisionalPhases = useMemo(() => Object.fromEntries((suite.snapshot.provisional ?? []).map(r => [r.instrument,r])), [suite.snapshot.provisional])
   const [listFilters, setListFilters] = useState<FilterConfigV2>(emptyFilterConfig)
   const [filterDraft, setFilterDraft] = useState<FilterConfigV2 | null>(null)
   const [editor, setEditor] = useState<FilterEditorState>(initialEditorState)
@@ -206,9 +219,11 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
   }, [])
   const [explanationOpen, setExplanationOpen] = useState(false)
   const [explainingId, setExplainingId] = useState<string | null>(null)
+  const [phaseExplainingID,setPhaseExplainingID] = useState<string|null>(null)
   const explainMarket = useCallback((id: string) => { setExplainingId(id); setExplanationOpen(true) }, [])
+  const explainRow = useCallback((id: string) => { if (activeProfileRef.current) setPhaseExplainingID(id); else explainMarket(id) },[explainMarket])
   const draftJSON = JSON.stringify(filterDraft ?? listFilters)
-  const compileKey = editor.source === null ? draftJSON : `source:${editor.source}`
+  const compileKey = (activeProfile ? 'universe:' : '') + (editor.source === null ? draftJSON : `source:${editor.source}`)
   const editorExpressions = useMemo(() => ({ ...editor.expressionDrafts, ...compilation.expressions }), [editor.expressionDrafts, compilation.expressions])
   const compiling = compilation.pending || compilation.key !== compileKey
   const valid = !compiling && compilation.diagnostics.length === 0 && Boolean(compilation.configJSON)
@@ -253,7 +268,7 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     if (!backgroundOpacityDraftDirty.current && document.activeElement?.id !== "background-opacity") setBackgroundOpacityDraft(String(snapshot.frostedBackgroundOpacity))
     if (snapshot.revision >= appliedRevision.current) {
       appliedRevision.current = snapshot.revision
-      if (appliedJSON.current !== snapshot.filterConfigJSON) {
+      if (!activeProfileRef.current && appliedJSON.current !== snapshot.filterConfigJSON) {
         appliedJSON.current = snapshot.filterConfigJSON
         setListFilters(parseFilterConfig(snapshot.filterConfigJSON))
       }
@@ -297,9 +312,9 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     const timer = window.setTimeout(async () => {
       try {
         const request = editor.source === null ? { filtersJSON: draftJSON } : { source: editor.source, previousJSON: draftJSON }
-        const response = await window.webkit.messageHandlers.radar.postMessage({ compileMarketFilters: request })
+        const response = await window.webkit.messageHandlers.radar.postMessage({ compileMarketFilters: activeProfile ? { ...request,suitePhase: 'universe' } : request })
         if (stopped || epoch !== compileEpoch.current) return
-        setCompilation(current => ({ ...current, ...response, key: compileKey, pending: false }))
+        setCompilation(current => ({ ...current, ...response, allowedMetrics: response.allowedMetrics, key: compileKey, pending: false }))
         if (response.diagnostics.length === 0 && response.configJSON) {
           setLastValidJSON(response.configJSON)
           if (editor.source !== null) setFilterDraft(parseFilterConfig(response.configJSON))
@@ -340,13 +355,28 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     return () => { stopped = true; window.clearTimeout(timer) }
   }, [active, lastValidJSON])
 
-  const matchedRows = useMemo(() => rows.filter(row => results[row.instId] === "true"), [rows, results])
+  const matchedRows = useMemo(() => rows.filter(row => activeProfile ? confirmedPhases[row.instId]?.universe === "true" : results[row.instId] === "true"), [rows, results,activeProfile,confirmedPhases])
   const searchedRows = useMemo(() => rows.filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase())), [rows, query])
-  const visible = useMemo(() => searchedRows.filter(row => results[row.instId] === "true").sort((a, b) => compareMarketRows(a, b, sort, descending)), [searchedRows, results, sort, descending])
+  const visible = useMemo(() => searchedRows.filter(row => {
+    if (!activeProfile) return results[row.instId] === "true"
+    if (phaseView === 'all') return true
+    const confirmed = confirmedPhases[row.instId], forming = provisionalPhases[row.instId]
+    const phases = phaseView === 'setup' ? ['bullishSetup'] as const : phaseView === 'reversal' ? ['bearishReversal'] as const : ['bullishSetup','bearishReversal'] as const
+    return phases.some(phase => confirmed?.universe === 'true' && confirmed.phases[phase]?.result === 'true' || forming?.universe === 'true' && forming.phases[phase]?.result === 'true')
+  }).sort((a, b) => compareMarketRows(a, b, sort, descending)), [searchedRows, results, sort, descending, activeProfile,phaseView,confirmedPhases,provisionalPhases])
   const unknownCount = searchedRows.filter(row => results[row.instId] === "unknown").length
   const listOrder = useMemo(() => visible.map(row => row.instId), [visible])
   const turnoverOrder = useMemo(() => [...matchedRows].sort(compareMarketTurnover).map(row => row.instId), [matchedRows])
+  useEffect(() => {
+    if (activeProfile) {
+      setListFilters(parseFilterConfig(activeProfile.universeJSON))
+      appliedJSON.current = activeProfile.universeJSON
+    }
+  }, [activeProfile])
   const saveFilters = async (filters: FilterConfigV2) => {
+    if (activeProfile) {
+      await suite.perform({ action: "save", profile: { ...activeProfile,universeJSON: JSON.stringify(filters) } })
+    } else {
     const snapshot = await window.webkit.messageHandlers.radar.postMessage({ marketFiltersJSON: JSON.stringify(filters) })
     if (snapshot.serviceSession && snapshot.serviceSession !== serviceSession.current) { serviceSession.current = snapshot.serviceSession; revision.current = -1; appliedRevision.current = -1 }
     // Saving changes settings only. Keep accepting coherent in-flight market
@@ -354,6 +384,7 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     appliedRevision.current = Math.max(appliedRevision.current, snapshot.revision)
     appliedJSON.current = snapshot.filterConfigJSON
     setListFilters(parseFilterConfig(snapshot.filterConfigJSON))
+    }
     setFilterDraft(null)
     setEditor(current => ({ ...current, source: null }))
   }
@@ -376,7 +407,12 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     if (!saved) throw new Error("Cannot find the saved combination. Try again.")
     return saved
   }
-  const selectFilterCombination = async (id: string) => { acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ selectedMarketFilterCombinationID: id })) }
+  const selectFilterCombination = async (id: string) => {
+    if (activeProfile) {
+      const chosen = filterCombinations.find(c => c.id === id)
+      if (chosen) { await saveFilters(parseFilterConfig(chosen.filterConfigJSON ?? chosen.filtersJSON)); setFilterCombinationId(id) }
+    } else acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ selectedMarketFilterCombinationID: id }))
+  }
   const deleteFilterCombination = async (id: string) => { acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ deleteMarketFilterCombination: id })) }
   const changeSort = (key: SortKey) => {
     if (sort === key) setDescending(!descending)
@@ -397,7 +433,7 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
   }
   const notificationDescription = {
     notDetermined: "Allow macOS notifications to receive filter alerts.",
-    denied: "Notifications are blocked. Enable Perpetual Radar in System Settings.",
+    denied: "Notifications are blocked. Enable Perpetual Swap Suite in System Settings.",
     authorized: "macOS notifications are allowed.",
     quiet: "Notification banners are disabled. Enable alerts in System Settings.",
     unavailable: "Launch the packaged macOS app to enable notifications.",
@@ -428,8 +464,8 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     <MarketListViewport>
     <main className="flex min-h-[inherit] flex-col">
       <header className="flex items-center gap-3 border-b px-4 py-3 whitespace-nowrap">
-        <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
-        <Button variant="outline" onClick={() => onDecisions({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })}>Long Decisions</Button>
+        <h1 className="text-base font-semibold tracking-tight">Perpetual Swap Suite</h1>
+        <Button variant="outline" onClick={() => onDecisions({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })}>Strategies &amp; Positions</Button>
         <Button variant="outline" onClick={() => onResearch({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })}>Research</Button>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
@@ -493,7 +529,10 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
         </Badge>
         <span className="text-xs text-muted-foreground">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString("en-US")}` : "Waiting for data"}</span>
       </header>
-      <MarketFilters filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics} functions={functions} templates={templates} preferences={libraryPreferences} onPreferences={saveLibraryPreferences} rows={rows} results={results} previewJSON={previewJSON} revision={revision.current} onExplain={explainMarket} units={compilation.units ?? {}} expressions={editorExpressions} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />
+      {activeProfile && <div className="flex items-center gap-3 px-4 py-2"><Badge variant="secondary">{activeProfile.name} · r{activeProfile.revision}</Badge><ToggleGroup type="single" variant="outline" value={phaseView} onValueChange={value => { if (value) setPhaseView(value) }} aria-label="Radar phase view"><ToggleGroupItem value="candidates">Candidates</ToggleGroupItem><ToggleGroupItem value="setup">Bullish Setup</ToggleGroupItem><ToggleGroupItem value="reversal">Bearish Reversal</ToggleGroupItem><ToggleGroupItem value="all">All Markets</ToggleGroupItem></ToggleGroup><span className="text-xs text-muted-foreground">Provisional previews · Confirmed hourly closes</span></div>}
+      {suite.error && <p role="alert" className="px-4 text-destructive">{suite.error}</p>}
+      <MarketFilters label={activeProfile ? "Universe rules" : "Filters"} filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics.filter(metric => !compilation.allowedMetrics || compilation.allowedMetrics.includes(metric.key))} functions={functions} templates={templates} preferences={libraryPreferences} onPreferences={saveLibraryPreferences} rows={rows} results={results} previewJSON={previewJSON} revision={revision.current} onExplain={explainMarket} units={compilation.units ?? {}} expressions={editorExpressions} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={activeProfile ? searchedRows.filter(row => results[row.instId] === 'true').length : visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />
+      {activeProfile && <SuitePhaseExplanation instrument={phaseExplainingID} profile={activeProfile} inputs={{filters:listFilters,combinations:filterCombinations,metrics,templates,functions}} onClose={() => setPhaseExplainingID(null)} />}
       <FilterExplanation open={explanationOpen} onOpenChange={setExplanationOpen} instId={explainingId} onSelect={setExplainingId} rows={rows} results={results} filtersJSON={previewJSON} revision={revision.current} metrics={metrics} expressions={editorExpressions} units={compilation.units ?? {}} templates={templates} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
       <section aria-label="Perpetual swap markets" className="flex-1">
@@ -518,13 +557,13 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
               <TableHead className="text-center" aria-sort={sort === "oiChange" ? descending ? "descending" : "ascending" : "none"}>{header("OI Relative Change", "oiChange", undefined, `Hourly OI relative change. ${PERCENT_CHANGE_DESCRIPTION}`)}</TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort === "roc" || sort === "maroc" ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {header(`ROC ${ROC_PERIOD}`, "roc", <span>ROC<sub>{ROC_PERIOD}</sub> (%)</span>, `${ROC_PERIOD}-hour price change. ${PERCENT_CHANGE_DESCRIPTION}`)}
-                  {header(`MAROC ${MAROC_PERIOD}`, "maroc", <span>MAROC<sub>{MAROC_PERIOD}</sub> (%)</span>, `Mean of the latest ${MAROC_PERIOD} hourly ROC readings, as a percentage.`)}
+                  {header(`ROC ${ROC_PERIOD}`, "roc", math(String.raw`\mathrm{ROC}_{${ROC_PERIOD}}\ (\%)`), `${ROC_PERIOD}-hour price change. ${PERCENT_CHANGE_DESCRIPTION}`)}
+                  {header(`MAROC ${MAROC_PERIOD}`, "maroc", math(String.raw`\mathrm{MAROC}_{${MAROC_PERIOD}}\ (\%)`), `Mean of the latest ${MAROC_PERIOD} hourly ROC readings, as a percentage.`)}
                 </div>
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("rsi") ? descending ? "descending" : "ascending" : "none"}>
                 <div className="flex flex-col items-center">
-                  {RSI_PERIODS.map(period => <Fragment key={period}>{header(`RSI ${period}`, `rsi${period}`, <span>RSI<sub>{period}</sub></span>)}</Fragment>)}
+                  {RSI_PERIODS.map(period => <Fragment key={period}>{header(`RSI ${period}`, `rsi${period}`, math(String.raw`\mathrm{RSI}_{${period}}`))}</Fragment>)}
                 </div>
               </TableHead>
               <TableHead className="py-1.5 text-center" aria-sort={sort.startsWith("logBB") ? descending ? "descending" : "ascending" : "none"}>
@@ -535,7 +574,7 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
               </TableHead>
             </TableRow>
           </TableHeader>
-          {visible.length ? <MarketRows rows={visible} onSelect={setSelected} onExplain={explainMarket} /> : <TableBody><TableRow><TableCell colSpan={8} className="py-12">
+          {visible.length ? <MarketRows confirmed={confirmedPhases} provisional={provisionalPhases} rows={visible} onSelect={setSelected} onExplain={explainRow} /> : <TableBody><TableRow><TableCell colSpan={8} className="py-12">
               <Empty>
                 <EmptyHeader><EmptyTitle>{rows.length ? "No matching contracts" : "Waiting for contracts"}</EmptyTitle><EmptyDescription>{rows.length ? "Adjust the rules or search. Explain markets includes unmatched and unknown contracts." : "OKX hourly data is loading. All universe restrictions are visible in Filters."}</EmptyDescription></EmptyHeader>
                 <EmptyContent>
@@ -571,8 +610,8 @@ function App() {
   return <Fragment>
     {workspaceError && <p role="alert" className="p-3 text-destructive">{workspaceError}</p>}
     <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} onResearch={value => { setResearchSpec(null); setResearchReturn("radar"); void changeWorkspace("research", value) }} onDecisions={value => void changeWorkspace("decisions", value)} /></div>
-    {inputs && decisionsMounted && <div hidden={workspace !== "decisions"}><LongDecisions active={workspace === "decisions"} inputs={inputs} onBack={() => void changeWorkspace("radar")} onResearch={spec => { setResearchSpec(spec); setResearchReturn("decisions"); void changeWorkspace("research") }} /></div>}
-    {workspace === "research" && inputs && <Research inputs={inputs} initialSpec={researchSpec} backLabel={researchReturn === "decisions" ? "Long Decisions" : "Radar"} onBack={() => void changeWorkspace(researchReturn)} />}
+    {inputs && decisionsMounted && <div hidden={workspace !== "decisions"}><SuiteWorkspace mode="radar" active={workspace === "decisions"} inputs={inputs} onBack={() => void changeWorkspace("radar")} onResearch={spec => { setResearchSpec(spec); setResearchReturn("decisions"); void changeWorkspace("research") }} /></div>}
+    {workspace === "research" && inputs && <Research inputs={inputs} initialSpec={researchSpec} backLabel={researchReturn === "decisions" ? "Strategies & Positions" : "Radar"} onBack={() => void changeWorkspace(researchReturn)} />}
   </Fragment>
 }
 

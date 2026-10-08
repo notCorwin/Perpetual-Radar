@@ -27,7 +27,7 @@ final class MonitorServiceTests: XCTestCase {
     @MainActor
     func testPackagedDatabaseStartupFailuresRecoverInPlaceAndRetainSettings() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["RADAR_SERVICE_TESTS"] == "1", "Run after packaging; the application stays hidden.")
-        let app = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/app/Perpetual Radar.app")
+        let app = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/app/Perpetual Swap Suite.app")
         let channel = UUID().uuidString, name = "com.perpetualradar.monitor.\(getuid()).\(channel)", suite = "RadarServiceTests.\(channel)"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(channel), defaults = UserDefaults(suiteName: suite)!
         let radarURL = directory.appendingPathComponent("radar.sqlite3"), researchDirectory = directory.appendingPathComponent("Research")
@@ -125,7 +125,7 @@ final class MonitorServiceTests: XCTestCase {
     @MainActor
     func testPackagedOnDemandResearchMinimizeCloseQuitCrashAndManualResume() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["RADAR_SERVICE_TESTS"] == "1", "Package the app and set RADAR_SERVICE_TESTS=1.")
-        let app = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/app/Perpetual Radar.app")
+        let app = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/app/Perpetual Swap Suite.app")
         let channel = UUID().uuidString, name = "com.perpetualradar.monitor.\(getuid()).\(channel)", suite = "RadarServiceTests.\(channel)"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(channel), defaults = UserDefaults(suiteName: suite)!
         let focus = BackgroundFocusAudit(); defer { focus.stop() }
@@ -177,11 +177,21 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertEqual(savedLong["revision"] as? Int,1)
         let liveLong = try await request(["longDecision": ["action": "evaluate", "strategyID": longStrategy.id]])
         XCTAssertNotNil(liveLong["decisions"] as? [[String: Any]],"The packaged helper must serve the Long evaluation bridge.")
+        let phaseProfile=StrategyProfile(name:"Packaged suite",universeJSON:FilterConfigV2().json,phaseRules:["bullishSetup":try FilterCompiler.compile(source:"Close > 105").config.json,"bullishExhaustion":try FilterCompiler.compile(source:"LongReturn > 5").config.json,"bearishReversal":try FilterCompiler.compile(source:"Close < 95").config.json,"bearishExhaustion":try FilterCompiler.compile(source:"ShortReturn > 5").config.json])
+        let rawProfile=try JSONSerialization.jsonObject(with:Data(researchJSON(phaseProfile).utf8))
+        let savedSuite=try await request(["suite":["mode":"radar","action":"save","profile":rawProfile]])
+        XCTAssertNotNil(savedSuite["saved"])
+        let copiedSuite=try await request(["suite":["mode":"research","action":"copy","profile":rawProfile]],interface:true)
+        XCTAssertEqual((copiedSuite["profiles"] as? [[String:Any]])?.count,1)
+        XCTAssertNotEqual((copiedSuite["saved"] as? [String:Any])?["id"] as? String,phaseProfile.id)
+        _ = try await request(["suite":["mode":"radar","action":"open","profileID":phaseProfile.id,"instrument":"BTC-USDT-SWAP","direction":"Short","price":100.0,"timestamp":ResearchFixture.hour]])
+        let heldSuite=try await request(["suite":["mode":"radar","action":"inventory"]])
+        XCTAssertEqual((heldSuite["positions"] as? [[String:Any]])?.first?["direction"] as? String,"Short")
         _ = try await request(["workspace": "research"], interface: true)
         let samples = (try await request(["serviceInfo": true]))["samples"] as! Int
         try await Task.sleep(for: .milliseconds(350))
         let researchInfo = try await request(["serviceInfo": true])
-        XCTAssertEqual(researchInfo["samples"] as? Int, samples)
+        XCTAssertGreaterThan(researchInfo["samples"] as? Int ?? 0, samples, "Radar must continue sampling while Research is open.")
         _ = try await request(["research": ["action": "prepare", "planID": plan.id]], interface: true)
         try await wait("ready") { ((try await request(["research": ["action": "inventory"]], interface: true))["job"] as? [String: Any])?["phase"] as? String == "ready" }
         let inventory = try await request(["research": ["action": "inventory"]], interface: true)
@@ -239,7 +249,7 @@ final class MonitorServiceTests: XCTestCase {
     private func checkPackagedMonitorLifecycle(preferencesMatchBundleIdentifier: Bool) async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["RADAR_SERVICE_TESTS"] == "1", "Run after packaging with RADAR_SERVICE_TESTS=1; every process remains in the background.")
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        var app = root.appendingPathComponent(".build/app/Perpetual Radar.app")
+        var app = root.appendingPathComponent(".build/app/Perpetual Swap Suite.app")
         let channel = UUID().uuidString, name = "com.perpetualradar.monitor.\(getuid()).\(channel)"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(channel)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -256,7 +266,7 @@ final class MonitorServiceTests: XCTestCase {
         }
         if preferencesMatchBundleIdentifier {
             // Mirror the production app's own preference domain without touching real settings.
-            let isolatedApp = directory.appendingPathComponent("Perpetual Radar.app")
+            let isolatedApp = directory.appendingPathComponent("Perpetual Swap Suite.app")
             try FileManager.default.copyItem(at: app, to: isolatedApp)
             app = isolatedApp
             let plistURL = app.appendingPathComponent("Contents/Info.plist")
@@ -275,7 +285,7 @@ final class MonitorServiceTests: XCTestCase {
         defaults.set(false, forKey: AppUpdater.backgroundRelaunchKey)
         func launch(helper: Bool) throws -> Process {
             let process = Process()
-            let bundle = helper ? app.appendingPathComponent("Contents/Library/LoginItems/Perpetual Radar Monitor.app") : app
+            let bundle = helper ? app.appendingPathComponent("Contents/Library/LoginItems/Perpetual Swap Suite Monitor.app") : app
             process.executableURL = bundle.appendingPathComponent("Contents/MacOS/PerpetualRadar")
             var environment = ProcessInfo.processInfo.environment
             environment["PERPETUAL_RADAR_TEST_CHANNEL"] = channel

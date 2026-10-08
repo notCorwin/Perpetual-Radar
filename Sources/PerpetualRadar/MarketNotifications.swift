@@ -75,13 +75,17 @@ final class MarketNotifications: NSObject, UNUserNotificationCenterDelegate {
             guard enabled(), !Task.isCancelled else { return }
             let content = UNMutableNotificationContent()
             content.title = change.direction == .entered ? "Contract entered filters" : "Contract exited filters"
-            content.subtitle = change.instId
+            let parts = change.instId.split(separator: "|").map(String.init), instrument = parts[0], phase = parts.count > 1 ? parts[1] : nil
+            if phase?.hasPrefix("Exit ") == true && change.direction == .exited { continue }
+            content.subtitle = instrument
+            if let phase { content.title = phase + (change.direction == .entered ? " · Confirmed" : " · Ended") }
             content.body = change.direction == .entered
                 ? "This OKX USDT perpetual swap now matches your saved 1h filters."
                 : "This OKX USDT perpetual swap no longer matches your saved 1h filters or has left the exchange universe."
+            if let phase { content.body = "\(instrument) · \(phase) at the completed 1h close. Inspect your saved rules and actual position in Radar." }
             content.sound = .default
             content.threadIdentifier = "saved-market-filters"
-            content.userInfo = ["instId": change.instId, "direction": change.direction.rawValue]
+            content.userInfo = ["instId": instrument, "direction": change.direction.rawValue]
             await deliver(content)
         }
     }
@@ -90,7 +94,7 @@ final class MarketNotifications: NSObject, UNUserNotificationCenterDelegate {
         await refresh(requestPermission: true)
         guard authorization.canDeliver else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Perpetual Radar"
+        content.title = "Perpetual Swap Suite"
         content.body = "Filter notifications are working. Monitoring continues after closing the window or quitting the interface with Cmd+Q."
         content.sound = .default
         await deliver(content)

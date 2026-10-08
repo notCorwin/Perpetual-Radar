@@ -45,9 +45,13 @@ struct StudySpec: Codable, Sendable {
     var direction: String = "auto"
     var sampling: String = "entries"
     var costs: ResearchCosts?
+    var strategySnapshots: [StrategyProfile]?
+    var execution: SuiteExecution?
+    var capital: SuiteCapital?
+    var allRules: [StudyRule] { kind == "cycle" ? (strategySnapshots ?? []).flatMap(\.studyRules) : rules }
     func validate() throws {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 120,
-              ["filter", "score", "comparison", "long"].contains(kind), ["auto", "Long", "Short"].contains(direction),
+              ["filter", "score", "comparison", "long", "cycle"].contains(kind), ["auto", "Long", "Short"].contains(direction),
               ["entries", "hourly"].contains(sampling), !rules.isEmpty, kind != "comparison" || rules.count >= 2,
               through % hourMS == 0, through <= researchNow() / hourMS * hourMS,
               from.map({ $0 >= 0 && $0 % hourMS == 0 && $0 < through }) ?? true else {
@@ -59,6 +63,12 @@ struct StudySpec: Codable, Sendable {
             _ = try LongStrategy(name: String(name.prefix(80)), entryJSON: rules[0].filtersJSON, exitJSON: rules[1].filtersJSON).compiled()
         }
         try costs?.validate()
+        if kind == "cycle" {
+            guard let profiles = strategySnapshots, !profiles.isEmpty, Set(profiles.map(\.id)).count == profiles.count, let execution, let capital else { throw FilterError("Choose independent strategy snapshots, execution policies and capital parameters.") }
+            for profile in profiles { _ = try profile.compiled() }
+            guard rules.map(\.filtersJSON) == allRules.map(\.filtersJSON), rules.map(\.name) == allRules.map(\.name) else { throw FilterError("The rule list must exactly match the frozen four-phase strategy snapshots.") }
+            try execution.validate(); try capital.validate(costs: costs)
+        }
     }
 }
 
@@ -158,6 +168,7 @@ struct Checkpoint: Codable, Sendable {
     var episodes: [String: ResearchEpisode] = [:]
     var longPosition: LongStudyPosition?
     var longCounters: LongStudyCounters?
+    var suite: SuiteCheckpoint?
     var updatedAt = researchNow()
 }
 
@@ -264,6 +275,7 @@ struct StudyReport: Codable, Sendable {
     var commonPool: Int
     var warnings: [String]
     var long: LongStudyReport?
+    var suite: SuiteStudyReport?
     var completedAt = researchNow()
 }
 

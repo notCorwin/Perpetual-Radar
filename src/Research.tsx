@@ -16,6 +16,11 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TraceNode } from '@/FilterExplanation'
 import { MarketOpportunity } from '@/MarketOpportunity'
 import { MarketListViewport } from '@/MarketListViewport'
+import { SuiteWorkspace } from '@/SuiteWorkspace'
+import { SuiteStudyResults } from '@/SuiteStudyResults'
+import { SuiteCapitalFields, SuiteExecutionFields } from '@/SuiteStudyConfiguration'
+import { useSuite } from '@/use-suite'
+import { defaultCapital, defaultExecution, suiteSpec, type StrategyProfile } from '@/suite-types'
 import { LongTradeResults } from '@/LongTradeResults'
 import { ResearchChart } from '@/ResearchChart'
 import { emptyFilterConfig, parseFilterConfig, type FilterTrace } from '@/rule-engine'
@@ -42,7 +47,15 @@ function SummaryTable({ rows, report }: { rows: ResearchSummary[]; report: Study
 }
 
 export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: { inputs: ResearchInputs; onBack: () => void; initialSpec?: StudySpec | null; backLabel?: string }) {
-  const [kind, setKind] = useState<StudySpec['kind']>(initialSpec?.kind ?? 'filter'), [name, setName] = useState(initialSpec?.name ?? 'Signal study')
+  const [kind, setKind] = useState<StudySpec['kind']>(initialSpec?.kind ?? 'cycle'), [name, setName] = useState(initialSpec?.name ?? 'Cycle study')
+  const researchSuite = useSuite('research', true)
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [cycleProfiles, setCycleProfiles] = useState<StrategyProfile[]>(initialSpec?.strategySnapshots ?? [])
+  const [cycleExecution, setCycleExecution] = useState(initialSpec?.execution ?? defaultExecution())
+  const [cycleCapital, setCycleCapital] = useState(initialSpec?.capital ?? defaultCapital())
+  const chooseCycleSpec = (spec: StudySpec) => {
+    setCycleProfiles(spec.strategySnapshots ?? []); setCycleExecution(spec.execution ?? defaultExecution()); setCycleCapital(spec.capital ?? defaultCapital()); setKind('cycle'); setName(spec.name); setLibraryOpen(false); setTab('configure')
+  }
   const [frozenRules, setFrozenRules] = useState<(StudyRule & { id: string })[]>(() => initialSpec?.rules.map((r, i) => ({ ...r, id: 'seed:' + i })) ?? [])
   const [ruleID, setRuleID] = useState(initialSpec ? 'seed:0' : 'current'), [compareID, setCompareID] = useState(initialSpec ? 'seed:1' : '')
   const [from, setFrom] = useState(initialSpec?.from == null ? '' : new Date(initialSpec.from).toISOString().slice(0, 10)), [through, setThrough] = useState(() => new Date(initialSpec?.through ?? Date.now()).toISOString().slice(0, 10))
@@ -63,6 +76,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
   const busy = pending || Boolean(job && ['planning', 'preparing', 'running'].includes(job.phase))
   const options = useMemo(() => [{ id: 'current', name: 'Current applied rules', filtersJSON: JSON.stringify(inputs.filters) }, { id: 'all', name: 'All verified exchange markets', filtersJSON: JSON.stringify(emptyFilterConfig()) },
     ...inputs.combinations.map(c => ({ id: c.id, name: c.name, filtersJSON: c.filterConfigJSON ?? c.filtersJSON })), ...studies.flatMap(s => s.spec.rules.map((r, index) => ({ ...r, id: s.id + ":" + index, name: s.spec.name + " · " + r.name }))), ...frozenRules], [inputs, studies, frozenRules])
+  const cycleOptions = useMemo(() => Array.from(new Map([...studies.flatMap(s => s.spec.strategySnapshots ?? []), ...cycleProfiles, ...researchSuite.snapshot.profiles].map(p => [p.id,p])).values()), [studies,cycleProfiles,researchSuite.snapshot.profiles])
   const pageEvents = useCallback(async (id: string, start: number) => {
     const result = await requestResearch({ action: 'events', studyID: id, offset: start })
     setEvents(result.events ?? []); setEventCount(result.count ?? 0); setOffset(start)
@@ -116,19 +130,27 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
   }
   const createPlan = (refresh = false) => perform(async () => {
     const chosen = options.find(o => o.id === ruleID), comparison = options.find(o => o.id === compareID)
-    if (!chosen || kind === 'long' && !comparison) throw new Error('Choose both the entry and exit filter snapshots.')
-    if (kind === 'comparison' && (!comparison || chosen.id === comparison.id)) throw new Error('Choose two distinct complete rule snapshots to compare.')
+    if (kind !== 'cycle' && (!chosen || kind === 'long' && !comparison)) throw new Error('Choose both the entry and exit filter snapshots.')
+    if (kind === 'comparison' && (!comparison || chosen?.id === comparison.id)) throw new Error('Choose two distinct complete rule snapshots to compare.')
     const allEmpty = Object.values(fees).every(value => !value.trim())
     if (!allEmpty && Object.values(fees).some(value => !value.trim() || !Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) >= 10_000)) throw new Error('Enter all three costs in basis points, or leave all three blank for gross returns.')
-    const spec: StudySpec = { name: name.trim(), kind, rules: [chosen, ...((kind === 'comparison' || kind === 'long') && comparison ? [comparison] : [])].map(o => ({ name: o.name, filtersJSON: o.filtersJSON })),
+    const spec: StudySpec = { name: name.trim(), kind, rules: [chosen!, ...((kind === 'comparison' || kind === 'long') && comparison ? [comparison] : [])].filter(Boolean).map(o => ({ name: o.name, filtersJSON: o.filtersJSON })),
       instruments: instrumentText.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean), ...researchDateRange(from, through),
       direction: kind === 'long' ? 'Long' : direction, sampling, costs: allEmpty ? null : { entryFeeBps: Number(fees.entry), exitFeeBps: Number(fees.exit), slippageBps: Number(fees.slip) } }
+    if (kind === 'cycle') {
+      if (!cycleProfiles.length) throw new Error('Choose a saved or frozen four-phase strategy. Use Strategy Library to create or copy one.')
+      const settings = [cycleCapital.defaults,...Object.values(cycleCapital.overrides)]
+      if (settings.some(s => s.initial == null || s.allocation == null || s.leverage == null || s.maintenanceRate == null || s.liquidationFeeBps == null || ![s.initial,s.allocation,s.leverage,s.maintenanceRate,s.liquidationFeeBps].every(Number.isFinite))) throw new Error('Fill all capital parameters, including explicit maintenance margin and liquidation fees.')
+      const frozen = suiteSpec(cycleProfiles,cycleExecution,cycleCapital)
+      spec.rules = frozen.rules; spec.strategySnapshots = frozen.strategySnapshots; spec.execution = cycleExecution; spec.capital = cycleCapital
+    }
     if (!spec.name) { document.getElementById('study-name')?.focus(); throw new Error('Give the study a name.') }
     setPlan(null); setStudy(null); setReport(null); setManifest(null)
     return requestResearch({ action: 'plan', spec, refresh })
   })
   const duplicate = (saved: ResearchStudy) => {
     const spec = saved.spec
+    setCycleProfiles(spec.strategySnapshots ?? []); setCycleExecution(spec.execution ?? defaultExecution()); setCycleCapital(spec.capital ?? defaultCapital())
     setName(spec.name + ' copy'); setKind(spec.kind); setDirection(spec.direction); setSampling(spec.sampling)
     setFrom(spec.from ? new Date(spec.from).toISOString().slice(0, 10) : ''); setThrough(new Date(spec.through - 1).toISOString().slice(0, 10))
     setInstrumentText(spec.instruments.join(', ')); setFees({ entry: spec.costs ? String(spec.costs.entryFeeBps) : '', exit: spec.costs ? String(spec.costs.exitFeeBps) : '', slip: spec.costs ? String(spec.costs.slippageBps) : '' })
@@ -151,6 +173,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
   const resultRows = selectedRows.filter(s => !s.group.startsWith('Score ·'))
   const scoreRows = selectedRows.filter(s => s.group.startsWith('Score · ' + scoreView + ' ·') && (scoreView === 'Thresholds' ? true : !s.group.includes('≥')))
   const context = { metrics: inputs.metrics, expressions: {}, units: {}, templates: inputs.templates }
+  if (libraryOpen) return <SuiteWorkspace mode="research" active inputs={inputs} onBack={() => setLibraryOpen(false)} onResearch={chooseCycleSpec} />
   return <MarketListViewport><main className="flex min-h-[inherit] flex-col gap-4 p-4 tabular-nums" data-research>
     <header className="flex items-center gap-3 border-b pb-3">
       <Button variant="ghost" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />{backLabel}</Button>
@@ -168,7 +191,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
       <p className="text-xs text-muted-foreground">{job.total ? integer(job.completed) + ' / ' + integer(job.total) + ' work items · ' : ''}Pause or quit to save a checkpoint. Completed data stays on disk.</p>
     </section>}
     <Tabs value={tab} onValueChange={setTab}>
-      <TabsList variant="line"><TabsTrigger value="configure">Configure</TabsTrigger><TabsTrigger value="data">Data coverage</TabsTrigger><TabsTrigger value="results">Results</TabsTrigger>{!report?.long && kind !== 'long' && <TabsTrigger value="scores">Score calibration</TabsTrigger>}<TabsTrigger value="history">Studies & cache</TabsTrigger></TabsList>
+      <TabsList variant="line"><TabsTrigger value="configure">Configure</TabsTrigger><TabsTrigger value="data">Data coverage</TabsTrigger><TabsTrigger value="results">Results</TabsTrigger>{!report?.long && !report?.suite && kind !== 'long' && kind !== 'cycle' && <TabsTrigger value="scores">Score calibration</TabsTrigger>}<TabsTrigger value="history">Studies & cache</TabsTrigger></TabsList>
       <TabsContent value="configure">
         <form onSubmit={e => { e.preventDefault(); void createPlan() }} className="flex flex-col gap-4">
           <FieldGroup className="grid grid-cols-2 items-start gap-6">
@@ -176,12 +199,14 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
               <Field><FieldLabel htmlFor="study-name">Study name</FieldLabel><Input id="study-name" name="studyName" autoComplete="off" value={name} onChange={e => setName(e.target.value)} disabled={busy} /></Field>
               <Field><FieldLabel>Research question</FieldLabel><ToggleGroup type="single" variant="outline" value={kind} disabled={busy} onValueChange={value => {
                 if (!value) return; setKind(value as StudySpec['kind']); if (value === 'score') { setRuleID('all'); setSampling('hourly') } if (value === 'long') { setDirection('Long'); setSampling('entries') }
-              }} aria-label="Research question"><ToggleGroupItem value="long">Long entry / exit</ToggleGroupItem><ToggleGroupItem value="filter">Filters</ToggleGroupItem><ToggleGroupItem value="score">Opportunity</ToggleGroupItem><ToggleGroupItem value="comparison">Compare rules</ToggleGroupItem></ToggleGroup></Field>
+              }} aria-label="Research question"><ToggleGroupItem value="cycle">Multi-direction cycle</ToggleGroupItem><ToggleGroupItem value="long">Long entry / exit</ToggleGroupItem><ToggleGroupItem value="filter">Filters</ToggleGroupItem><ToggleGroupItem value="score">Opportunity</ToggleGroupItem><ToggleGroupItem value="comparison">Compare rules</ToggleGroupItem></ToggleGroup></Field>
+              {kind === 'cycle' ? <FieldSet><FieldLegend>Four-phase strategy snapshots</FieldLegend><FieldGroup><Field><FieldLabel>Primary strategy</FieldLabel><Select value={cycleProfiles[0]?.id ?? ''} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); if (p) setCycleProfiles([p,...cycleProfiles.slice(1).filter(other => other.id !== id)]) }}><SelectTrigger aria-label="Primary cycle strategy"><SelectValue placeholder="Choose a Research strategy…" /></SelectTrigger><SelectContent><SelectGroup>{cycleOptions.map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Compare with</FieldLabel><Select value={cycleProfiles[1]?.id ?? 'none'} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); setCycleProfiles(current => current[0] ? p ? [current[0],p] : [current[0]] : []) }}><SelectTrigger aria-label="Compare cycle strategy"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Single strategy</SelectItem>{cycleOptions.filter(p => p.id.split('@r')[0] !== cycleProfiles[0]?.id.split('@r')[0] || p.revision !== cycleProfiles[0]?.revision).map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Button type="button" variant="outline" onClick={() => setLibraryOpen(true)}>Strategy Library…</Button><SuiteExecutionFields value={cycleExecution} onChange={setCycleExecution} /></FieldGroup></FieldSet> : <>
               <Field><FieldLabel htmlFor="study-rule">{kind === 'long' ? 'Entry filter snapshot' : kind === 'score' ? 'Base universe rules' : 'Complete rule snapshot'}</FieldLabel><Select value={ruleID} disabled={busy} onValueChange={setRuleID}><SelectTrigger id="study-rule"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{options.map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>All conditions and original scoring weights are retained. Missing readings remain Unknown.</FieldDescription></Field>
               {(kind === 'comparison' || kind === 'long') && <Field><FieldLabel htmlFor="study-comparison">{kind === 'long' ? 'Exit filter snapshot' : 'Compare with'}</FieldLabel><Select value={compareID} disabled={busy} onValueChange={setCompareID}><SelectTrigger id="study-comparison"><SelectValue placeholder="Choose another saved combination…" /></SelectTrigger><SelectContent><SelectGroup>{options.filter(o => kind === 'long' || o.id !== ruleID).map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>{kind === 'long' ? 'Start flat. Entry applies while flat, exit while holding. Signals execute at the next hourly open; open trades stay open at the end.' : 'Both snapshots are recomputed on the same frozen data and common evaluable hours.'}</FieldDescription></Field>}
               <Field><FieldLabel>Direction</FieldLabel><ToggleGroup type="single" variant="outline" value={direction} disabled={busy || kind === 'long'} onValueChange={value => { if (value) setDirection(value as StudySpec['direction']) }} aria-label="Study direction">{['auto', 'Long', 'Short'].map(value => <ToggleGroupItem key={value} value={value}>{value === 'auto' ? 'Original EMA direction' : value}</ToggleGroupItem>)}</ToggleGroup></Field>
-              <Field><FieldLabel>Signal sampling</FieldLabel><ToggleGroup type="single" variant="outline" value={kind === 'score' ? 'hourly' : sampling} disabled={busy || kind === 'score' || kind === 'long'} onValueChange={value => { if (value) setSampling(value as StudySpec['sampling']) }} aria-label="Signal sampling"><ToggleGroupItem value="entries">First entry per episode</ToggleGroupItem><ToggleGroupItem value="hourly">Every matching hour</ToggleGroupItem></ToggleGroup></Field>
+              <Field><FieldLabel>Signal sampling</FieldLabel><ToggleGroup type="single" variant="outline" value={kind === 'score' ? 'hourly' : sampling} disabled={busy || kind === 'score' || kind === 'long'} onValueChange={value => { if (value) setSampling(value as StudySpec['sampling']) }} aria-label="Signal sampling"><ToggleGroupItem value="entries">First entry per episode</ToggleGroupItem><ToggleGroupItem value="hourly">Every matching hour</ToggleGroupItem></ToggleGroup></Field></>}
             </FieldGroup></FieldSet>
+            {kind === 'cycle' && <SuiteCapitalFields value={cycleCapital} onChange={setCycleCapital} />}
             <FieldSet><FieldLegend>History and modeled costs</FieldLegend><FieldGroup>
               <Field><FieldLabel htmlFor="study-from">From (UTC date)</FieldLabel><Input id="study-from" name="studyFrom" type="date" value={from} onChange={e => setFrom(e.target.value)} disabled={busy} /><FieldDescription>Leave blank for the longest available history, including indicator warmup.</FieldDescription></Field>
               <Field><FieldLabel htmlFor="study-through">Through (UTC date)</FieldLabel><Input id="study-through" name="studyThrough" type="date" value={through} onChange={e => setThrough(e.target.value)} disabled={busy} /><FieldDescription>The selected day is included up to the last completed hour.</FieldDescription></Field>
@@ -215,12 +240,12 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
         {!report ? <Empty><EmptyHeader><EmptyTitle>{study?.manifestID ? 'Ready to run' : 'No completed study selected'}</EmptyTitle><EmptyDescription>Prepare the fixed local dataset, run a study, or open an earlier result.</EmptyDescription></EmptyHeader>{study?.manifestID && <Button disabled={busy} onClick={() => void perform(() => requestResearch({ action: 'run', studyID: study.id }))}><Play data-icon="inline-start" aria-hidden="true" />Run Study</Button>}</Empty> : <>
           <div className="flex items-center gap-3"><h2 className="font-semibold">{report.spec.name}</h2><span className="flex-1 text-xs text-muted-foreground">{integer(report.evaluated)} rule-hours · {integer(report.unknown)} Unknown · {integer(report.directionless)} directionless · {integer(report.uncertain)} uncertain entries · {integer(report.baseline)} initial matches · {integer(report.commonPool)} common hours</span>
             <Button variant="outline" disabled={pending} onClick={() => void perform(() => requestResearch({ action: 'export', studyID: report.studyID, kind: 'summary' }))}>Export summary CSV</Button><Button variant="outline" disabled={pending} onClick={() => void perform(() => requestResearch({ action: 'export', studyID: report.studyID, kind: 'events' }))}>Export events CSV</Button></div>
-          {!report.long && <div className="flex items-center gap-4"><Field className="w-fit"><FieldLabel>Holding period</FieldLabel><ToggleGroup type="single" variant="outline" value={horizon} onValueChange={value => { if (value) setHorizon(value) }} aria-label="Holding period">{RESEARCH_HORIZONS.map(hours => <ToggleGroupItem key={hours} value={String(hours)}>{hours}h</ToggleGroupItem>)}</ToggleGroup></Field>
+          {!report.long && !report.suite && <div className="flex items-center gap-4"><Field className="w-fit"><FieldLabel>Holding period</FieldLabel><ToggleGroup type="single" variant="outline" value={horizon} onValueChange={value => { if (value) setHorizon(value) }} aria-label="Holding period">{RESEARCH_HORIZONS.map(hours => <ToggleGroupItem key={hours} value={String(hours)}>{hours}h</ToggleGroupItem>)}</ToggleGroup></Field>
             {view === 'scores' && <Field className="w-fit"><FieldLabel>Input coverage</FieldLabel><ToggleGroup type="single" variant="outline" value={scoreView} onValueChange={value => { if (value) setScoreView(value) }} aria-label="Score input coverage"><ToggleGroupItem value="Full">Full inputs</ToggleGroupItem><ToggleGroupItem value="Partial">Partial inputs</ToggleGroupItem><ToggleGroupItem value="Thresholds">Thresholds</ToggleGroupItem></ToggleGroup></Field>}</div>}
           {report.warnings.filter(warning => warning.startsWith("Hourly approximation of live BTC rules")).map(warning => <Alert key={warning} variant="warning"><AlertDescription>{warning}</AlertDescription></Alert>)}
-          <SummaryTable report={report} rows={view === 'results' ? resultRows : scoreView === 'Thresholds' ? selectedRows.filter(s => s.group.startsWith('Score · Full · ≥')) : scoreRows} />
-          <p className="text-xs text-muted-foreground">Returns use 1 USDT initial notional and next-hour opens. Unknown, uncertain entry and purged boundary samples are excluded from main statistics. Net N includes only complete funding and settlement marks. Confidence intervals require 30 samples and 8 UTC weeks.</p>
-          {report.long ? <LongTradeResults report={report} inputs={inputs} manifest={manifest} /> : <>
+          {!report.suite && <SummaryTable report={report} rows={view === 'results' ? resultRows : scoreView === 'Thresholds' ? selectedRows.filter(s => s.group.startsWith('Score · Full · ≥')) : scoreRows} />}
+          <p hidden={Boolean(report.suite)} className="text-xs text-muted-foreground">{report.suite ? 'Independent account returns use the frozen capital and execution parameters. ' : ''}Returns use 1 USDT initial notional and next-hour opens. Unknown, uncertain entry and purged boundary samples are excluded from main statistics. Net N includes only complete funding and settlement marks. Confidence intervals require 30 samples and 8 UTC weeks.</p>
+          {report.suite ? <SuiteStudyResults report={report} inputs={inputs} manifest={manifest} /> : report.long ? <LongTradeResults report={report} inputs={inputs} manifest={manifest} /> : <>
           <h3 className="font-semibold">Signal events</h3>
           <Table aria-label="Signal events"><TableHeader><TableRow>{['Instrument', 'Signal close', 'Rules', 'Direction', 'Entry', 'Score inputs', 'Status', 'Split', 'Gross', 'Net', 'Inspect'].map(label => <TableHead key={label}>{label}</TableHead>)}</TableRow></TableHeader><TableBody>{events.map(e => {
             const outcome = e.outcomes.find(o => o.hours === Number(horizon))

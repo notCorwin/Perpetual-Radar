@@ -61,13 +61,14 @@ actor ResearchWorker {
     func run(_ study: ResearchStudy, progress: @escaping @Sendable (Int, Int, String) -> Void) throws -> StudyReport {
         let store = try ResearchStore(directory: directory)
         guard let id = study.manifestID, let manifest = try store.get(id, as: DataManifest.self) else { throw FilterError("Prepare data before running this study.") }
-        guard manifest.engine == (study.spec.kind == "long" ? LongStudyEngine.version : ResearchVersion.engine) else { throw FilterError("This checkpoint requires engine \(manifest.engine). Keep its frozen results or copy its configuration to use the current engine.") }
+        guard manifest.engine == (study.spec.kind == "cycle" ? SuiteStudyEngine.version : study.spec.kind == "long" ? LongStudyEngine.version : ResearchVersion.engine) else { throw FilterError("This checkpoint requires engine \(manifest.engine). Keep its frozen results or copy its configuration to use the current engine.") }
         var checkpoint = try store.get("checkpoint:\(study.id)", as: Checkpoint.self) ?? Checkpoint(studyID: study.id, phase: "running")
         checkpoint.phase = "running"; try store.put("checkpoint:\(study.id)", kind: "checkpoint", checkpoint)
-        if study.spec.kind == "long" { try LongStudyEngine.run(store: store, study: study, manifest: manifest, checkpoint: &checkpoint, progress: progress) }
+        if study.spec.kind == "cycle" { try SuiteStudyEngine.run(store: store, study: study, manifest: manifest, checkpoint: &checkpoint, progress: progress) }
+        else if study.spec.kind == "long" { try LongStudyEngine.run(store: store, study: study, manifest: manifest, checkpoint: &checkpoint, progress: progress) }
         else { try ResearchEngine.run(store: store, study: study, manifest: manifest, checkpoint: &checkpoint, progress: progress) }
         progress(1, 1, "Calculating baselines, medians and confidence intervals…")
-        let report = study.spec.kind == "long" ? try store.longReport(study, manifest: manifest, counters: checkpoint.longCounters ?? .init()) : try store.report(study, manifest: manifest)
+        let report = study.spec.kind == "cycle" ? try store.suiteReport(study, manifest: manifest) : study.spec.kind == "long" ? try store.longReport(study, manifest: manifest, counters: checkpoint.longCounters ?? .init()) : try store.report(study, manifest: manifest)
         checkpoint.phase = "completed"; checkpoint.updatedAt = researchNow()
         try store.database.transaction {
             try store.put("report:\(study.id)", kind: "report", report)
@@ -119,7 +120,9 @@ actor ResearchReader {
             try handle.write(contentsOf: Data(line.utf8))
         }
         let spec = try researchJSON(report.spec)
-        if kind == "summary" {
+        if report.suite != nil {
+            try SuiteCSV.export(store: store, report: report, manifest: manifest, kind: kind, write: write)
+        } else if kind == "summary" {
             let longColumns = report.long == nil ? [] : ["duration_protocol","exit_rule","long_closed","long_open","long_incomplete","long_uncertain","gross_profit_usdt","available_net_profit_usdt","gross_profit_factor","average_hold_hours"]
             try write(["study_id", "manifest_id", "data_digest", "engine", "source_revision", "group", "rule", "hours", "n", "excluded", "net_n", "mean", "median", "win_rate", "net_mean", "net_median", "net_win_rate", "mfe", "mae", "baseline", "excess", "ci_low", "ci_high", "net_ci_low", "net_ci_high", "spec_json"] + longColumns)
             func n(_ value: Double?) -> String { value.map { String($0) } ?? "" }
@@ -264,6 +267,9 @@ final class ResearchController {
     func handle(_ request: [String: Any], window: NSWindow? = nil) async throws -> [String: Any] {
         let action = request["action"] as? String ?? "inventory"
         switch action {
+        case "suite":
+            guard let value = request["request"] as? [String: Any] else { throw FilterError("Provide a strategy request.") }
+            return try store.database.manageSuite(value, mode: "research")
         case "plan":
             guard let value = request["spec"] else { throw FilterError("A complete study specification is required.") }
             let spec = try JSONDecoder().decode(StudySpec.self, from: JSONSerialization.data(withJSONObject: value))
@@ -295,13 +301,20 @@ final class ResearchController {
         case "trades":
             guard let id = request["studyID"] as? String else { throw FilterError("Choose a study.") }
             return ["trades": try snapshot(store.longTrades(id, offset: request["offset"] as? Int ?? 0)), "count": try store.count("SELECT COUNT(*) FROM research_long_trades WHERE study=?", [id])]
+        case "suiteTrades":
+            guard let id = request["studyID"] as? String else { throw FilterError("Choose a study.") }
+            return ["suiteTrades": try snapshot(store.suiteTrades(id, offset: request["offset"] as? Int ?? 0)), "count": try store.count("SELECT COUNT(*) FROM research_suite_trades WHERE study=?", [id])]
+        case "suiteCurve":
+            guard let id = request["studyID"] as? String, let profile = request["profileID"] as? String, let instrument = request["instrument"] as? String, let model = request["model"] as? String else { throw FilterError("Choose an independent account curve.") }
+            return ["curve": try snapshot(store.suiteCurve(id, profile: profile, instrument: instrument, model: model, offset: request["offset"] as? Int ?? 0)), "count": try store.count("SELECT COUNT(*) FROM research_suite_equity WHERE study=? AND profile=? AND inst=? AND model=?", [id,profile,instrument,model])]
         case "chart":
             guard let id = request["eventID"] as? String else { throw FilterError("Choose an event.") }
             let chart = try await reader.chart(eventID: id, endingAt: (request["endHour"] as? NSNumber)?.int64Value)
             return ["chart": try snapshot(chart)]
         case "export":
             guard let id = request["studyID"] as? String else { throw FilterError("Choose a study.") }
-            let kind = request["kind"] as? String == "events" ? "events" : "summary"
+            let requestedKind = request["kind"] as? String ?? "summary"
+            let kind = ["events", "equity"].contains(requestedKind) ? requestedKind : "summary"
             let url: URL?
             if let exportDestination { url = await exportDestination(kind, window) }
             else {

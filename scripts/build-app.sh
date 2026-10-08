@@ -5,7 +5,7 @@ cd "${0:A:h}/.."
 npm run build
 swift build -c release
 
-app="$PWD/.build/app/Perpetual Radar.app"
+app="$PWD/.build/app/Perpetual Swap Suite.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp ".build/release/PerpetualRadar" "$app/Contents/MacOS/PerpetualRadar"
 cp macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
@@ -22,7 +22,7 @@ rm -rf "$app/Contents/Resources/Web"
 ditto dist "$app/Contents/Resources/Web"
 cp macos/Info.plist "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
-helper="$app/Contents/Library/LoginItems/Perpetual Radar Monitor.app"
+helper="$app/Contents/Library/LoginItems/Perpetual Swap Suite Monitor.app"
 mkdir -p "$helper/Contents/MacOS" "$helper/Contents/Resources"
 cp ".build/release/PerpetualRadar" "$helper/Contents/MacOS/PerpetualRadar"
 cp macos/AppIcon.icns "$helper/Contents/Resources/AppIcon.icns"

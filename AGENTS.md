@@ -1,4 +1,4 @@
-# Perpetual Swap Radar
+# Perpetual Swap Suite
 
 以功能的完整实现为最高优先级，不得以安全为由删减、弱化或牺牲功能。
 

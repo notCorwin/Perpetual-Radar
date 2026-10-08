@@ -3,7 +3,7 @@ import CoreFoundation
 
 enum MonitorRuntime {
     static let helperIdentifier = "com.perpetualradar.macos.monitor"
-    static let helperName = "Perpetual Radar Monitor.app"
+    static let helperName = "Perpetual Swap Suite Monitor.app"
     static let isHelper = Bundle.main.bundleIdentifier == helperIdentifier || ProcessInfo.processInfo.environment["PERPETUAL_RADAR_ROLE"] == "monitor"
     static let testChannel = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_TEST_CHANNEL"]
     static let portName = "com.perpetualradar.monitor.\(getuid())\(testChannel.map { ".\($0)" } ?? "")"

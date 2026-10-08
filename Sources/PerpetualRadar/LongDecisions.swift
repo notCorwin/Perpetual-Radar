@@ -10,7 +10,7 @@ struct LongStrategy: Codable, Sendable {
     func compiled() throws -> (CompiledFilter, CompiledFilter) {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 80 else { throw FilterError("Use a strategy name from 1 to 80 characters.") }
         let entry = try FilterCompiler.compile(FilterConfigV2.decode(entryJSON)), exit = try FilterCompiler.compile(FilterConfigV2.decode(exitJSON))
-        guard entry.metrics.isDisjoint(with: ["LongEntryPrice", "LongReturn", "LongHeldHours"]) else { throw FilterError("Long position readings belong in the exit filter; no position exists before entry.") }
+        guard entry.metrics.isDisjoint(with: StrategyProfile.longMetrics.union(StrategyProfile.shortMetrics)) else { throw FilterError("Long position readings belong in the exit filter; no position exists before entry.") }
         for (label, rule) in [("entry", entry), ("exit", exit)] {
             guard !(["all", "any"].contains(rule.config.root.kind) && rule.config.root.children.isEmpty) else { throw FilterError("Add at least one \(label) condition. An empty market filter matches every contract.") }
         }
