@@ -43,6 +43,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var backgroundMonitoringEnabled = true
     var foregroundWorkspace = "radar"
     var radarRequests = 0
+    var longEvaluationRequests = 0
+    var longEvaluationDelay: UInt64 = 0
     var research: ResearchController?
     var launchAtLogin = "disabled"
     var loginSettingsOpenCount = 0
@@ -99,12 +101,15 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
                     }
                     var response = try await radar.longDecisionRequest(["evaluate", "open", "close"].contains(action ?? "") ? ["action": "inventory"] : parameters)
                     if parameters["action"] as? String == "evaluate" {
+                        let delay = longEvaluationDelay
+                        longEvaluationRequests += 1
                         let strategies = try JSONDecoder().decode([LongStrategy].self, from: JSONSerialization.data(withJSONObject: response["strategies"]!))
                         let positions = try JSONDecoder().decode([LongTrackedPosition].self, from: JSONSerialization.data(withJSONObject: response["positions"]!))
                         if let strategy = strategies.first(where: { $0.id == parameters["strategyID"] as? String }) {
                             let result = try await longWorker.evaluate(contexts, strategy: strategy, positions: positions, forming: parameters["forming"] as? Bool == true, available: !radar.monitoringPaused, detailID: parameters["instrument"] as? String)
                             response["decisions"] = try JSONSerialization.jsonObject(with: Data(try researchJSON(result).utf8)); response["rows"] = rows; response["revision"] = revision
                         }
+                        if delay > 0 { try await Task.sleep(nanoseconds: delay) }
                     }
                     response["paused"] = radar.monitoringPaused; replyHandler(response, nil)
                 } catch { replyHandler(nil, error.localizedDescription) }
@@ -343,6 +348,13 @@ final class RuleEditorUITests: XCTestCase {
         let actualTime = Date(timeIntervalSince1970: Double(bridge.contexts[0].hour-hourMS)/1000)
         let formatter = DateFormatter(); formatter.timeZone = TimeZone(secondsFromGMT: 0); formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
         try await input(view,"#long-record-time",formatter.string(from: actualTime))
+        // Keep an older poll in flight while recording the entry. Its stale
+        // reply must be discarded without stopping subsequent price updates.
+        let evaluations = bridge.longEvaluationRequests, deadline = Date().addingTimeInterval(5)
+        bridge.longEvaluationDelay = 2_000_000_000
+        while bridge.longEvaluationRequests == evaluations, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        bridge.longEvaluationDelay = 0
+        XCTAssertGreaterThan(bridge.longEvaluationRequests,evaluations,"The entry must overlap an in-flight evaluation.")
         try await click(view,"Save tracking record")
         try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Hold Long')")
         var market = bridge.contexts[0]

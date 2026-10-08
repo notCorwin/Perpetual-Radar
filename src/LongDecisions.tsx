@@ -71,7 +71,10 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
           }
         }
       } catch (cause) { if (!stopped) setError(cause instanceof Error ? cause.message : 'Cannot read Long decisions.') }
-      if (!stopped) timer = window.setTimeout(refresh, 2000)
+      finally {
+        // A stale reply can be ignored while the live polling loop continues.
+        if (!stopped) timer = window.setTimeout(refresh, 2000)
+      }
     }
     void refresh(); return () => { stopped = true; window.clearTimeout(timer) }
     // A saved selection drives polling; editing the draft never changes its decisions.
