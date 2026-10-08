@@ -91,12 +91,18 @@ final class Radar {
     private(set) var marketFilterCombinations: [MarketFilterCombination] = []
     private let historyLoader: FilterHistoryLoader
     private let monitorHistoryLoader: FilterHistoryLoader
+    private let btcHistoryLoader: FilterHistoryLoader
+    private let monitorBTCHistoryLoader: FilterHistoryLoader
+    private let cooldowns = FilterCooldownMemory()
+    private var btcReceivedAt: Int64?
+    var onBTCUpdate: (() -> Void)?
     private let monitorFilterWorker = FilterEvaluationWorker()
     private let filterWorker = FilterEvaluationWorker()
     private let snapshotWorker = MarketSnapshotWorker()
     private var snapshotGenerations: [String: Int] = [:]
     private var compiledFilters: [String: CompiledFilter] = [:]
     private let longDecisionWorker = LongDecisionWorker()
+    private let monitorLongDecisionWorker = LongDecisionWorker()
     private var liveHourQuotes: [String: FilterQuote] = [:]
     private var closedHourQuotes: [String: [Int64: FilterQuote]] = [:]
     private(set) var selectedMarketFilterCombinationID = ""
@@ -150,6 +156,8 @@ final class Radar {
         notificationsEnabled = try store.preference(forKey: notificationsEnabledKey) != "false"
         monitoringPaused = try store.preference(forKey: monitoringPausedKey) == "true"
         historyLoader = FilterHistoryLoader(url: store.url)
+        btcHistoryLoader = FilterHistoryLoader(url: store.url)
+        monitorBTCHistoryLoader = FilterHistoryLoader(url: store.url)
         monitorHistoryLoader = FilterHistoryLoader(url: store.url)
         if let saved = try store.preference(forKey: "filterLibraryPreferences") {
             filterLibraryPreferences = (try? FilterLibraryPreferences.decode(saved)) ?? FilterLibraryPreferences()
@@ -381,12 +389,13 @@ final class Radar {
         if action == "evaluate", let strategy = strategies.first(where: { $0.id == request["strategyID"] as? String }) {
             let (entry, exit) = try strategy.compiled()
             var hydration = entry
-            hydration.requiredHours = max(ResearchVersion.warmup([entry, exit]), max(entry.requiredHours, exit.requiredHours) + 1)
+            hydration.mergeRequirements(exit)
+            hydration.requiredHours = max(275, max(entry.requiredHours, exit.requiredHours) + 1)
+            if hydration.btcClocks.contains("aligned") { hydration.btcRequirements?.hours += 1 }
             hydration.needsStats = entry.needsStats || exit.needsStats; hydration.needsQuotes = entry.needsQuotes || exit.needsQuotes
             hydration.metrics.formUnion(exit.metrics)
             let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
-            let prepared = try await historyLoader.prepare(captured.markets, filter: hydration)
-            if running { await historyLoader.schedule(prepared, filter: hydration) }
+            let prepared = try await prepareFilterMarkets(captured, filter: hydration)
             let decisions = try await longDecisionWorker.evaluate(prepared, strategy: strategy, positions: positions, forming: request["forming"] as? Bool == true, available: running && !monitoringPaused, detailID: request["instrument"] as? String)
             response["decisions"] = try snapshot(decisions); response["rows"] = captured.response["rows"]
             response["historyProgress"] = await historyLoader.progress().snapshot
@@ -399,23 +408,43 @@ final class Radar {
         let positions = try store.longPositions().filter { $0.strategyID == strategyID && $0.exitedAt == nil }
         return markets.map { input in
             var market = LongDecision.context(input, forming: !atClose)
+            market.recordCooldowns = false
             let held = positions.first { $0.instrument == market.id }
             market.longEntryPrice = held?.entryPrice; market.longEnteredAt = held?.enteredAt
             return market
         }
     }
+    private func prepareFilterMarkets(_ captured: (response: [String: Any], markets: [FilterMarketData]), filter: CompiledFilter, monitoring: Bool = false) async throws -> [FilterMarketData] {
+        let loader = monitoring ? monitorHistoryLoader : historyLoader
+        var prepared = try await loader.prepare(captured.markets, filter: filter)
+        if running { await loader.schedule(prepared, filter: filter) }
+        var reference: FilterReferenceSnapshot?
+        if filter.referencesBTC {
+            let sourceLoader = monitoring ? monitorBTCHistoryLoader : btcHistoryLoader
+            let original = captured.markets.first { $0.id == btcReferenceID } ?? FilterMarketData(id: btcReferenceID, hour: hour, now: millis(), listedAt: rows[btcReferenceID]?.listedAt, candles: candles[btcReferenceID] ?? [:], stats: [:], quotes: [:])
+            let sources = try await sourceLoader.prepare([original], filter: filter.btcHydration)
+            if running { await sourceLoader.schedule(sources, filter: filter.btcHydration) }
+            if let source = sources.first { reference = FilterReferenceSnapshot(market: source, receivedAt: captured.response["btcReceivedAt"] as? Int64, connected: captured.response["btcConnected"] as? Bool == true) }
+        }
+        for index in prepared.indices {
+            prepared[index].referenceBTC = reference; prepared[index].evaluationTime = prepared[index].now; prepared[index].cooldowns = cooldowns
+        }
+        return prepared
+    }
     func previewMarketFilters(filtersJSON: String, token: String, atClose: Bool = false, strategyID: String? = nil) async throws -> [String: Any] {
         var compiled = try compiledFilter(filtersJSON)
-        if atClose { compiled.requiredHours += 1 }
+        if atClose {
+            compiled.requiredHours += 1
+            if compiled.btcClocks.contains("aligned") { compiled.btcRequirements?.hours += 1 }
+        }
         for (id, closed) in try await historyLoader.consumeUpdatedHistory(through: hour - hourMS) where rows[id] != nil {
             candles[id, default: [:]].merge(closed) { _, observed in observed }
             invalidateSnapshot(id); touch(id)
         }
         let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
         var response = captured.response
-        let prepared = try await historyLoader.prepare(captured.markets, filter: compiled)
+        let prepared = try await prepareFilterMarkets(captured, filter: compiled)
         try Task.checkCancellation()
-        await historyLoader.schedule(prepared, filter: compiled)
         let results = await filterWorker.evaluate(try longPreviewContexts(prepared, atClose: atClose, strategyID: strategyID), filter: compiled)
         try Task.checkCancellation()
         response["filterResults"] = results.mapValues(\.rawValue)
@@ -431,27 +460,50 @@ final class Radar {
         guard running else { return nil }
         let configuration = marketFiltersV2JSON, capturedHour = hour
         let compiled = try compiledFilter(configuration)
+        let positions = try store.longPositions().filter { $0.exitedAt == nil }
+        let heldStrategies = try store.longStrategies().filter { strategy in positions.contains { $0.strategyID == strategy.id } }
+        var hydration = compiled
+        for strategy in heldStrategies {
+            let (entry, exit) = try strategy.compiled(); hydration.mergeRequirements(entry); hydration.mergeRequirements(exit)
+        }
+        hydration.requiredHours += heldStrategies.isEmpty ? 0 : 1
+        if !heldStrategies.isEmpty, hydration.btcClocks.contains("aligned") { hydration.btcRequirements?.hours += 1 }
         for (id, closed) in try await monitorHistoryLoader.consumeUpdatedHistory(through: hour - hourMS) where rows[id] != nil {
             candles[id, default: [:]].merge(closed) { _, observed in observed }
             invalidateSnapshot(id); touch(id)
         }
         let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
-        let prepared = try await monitorHistoryLoader.prepare(captured.markets, filter: compiled)
+        let prepared = try await prepareFilterMarkets(captured, filter: hydration, monitoring: true)
         try Task.checkCancellation()
-        await monitorHistoryLoader.schedule(prepared, filter: compiled)
         let results = await monitorFilterWorker.evaluate(prepared, filter: compiled)
+        var longExits: [LongExitObservation] = []
+        for strategy in heldStrategies {
+            let tracked = positions.filter { $0.strategyID == strategy.id }
+            let heldIDs = Set(tracked.map(\.instrument))
+            let decisions = try await monitorLongDecisionWorker.evaluate(prepared.filter { heldIDs.contains($0.id) }, strategy: strategy, positions: tracked, forming: false, available: running && !monitoringPaused, reference: prepared.first?.referenceBTC)
+            longExits.append(.init(strategy: strategy, rows: decisions))
+        }
         try Task.checkCancellation()
         guard configuration == marketFiltersV2JSON, capturedHour == hour,
               Set(prepared.map(\.id)) == Set(rows.keys) else { return nil }
-        return FilterObservation(configuration: configuration, universe: Set(prepared.map(\.id)), results: results)
+        let currentStrategies = try store.longStrategies()
+        let currentPositions = try store.longPositions().filter { $0.exitedAt == nil }
+        guard Set(currentPositions.map(\.id)) == Set(positions.map(\.id)), heldStrategies.allSatisfy({ strategy in
+            currentStrategies.contains { $0.id == strategy.id && $0.revision == strategy.revision }
+        }) else { return nil }
+        return FilterObservation(configuration: configuration, universe: Set(prepared.map(\.id)), results: results, longExits: longExits)
     }
 
     func explainMarketFilters(instId: String, filtersJSON: String, token: String, atClose: Bool = false, strategyID: String? = nil) async throws -> [String: Any] {
         var compiled = try compiledFilter(filtersJSON)
-        if atClose { compiled.requiredHours += 1 }
+        if atClose {
+            compiled.requiredHours += 1
+            if compiled.btcClocks.contains("aligned") { compiled.btcRequirements?.hours += 1 }
+        }
         let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
         guard let original = captured.markets.first(where: { $0.id == instId }) else { throw FilterError("Unknown contract.") }
-        guard let market = try await historyLoader.prepare([original], filter: compiled).first else { throw FilterError("Contract data is unavailable.") }
+        let prepared = try await prepareFilterMarkets(captured, filter: compiled)
+        guard let market = prepared.first(where: { $0.id == original.id }) else { throw FilterError("Contract data is unavailable.") }
         let trace = await filterWorker.explain(try longPreviewContexts([market], atClose: atClose, strategyID: strategyID)[0], filter: compiled)
         return ["instId": instId, "filterToken": token, "revision": captured.response["revision"] ?? 0, "trace": trace.snapshot]
     }
@@ -490,7 +542,8 @@ final class Radar {
         historyTasks.forEach { $0.cancel() }; historyTasks.removeAll()
         sockets.forEach { $0.cancel(with: .goingAway, reason: nil) }; sockets.removeAll()
         running = false
-        Task { await historyLoader.cancel(); await monitorHistoryLoader.cancel() }
+        btcReceivedAt = nil
+        Task { await historyLoader.cancel(); await monitorHistoryLoader.cancel(); await btcHistoryLoader.cancel(); await monitorBTCHistoryLoader.cancel() }
     }
 
     func resumeAfterWake() {
@@ -785,7 +838,9 @@ final class Radar {
                           let items = payload["data"] as? [Any] else { continue }
                     for item in items {
                         if channel == "open-interest", let value = item as? [String: Any] { updateOI(value) }
-                        if channel == "candle1H", let id = arg["instId"], let value = item as? [String] { updateCandle(id, value) }
+                        if channel == "candle1H", let id = arg["instId"], let value = item as? [String] {
+                            if let _ = updateCandle(id, value), id == btcReferenceID { btcReceivedAt = millis(); onBTCUpdate?() }
+                        }
                     }
                 }
             } catch {
@@ -794,6 +849,7 @@ final class Radar {
             ping.cancel(); socket.cancel(with: .goingAway, reason: nil)
             sockets.removeAll { $0 === socket }
             disconnectedChannels.insert(channel)
+            if channel == "candle1H" { onBTCUpdate?() }
             try? await Task.sleep(nanoseconds: backoff)
             backoff = min(backoff * 2, 30_000_000_000)
         }
@@ -1044,6 +1100,7 @@ final class Radar {
         let error = !startupError.isEmpty ? startupError : !failedPaths.isEmpty ? "Some OKX data is unavailable; retrying." :
             !disconnectedChannels.isEmpty ? "OKX \(disconnectedChannels.sorted()[0]) disconnected; reconnecting." : ""
         return ["rows": [[String: Any]](), "updatedAt": updatedAt as Any? ?? NSNull(), "error": error, "revision": revision,
+                "btcReceivedAt": btcReceivedAt as Any? ?? NSNull(), "btcConnected": running && !disconnectedChannels.contains("candle1H"),
                 "minimum24hTurnoverUSDT": minimum24hTurnoverUSDT,
                 "spreadFilterEnabled": spreadFilterEnabled, "maximumSpreadPercent": maximumSpreadPercent,
                 "contractAgeFilterEnabled": contractAgeFilterEnabled, "minimumContractAgeMonths": minimumContractAgeMonths,

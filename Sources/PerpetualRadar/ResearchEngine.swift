@@ -11,9 +11,22 @@ struct ResearchCachedScalar: Codable {
 }
 
 enum ResearchEngine {
-    static func context(instrument: ResearchInstrument, hour: Int64, series: ResearchSeries) -> FilterMarketData {
+    struct BTCSeries {
+        var instrument: ResearchInstrument
+        var series: ResearchSeries
+        var sources: [String] { Array(Set(series.sources + [instrument.metadataSourceID].compactMap { $0 })).sorted() }
+        func snapshot(at hour: Int64) -> FilterReferenceSnapshot {
+            let market = ResearchEngine.context(instrument: instrument, hour: hour, series: series)
+            return FilterReferenceSnapshot(market: market)
+        }
+    }
+    static func btcSeries(store: ResearchStore, manifest: DataManifest, from: Int64, through: Int64, required: Bool) throws -> BTCSeries? {
+        guard required, let instrument = manifest.inputInstruments.first(where: { $0.id == btcReferenceID }) else { return nil }
+        return .init(instrument: instrument, series: reconstruct(try store.series(btcReferenceID, from: from, through: through, manifest: manifest.id)))
+    }
+    static func context(instrument: ResearchInstrument, hour: Int64, series: ResearchSeries, reference: BTCSeries? = nil) -> FilterMarketData {
         return FilterMarketData(id: instrument.id, hour: hour, now: hour + hourMS, listedAt: instrument.listedAt,
-            candles: series.candles, stats: series.stats, quotes: series.quotes, previousEMA: nil, historicalClose: true)
+            candles: series.candles, stats: series.stats, quotes: series.quotes, previousEMA: nil, historicalClose: true, referenceBTC: reference?.snapshot(at: hour), evaluationTime: hour+hourMS)
     }
     static func reconstruct(_ input: ResearchSeries) -> ResearchSeries {
         var result = input, volumes: [(Int64, Double)] = [], sum = 0.0
@@ -84,7 +97,8 @@ enum ResearchEngine {
             if checkpoint.nextHour == nil {
                 checkpoint.episodes = [:]
                 let series = reconstruct(try store.series(instrument.id, from: max(0, firstHour - Int64(warmup + 1) * hourMS), through: firstHour, manifest: manifest.id))
-                let context = context(instrument: instrument, hour: firstHour - hourMS, series: series)
+                let reference = try btcSeries(store: store, manifest: manifest, from: max(0, firstHour-Int64(warmup+1)*hourMS), through: firstHour, required: rules.contains(where: \.referencesBTC))
+                let context = context(instrument: instrument, hour: firstHour - hourMS, series: series, reference: reference)
                 let evaluator = FilterEvaluator(market: context, filter: rules[0]), opportunity = evaluator.opportunity(at: context.hour)
                 let direction = study.spec.direction == "auto" ? opportunity.direction : study.spec.direction
                 for (ri, rule) in rules.enumerated() {
@@ -101,15 +115,17 @@ enum ResearchEngine {
                 guard ProcessInfo.processInfo.thermalState != .critical else { throw FilterError("Research paused under critical thermal pressure. Resume when the Mac cools down.") }
                 let last = min(min(manifest.through, instrument.delistedAt ?? manifest.through) - hourMS, hour + 63 * hourMS)
                 let from = max(0, hour - Int64(warmup + 1) * hourMS), through = last + 49 * hourMS
-                let estimated = try store.count("SELECT COALESCE(SUM(length(json)),0) FROM research_pins p JOIN research_data d USING(revision) WHERE p.manifest=? AND d.inst=? AND d.ts>=? AND d.ts<=?", [manifest.id, instrument.id, from, through])
+                let referenceID = rules.contains(where: \.referencesBTC) ? btcReferenceID : instrument.id
+                let estimated = try store.count("SELECT COALESCE(SUM(length(json)),0) FROM research_pins p JOIN research_data d USING(revision) WHERE p.manifest=? AND d.inst IN (?,?) AND d.ts>=? AND d.ts<=?", [manifest.id, instrument.id, referenceID, from, through])
                 guard estimated < ResearchVersion.memoryBudget / 4 else { throw FilterError("This rule's lookback exceeds the 128 MiB research budget. The checkpoint was retained.") }
                 let series = reconstruct(try store.series(instrument.id, from: from, through: through, manifest: manifest.id))
+                let reference = try btcSeries(store: store, manifest: manifest, from: from, through: last, required: rules.contains(where: \.referencesBTC))
                 try store.database.transaction {
                     for h in stride(from: hour, through: last, by: Int(hourMS)) {
                         try ResearchPressure.shared.check()
                         let timestamp = h + hourMS
                         guard instrument.eligible(at: timestamp) else { continue }
-                        let context = context(instrument: instrument, hour: h, series: series)
+                        let context = context(instrument: instrument, hour: h, series: series, reference: reference)
                         let cacheID = "indicator:" + researchHash(manifest.digest + manifest.engine + instrument.id + String(h))
                         let saved = try store.get(cacheID, as: [String: ResearchCachedScalar].self)?.mapValues(\.scalar) ?? [:]
                         let evaluator = FilterEvaluator(market: context, filter: rules[0], sharedReadings: saved)
@@ -144,7 +160,7 @@ enum ResearchEngine {
                             let event = hasEvent ? ResearchEvent(id: researchHash("\(study.id)|\(ri)|\(instrument.id)|\(timestamp)"), studyID: study.id, ruleIndex: ri, instrument: instrument.id, timestamp: timestamp, direction: direction!, entry: entry,
                                 score: opportunity.score, scoreComplete: complete, status: opportunity.status, setup: opportunity.setup, split: split, outcomes: outcomes,
                                 traceJSON: String(decoding: try JSONSerialization.data(withJSONObject: trace.snapshot, options: [.sortedKeys]), as: UTF8.self),
-                                opportunityJSON: String(decoding: try JSONSerialization.data(withJSONObject: opportunity.snapshot, options: [.sortedKeys]), as: UTF8.self), sources: Array(Set(series.sources + [instrument.metadataSourceID].compactMap { $0 })).sorted()) : nil
+                                opportunityJSON: String(decoding: try JSONSerialization.data(withJSONObject: opportunity.snapshot, options: [.sortedKeys]), as: UTF8.self), sources: Array(Set(series.sources + [instrument.metadataSourceID].compactMap { $0 } + (reference?.sources ?? []))).sorted()) : nil
                             let recordedEntry = split == "Purged" && hasEvent ? "purged" : entry
                             try store.saveSample(study: study.id, rule: ri, instrument: instrument.id, timestamp: timestamp, truth: trace.result, direction: direction, entry: recordedEntry, opportunity: opportunity, complete: complete, split: split, outcomes: outcomes, event: event)
                         }

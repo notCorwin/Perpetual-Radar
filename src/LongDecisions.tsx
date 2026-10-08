@@ -76,6 +76,24 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
     void refresh(); return () => { stopped = true; window.clearTimeout(timer) }
     // A saved selection drives polling; editing the draft never changes its decisions.
   }, [active, selectedID, forming, accept, load])
+  useEffect(() => {
+    const openNotification = async () => {
+      const id = window.radarNotificationStrategy
+      if (!active || !id) return
+      try {
+        const response = await requestLong({ action: 'inventory' })
+        const strategy = response.strategies.find(item => item.id === id)
+        if (window.radarNotificationStrategy !== id) return
+        if (!strategy) { delete window.radarNotificationStrategy; setError('The notified strategy is no longer saved.'); return }
+        requestEpoch.current++; initialized.current = true
+        accept(response); setSelectedID(id); load(strategy); setTab('live'); setView('holding'); setForming(false); setPage(0); setSearch(''); setChart(null); setDetail(null)
+        delete window.radarNotificationStrategy
+      } catch (cause) { setError(cause instanceof Error ? cause.message : 'Cannot open the notified strategy.') }
+    }
+    const handler = () => { void openNotification() }
+    window.addEventListener('radar-open-long', handler); handler()
+    return () => window.removeEventListener('radar-open-long', handler)
+  }, [active, accept, load])
   const perform = async (action: () => Promise<void>) => {
     requestEpoch.current += 1; mutation.current = true; setPending(true); setError(''); setNotice('')
     try { await action() } catch (cause) { setError(cause instanceof Error ? cause.message : 'Cannot save this change.') }
@@ -146,11 +164,11 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
             <Field><FieldLabel>Decision clock</FieldLabel><ToggleGroup type="single" variant="outline" value={forming ? 'forming' : 'close'} onValueChange={value => { if (value) { setForming(value === 'forming'); setDetail(null) } }} aria-label="Decision clock"><ToggleGroupItem value="close">Hourly close</ToggleGroupItem><ToggleGroupItem value="forming">Forming-hour preview</ToggleGroupItem></ToggleGroup></Field>
             <Field><FieldLabel>Show</FieldLabel><ToggleGroup type="single" variant="outline" value={view} onValueChange={value => { if (value) { setView(value); setPage(0) } }} aria-label="Decision view"><ToggleGroupItem value="all">All</ToggleGroupItem><ToggleGroupItem value="signals">Entry / Exit</ToggleGroupItem><ToggleGroupItem value="holding">Holding</ToggleGroupItem><ToggleGroupItem value="unknown">Unknown</ToggleGroupItem></ToggleGroup></Field>
           </FieldGroup>
-          <p className="text-xs text-muted-foreground">{forming ? 'Preview uses the unfinished hour and can change. Backtests use completed hourly closes.' : 'Confirmed decisions read the just-completed hour; Closed rules keep their previous-hour offset. The backtest uses the same clock.'} Position changes are recorded manually after you trade.</p>
+          <p className="text-xs text-muted-foreground">{forming ? 'Preview uses the unfinished contract hour and can change. BTC risk exits remain confirmed signals on their own clock. Backtests use completed hourly closes.' : 'Contract readings use the just-completed hour; Closed rules keep their previous-hour offset. Explicit BTC clocks apply independently and can trigger immediate risk exits. Backtests check hourly closes.'} Position changes are recorded manually after you trade.</p>
           {paused && <Alert variant="warning"><AlertTitle>Monitoring paused</AlertTitle><AlertDescription>Cached readings remain visible; current decisions are Unknown. Resume monitoring in Radar settings.</AlertDescription></Alert>}
           <Table aria-label="Long live decisions"><TableHeader><TableRow>{['Contract', 'Decision', 'Entry filter', 'Exit filter', 'Evaluated hour (UTC)', 'Price', 'Tracked entry', 'Gross return', 'Actions'].map(label => <TableHead key={label}>{label}</TableHead>)}</TableRow></TableHeader>
             <TableBody>{visible.slice(contractPage*50, contractPage*50+50).map(row => <TableRow key={row.instrument}>
-              <TableCell>{row.instrument}</TableCell><TableCell title={row.reason}><Badge variant={row.action === 'Unknown' ? 'outline' : 'secondary'}>{forming ? 'Preview · ' : ''}{row.action}</Badge></TableCell>
+              <TableCell>{row.instrument}</TableCell><TableCell title={row.reason}><Badge variant={row.action === 'Unknown' ? 'outline' : 'secondary'}>{row.btcExit ? 'BTC risk · ' : forming ? 'Preview · ' : ''}{row.action}</Badge></TableCell>
               <TableCell>{row.position ? <span className="text-xs text-muted-foreground">Inactive while holding</span> : <FilterTruthBadge value={row.entry} />}</TableCell><TableCell>{row.position ? <FilterTruthBadge value={row.exit} /> : <span className="text-xs text-muted-foreground">Inactive while flat</span>}</TableCell><TableCell>{researchTime(row.hour)}</TableCell><TableCell>{longPrice(row.price)}</TableCell>
               <TableCell>{longPrice(row.position?.entryPrice)}</TableCell><TableCell>{row.position ? researchPercent(longReturn(row.price, row.position.entryPrice)) : '—'}</TableCell>
               <TableCell><div className="flex items-center gap-1"><Button variant="ghost" size="sm" aria-label={'Explain ' + row.instrument + ' decision'} disabled={pending} onClick={() => void inspect(row)}>Explain</Button>
@@ -181,7 +199,7 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
         {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}<DialogFooter className="mt-4"><Button type="button" variant="outline" onClick={() => setRecord(null)}>Cancel</Button><Button type="submit" disabled={pending}><Check data-icon="inline-start" aria-hidden="true" />Save tracking record</Button></DialogFooter></form>
     </DialogContent></Dialog>
     <Dialog open={Boolean(detail)} onOpenChange={open => { if (!open) setDetail(null) }}><DialogContent className="flex max-h-[85vh] w-[min(calc(var(--market-list-layout-width)*0.9),80rem)] max-w-none scale-(--market-list-scale) flex-col sm:max-w-none">
-      <DialogHeader><DialogTitle>{detail?.instrument} · {detail?.action}</DialogTitle><DialogDescription>{detail?.reason} {detail && researchTime(detail.hour)} · {forming ? 'Forming-hour preview' : 'Completed hourly close'}</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>{detail?.instrument} · {detail?.btcExit ? 'BTC risk · ' : ''}{detail?.action}</DialogTitle><DialogDescription>{detail?.reason} {detail && researchTime(detail.hour)} · {detail?.btcExit ? 'Confirmed BTC risk · reference hours shown below' : forming ? 'Forming-hour preview' : 'Completed hourly close'}</DialogDescription></DialogHeader>
       {detail && selected && <div className="flex min-h-0 flex-col gap-3 overflow-y-auto"><h3 className="font-semibold">Entry filter · {detail.position ? 'Inactive while holding' : 'Active while flat'}</h3>{detail.entryTraceJSON && <TraceNode trace={JSON.parse(detail.entryTraceJSON) as FilterTrace} config={parseFilterConfig(selected.entryJSON)} context={context} />}
         <h3 className="font-semibold">Exit filter · {detail.position ? 'Active while holding' : 'Inactive while flat'}</h3>{detail.exitTraceJSON && <TraceNode trace={JSON.parse(detail.exitTraceJSON) as FilterTrace} config={parseFilterConfig(selected.exitJSON)} context={context} />}</div>}
     </DialogContent></Dialog>

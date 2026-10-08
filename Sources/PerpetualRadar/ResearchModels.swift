@@ -3,10 +3,10 @@ import CryptoKit
 
 enum ResearchVersion {
     static let parser = "okx-archives-1"
-    static let engine = "hourly-close-1"
+    static let engine = "hourly-close-btc-2"
     static let horizons = [1, 3, 6, 12, 24, 48]
     static let memoryBudget = 128 * 1024 * 1024
-    static func warmup(_ rules: [CompiledFilter]) -> Int { max(275, rules.map { $0.requiredHours + ($0.metrics.contains("turnover") ? 24 : 0) }.max() ?? 275) }
+    static func warmup(_ rules: [CompiledFilter]) -> Int { max(275, rules.map { max($0.requiredHours + ($0.metrics.contains("turnover") ? 24 : 0), ($0.btcRequirements?.hours ?? 0) + ($0.btcRequirements?.metrics.contains("turnover") == true ? 24 : 0)) }.max() ?? 275) }
     static var revision: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleSourceRevision") as? String ?? "development" }
 }
 
@@ -113,6 +113,8 @@ struct DataPlan: Codable, Sendable {
     var warnings: [String] = []
     var unknownInstruments: [String] = []
     var createdAt = researchNow()
+    var referenceInstruments: [ResearchInstrument] = []
+    var inputInstruments: [ResearchInstrument] { instruments + referenceInstruments.filter { source in !instruments.contains { $0.id == source.id } } }
     var estimatedBytes: Int64 { sources.filter { !$0.cached }.reduce(0) { $0 + ($1.sizeBytes ?? 0) } }
 }
 
@@ -142,6 +144,8 @@ struct DataManifest: Codable, Sendable {
     var fundingRanges: [String: [ResearchRange]] = [:]
     var coverage: [ResearchCoverage] = []
     var sources: [ResearchSource] = []
+    var referenceInstruments: [ResearchInstrument] = []
+    var inputInstruments: [ResearchInstrument] { instruments + referenceInstruments.filter { source in !instruments.contains { $0.id == source.id } } }
 }
 
 struct Checkpoint: Codable, Sendable {

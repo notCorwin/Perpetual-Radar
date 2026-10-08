@@ -35,6 +35,7 @@ export function filterRuleSummary(config: FilterConfigV2, metrics: FilterMetric[
       case 'not': text = `NOT (${child()})`; break
       case 'every': text = `${child()} · every hour for ${node.hours}h`; break
       case 'recent': text = `${child()} · at least once in ${node.hours}h`; break
+      case 'cooldown': text = `${child()} · cooldown ${node.hours}h${node.hours === 0 ? ' (disabled)' : ''}`; break
       case 'count':
         text = `${child()} · ${node.comparison === 'between' ? `between ${node.minimum} and ${node.upper}` : `${comparisons.find(([key]) => key === node.comparison)?.[1] ?? node.comparison} ${node.minimum}`} times in ${node.hours}h`
         break

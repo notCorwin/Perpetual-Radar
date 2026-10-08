@@ -13,7 +13,8 @@ struct FilterFunctionInfo: Sendable {
         var minimum: Double = 1
         var step = "1"
         var unit = "hours"
-        var snapshot: [String: Any] { ["label": label, "kind": kind, "minimum": minimum, "step": step, "unit": unit] }
+        var choices: [FilterCatalog.Choice] = []
+        var snapshot: [String: Any] { ["label": label, "kind": kind, "minimum": minimum, "step": step, "unit": unit, "choices": choices.map { ["value": $0.value, "label": $0.label] }] }
     }
     let name: String, signature: String, label: String, group: String, unit: String, description: String
     let parameters: [Parameter], defaults: [String]
@@ -44,6 +45,7 @@ enum FilterCatalog {
             indicator("EMA", "EMA(n)", "EMA", "USDT", [period], ["200"], "Exponential moving average of hourly closes. The period is editable; missing hourly history is never skipped."),
             indicator("RSI", "RSI(n)", "RSI", "0–100", [period], ["14"], "Relative strength index over the selected number of hourly periods; values range from 0 to 100."),
             indicator("ROC", "ROC(n)", "ROC", "%", [period], ["9"], "Percentage price change from the close that many hours earlier."),
+            indicator("Efficiency", "Efficiency(n)", "Direction efficiency", "ratio", [period], ["24"], "Absolute net close change divided by the sum of absolute hourly close changes. Complete flat history is 0; missing hours are Unknown."),
             indicator("MAROC", "MAROC(rocN, meanN)", "MAROC", "%", [P(label: "ROC period (h)", kind: "number"), P(label: "Mean period (h)", kind: "number")], ["9", "9"], "Average of hourly ROC readings, with independently editable ROC and averaging periods.")
         ]
         for band in ["Upper", "Middle", "Lower"] {
@@ -70,6 +72,9 @@ enum FilterCatalog {
             transform("closed", "Previous closed hour", "source unit", [source], ["Price"], "Shifts this value one hour before the rule's anchor. A parent Closed anchor also applies."),
             transform("live", "Current evaluation hour", "source unit", [source], ["Price"], "Reads at the rule's current anchor; it does not cancel a parent's Closed anchor.")
         ]
+        result.append(.init(name: "BTC", signature: "BTC(expression, clock)", label: "BTC reference", group: "BTC Market Context", unit: "source unit",
+            description: "Reads BTC-USDT-SWAP independently of the filtered contract. Aligned follows the decision hour; Live uses the forming BTC hour; Closed uses the latest completed BTC hour. Explicit offsets apply once. Live data older than 30 seconds is Unknown.",
+            parameters: [source, P(label: "BTC clock", kind: "choice", unit: "clock", choices: [.init(value: "aligned", label: "Aligned with decision"), .init(value: "live", label: "Live BTC hour"), .init(value: "closed", label: "Latest closed BTC hour")])], defaults: ["ROC(1)", "\"aligned\""]))
         return result
     }()
     struct Choice: Sendable { let value: String, label: String }
@@ -165,5 +170,5 @@ enum FilterCatalog {
     static let numericFields = Set(metrics.filter(\.numeric).map(\.key))
     static let aliases = ["price": "price", "close": "Close", "open": "Open", "high": "High", "low": "Low", "volume": "Volume", "symbol": "Symbol", "listingagemonths": "ListingAgeMonths", "oi": "oiUSD", "buy": "buy", "sell": "sell"]
     static func key(_ name: String) -> String? { fields.contains(name) ? name : aliases[name.lowercased()] ?? metrics.first { $0.key.lowercased() == name.lowercased() }?.key }
-    static let functions = scalarFunctions.map(\.signature) + ["all(...)", "any(...)", "NOT condition", "between(x, min, max)", "absGte(x, threshold)", "absLte(x, threshold)", "positive(x)", "negative(x)", "zero(x)", "available(x)", "unavailable(x)", "every(condition, hours)", "recent(condition, hours)", "count(condition, hours, \"gte\", minimum)", "crossUp(left, right)", "crossDown(left, right)", "sequence(hours, stage(\"break\", condition, gapHours, capture(\"level\", expression)), stage(\"retest\", condition, gapHours))"]
+    static let functions = scalarFunctions.map(\.signature) + ["all(...)", "any(...)", "NOT condition", "between(x, min, max)", "absGte(x, threshold)", "absLte(x, threshold)", "positive(x)", "negative(x)", "zero(x)", "available(x)", "unavailable(x)", "every(condition, hours)", "recent(condition, hours)", "cooldown(condition, hours)", "count(condition, hours, \"gte\", minimum)", "crossUp(left, right)", "crossDown(left, right)", "sequence(hours, stage(\"break\", condition, gapHours, capture(\"level\", expression)), stage(\"retest\", condition, gapHours))"]
 }

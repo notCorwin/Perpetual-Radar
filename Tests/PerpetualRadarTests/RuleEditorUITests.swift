@@ -26,6 +26,7 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var rows: [[String: Any]]
     var contexts: [FilterMarketData]
     var previewDelay: UInt64 = 0
+    private var previewTask: Task<Void, Never>?
     var filterSaveDelay: UInt64 = 0
     var filterSaveError: String?
     var pulseRows = false
@@ -65,7 +66,7 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         rows = generated; contexts = data
         super.init()
     }
-    func cleanUp() { ProcessInfo.processInfo.endActivity(renderingActivity); UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
+    func cleanUp() { previewTask?.cancel(); ProcessInfo.processInfo.endActivity(renderingActivity); UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
     func snapshot() -> [String: Any] {
         var result = radar.snapshot(rocPeriod: 9, marocPeriod: 9)
         result["rows"] = rows; result["revision"] = revision
@@ -140,10 +141,12 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
             var original = snapshot()
             if pulseRows { pulse += 0.01; original["rows"] = rows.map { var row = $0; row["price"] = 110 + pulse; return row } }
             let source = preview["filtersJSON"] as! String, token = preview["token"] as! String, delay = previewDelay
-            Task {
+            previewTask?.cancel()
+            previewTask = Task {
                 do {
                     let filter = try FilterCompiler.compile(FilterConfigV2.decode(source))
                     let results = await worker.evaluate(contexts.map { LongDecision.context($0, forming: preview["atClose"] as? Bool != true) }, filter: filter)
+                    try Task.checkCancellation()
                     if delay > 0 { try await Task.sleep(nanoseconds: delay) }
                     var result = original; result["filterToken"] = token; result["filterResults"] = results.mapValues(\.rawValue); result["historyProgress"] = ["pending": 0, "completed": 0, "error": ""]
                     replyHandler(result, nil)
@@ -233,6 +236,70 @@ final class RuleEditorUITests: XCTestCase {
             window.setFrameOrigin(NSPoint(x: edge + 1000, y: 0))
             window.orderBack(nil)
         }
+    }
+
+    @MainActor
+    func testBTCMarketContextVisualParametersReadingsMaterialsAndNotificationNavigation() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        let h = bridge.contexts[0].hour, now = bridge.contexts[0].now
+        let bars = Dictionary(uniqueKeysWithValues: (0...50).map { age in
+            let ts = h-Int64(age)*hourMS, price = age == 0 ? 97.0 : 100.0
+            return (ts,Candle(hour: ts,high: price+1,low: price-1,close: price,quoteVolume: 100,baseVolume: 1,open: 100,confirmed: age != 0))
+        })
+        let reference = FilterReferenceSnapshot(market: .init(id: btcReferenceID,hour: h,now: now,listedAt: 1,candles: bars,stats: [:],quotes: [:]), receivedAt: now)
+        for index in bridge.contexts.indices { bridge.contexts[index].referenceBTC = reference }
+        let store = try Store(url: bridge.directory.appendingPathComponent("radar.sqlite3"))
+        let first = try store.saveLongStrategy(.init(name: "Ordinary strategy",entryJSON: try FilterCompiler.compile(source: "Close > 0").config.json,exitJSON: try FilterCompiler.compile(source: "LongHeldHours > 1000").config.json))
+        let risk = try store.saveLongStrategy(.init(name: "BTC risk strategy",entryJSON: first.entryJSON,exitJSON: try FilterCompiler.compile(source: #"LongReturn < -5 OR BTC(ROC(1), "live") <= -2"#).config.json))
+        try store.setPreference(first.id,forKey: "longSelectedStrategy")
+        try store.trackLong(strategyID: risk.id,instrument: bridge.contexts[0].id,price: 110,timestamp: h+1,close: false)
+        configuration.userContentController.addScriptMessageHandler(bridge,contentWorld: .page,name: "radar")
+        configuration.setURLSchemeHandler(bridge,forURLScheme: "radar")
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0,y: 0,width: 1440,height: 1100),styleMask: [.titled,.resizable],backing: .buffered,defer: false)
+        let view = WKWebView(frame: .zero,configuration: configuration), background = WindowBackgroundView(contentView: view)
+        bridge.windowBackground = background; window.contentView = background; present(window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar",contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view,"Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        try await click(view,"Filters"); try await click(view,"Reset draft")
+        _ = try await openMenu(view,selector: "[aria-label=\"Add condition\"]",popover: true)
+        try await input(view,"[data-rule-library] [cmdk-input]","BTC Crash")
+        try await wait(view,"document.querySelector('[data-rule-library]')?.innerText.includes('BTC Market Context')")
+        _ = try await js(view,"document.querySelector('[data-library-id=\"preset:btc-crash\"]').click(); true")
+        try await validDraft(view)
+        try await wait(view,"document.querySelector('[aria-label=\"Window hours\"]')?.value === '0' && document.querySelector('[data-btc-reading-source]')?.innerText.includes('BTC-USDT-SWAP')")
+        try await input(view,"[aria-label=\"Window hours\"]","2"); try await validDraft(view)
+        try await click(view,"Formula")
+        let sourceValue = try await js(view,"document.querySelector('textarea').value") as? String
+        let source = try XCTUnwrap(sourceValue)
+        XCTAssertEqual(try FilterCompiler.compile(source: source).config.root.children[0].hours,2)
+        // An omitted clock is editable directly and gains the explicit choice.
+        try await input(view,"textarea","BTC(ROC(1)) <= -2",textarea: true)
+        try await validDraft(view); try await click(view,"Rules")
+        _ = try await openMenu(view,selector: "[aria-label=\"Left expression BTC clock\"]")
+        try await option(view,"Latest closed BTC hour")
+        try await validDraft(view)
+        try await wait(view,"Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 0 && document.querySelector('[data-btc-reading-source]')?.innerText.includes('Closed')")
+        try await input(view,"[aria-label=\"Left expression Source expression Period (h)\"]","3")
+        try await validDraft(view)
+        for theme in [NSAppearance.Name.aqua,.darkAqua] {
+            window.appearance = NSAppearance(named: theme)
+            try await assertSharedSurfaces(view,opacity: bridge.radar.frostedBackgroundOpacity)
+        }
+        try await click(view,"Formula")
+        let editedValue = try await js(view,"document.querySelector('textarea').value") as? String
+        let edited = try XCTUnwrap(editedValue)
+        XCTAssertTrue(edited.contains(#"BTC(ROC(3), "closed")"#))
+        // The native notification event opens the specified saved strategy,
+        // even though another strategy was previously selected.
+        _ = try await js(view,"window.radarNotificationStrategy = \(formulaQuote(risk.id)); window.dispatchEvent(new Event('radar-open-long')); true")
+        try await wait(view,"document.querySelector('[data-long-decisions]') !== null && document.querySelector('[aria-label=\"Saved Long strategy\"]')?.textContent.includes('BTC risk strategy') && document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('BTC risk')")
+        try await click(view,"Explain MKT000-USDT-SWAP decision")
+        try await wait(view,"document.querySelector('[role=dialog]')?.innerText.includes('Confirmed BTC risk') && document.querySelector('[role=dialog] [data-btc-reading-source]')?.innerText.includes('Live')")
+        try await assertSharedSurfaces(view,opacity: bridge.radar.frostedBackgroundOpacity)
+        XCTAssertFalse(bridge.rows.contains { $0["instId"] as? String == btcReferenceID })
     }
 
     @MainActor

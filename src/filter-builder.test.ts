@@ -2,9 +2,40 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { addLibraryRule, anchorOffset, bodyPresentation, captureScope, conditionLibrary, renameValueReferences, ruleSentence, topLevelSelection, visualPresets } from './filter-builder.ts'
 import { arithmeticExpression, rawExpression } from './filter-expression.ts'
-import { emptyFilterConfig, makeRule, type FilterMetric } from './rule-engine.ts'
+import { emptyFilterConfig, makeRule, unwrapRule, wrapRule, type FilterMetric } from './rule-engine.ts'
 
 const metrics: FilterMetric[] = [{ key: 'oiTrend', label: 'OI Trend', group: 'Open interest', description: 'Compare hourly OI.', unit: 'category', numeric: false, choices: [{ value: 'rising', label: 'Rising' }] }]
+test('BTC presets expose independent clocks, confirmation, thresholds and disabled cooldowns', () => {
+  const library = conditionLibrary(metrics)
+  const crash = library.find(item => item.id === 'preset:btc-crash')!
+  assert.equal(crash.group, 'BTC Market Context')
+  const rule = crash.create()
+  assert.equal(rule.kind, 'cooldown'); assert.equal(rule.hours, 0)
+  assert.equal(rule.children[0].kind, 'any')
+  assert.deepEqual(rule.children[0].children.map(node => [node.left, node.comparison, node.right]), [['BTC(ROC(1), "live")', 'lte', '-2'], ['BTC(ROC(3), "live")', 'lte', '-4']])
+  const ranging = library.find(item => item.id === 'preset:btc-ranging')!.create()
+  assert.equal(ranging.hours, 0)
+  assert.equal(ranging.children[0].kind, 'every'); assert.equal(ranging.children[0].hours, 3)
+  assert.equal(ranging.children[0].children[0].left, 'BTC(Efficiency(24), "closed")')
+  const wrapped = wrapRule(rule, rule.children[0].id, 'cooldown')
+  assert.equal(wrapped.children[0].hours, 0)
+  assert.equal(unwrapRule(wrapped, wrapped.children[0].id).children[0].kind, 'any')
+})
+test('entry and exit BTC presets compose with all existing rules and preserve their clock', () => {
+  const library = conditionLibrary(metrics)
+  for (const [id, kind] of [['preset:btc-entry', 'all'], ['preset:btc-exit', 'any']]) {
+    const cfg = emptyFilterConfig()
+    cfg.root.kind = kind === 'all' ? 'any' : 'all'; cfg.root.mode = 'closed'
+    cfg.root.children = [makeRule(), makeRule()]
+    const original = structuredClone(cfg)
+    const next = addLibraryRule(cfg, cfg.root.children[0].id, library.find(item => item.id === id)!)
+    assert.equal(next.config.root.kind, kind)
+    assert.deepEqual(next.config.root.children[0], original.root)
+    assert.equal(next.config.root.children[1].id, next.selectedId)
+    assert.equal(next.config.root.mode, 'live')
+    assert.deepEqual(cfg, original)
+  }
+})
 test('ready-to-use rules encode complete windows, closed anchors and frozen event references', () => {
   const preset = (id: string) => visualPresets.find(p => p.id === id)!.create()
   const body = preset('preset:body')

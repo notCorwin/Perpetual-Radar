@@ -15,6 +15,19 @@ test("visual relative volume edits preserve nested offsets and allow invalid dra
   assert.equal(withExpressionArguments(lag, 1, numberExpression("0")).source, "lag(Volume, 0)")
 })
 
+test('BTC expressions edit the clock without formula entry, including an omitted aligned clock', () => {
+  const btc = expressionTemplates.find(item => item.name === 'BTC')!
+  const efficiency = templateExpression(expressionTemplates.find(item => item.name === 'Efficiency')!)
+  const reading = templateExpression(btc, efficiency)
+  assert.equal(reading.source, 'BTC(Efficiency(24), "aligned")')
+  const closed = withExpressionArguments(reading, 1, { ...rawExpression('"closed"', 'category'), kind: 'text', value: 'closed' })
+  assert.equal(closed.source, 'BTC(Efficiency(24), "closed")')
+  const implicit = { ...reading, source: 'BTC(Efficiency(24))', arguments: [efficiency] }
+  assert.equal(withExpressionArguments(implicit, 1, closed.arguments[1]).source, closed.source)
+  assert.deepEqual(btc.parameters[1].choices?.map(choice => choice.value), ['aligned', 'live', 'closed'])
+  assert.equal(functionCompletion('cooldown(condition, hours)'), 'cooldown(BTC(ROC(1), "live") <= -2, 0)')
+})
+
 test("formula completions insert usable defaults for every scalar and time function", () => {
   for (const item of expressionTemplates) {
     const completion = functionCompletion(`${item.name}(x, n)`)

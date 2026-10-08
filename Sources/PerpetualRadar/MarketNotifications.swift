@@ -2,6 +2,11 @@ import Foundation
 import UserNotifications
 
 enum RadarNotificationRoute {
+    static func longStrategy(in url: URL) -> String? {
+        guard url.scheme == "perpetualradar", url.host == "long", url.pathComponents.count == 2 else { return nil }
+        let id = url.lastPathComponent
+        return !id.isEmpty && id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) ? id : nil
+    }
     static func contract(in url: URL) -> String? {
         guard url.scheme == "perpetualradar", url.host == "contract", url.pathComponents.count == 2 else { return nil }
         let id = url.lastPathComponent
@@ -43,6 +48,7 @@ final class MarketNotifications: NSObject, UNUserNotificationCenterDelegate {
     private let transport: any MarketNotificationTransport
     private let enabled: () -> Bool
     var onOpen: ((String?) -> Void)?
+    var onOpenLong: ((String) -> Void)?
     var onStateChanged: (() -> Void)?
     private(set) var authorization = MarketNotificationAuthorization.notDetermined
     private(set) var error = ""
@@ -89,6 +95,21 @@ final class MarketNotifications: NSObject, UNUserNotificationCenterDelegate {
         content.sound = .default
         await deliver(content)
     }
+    func sendLongExits(_ changes: [LongExitChange]) async {
+        guard enabled(), !changes.isEmpty else { return }
+        await refresh()
+        guard enabled(), authorization.canDeliver else { return }
+        for change in changes {
+            guard enabled(), !Task.isCancelled else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Exit Long · \(change.instruments.count) tracked \(change.instruments.count == 1 ? "position" : "positions")"
+            content.subtitle = change.strategyName
+            content.body = change.instruments.joined(separator: ", ") + ". " + change.reasons.joined(separator: " ")
+            content.sound = .default; content.threadIdentifier = "long-exits-" + change.strategyID
+            content.userInfo = ["strategyID": change.strategyID, "instruments": change.instruments, "route": "perpetualradar://long/" + change.strategyID]
+            await deliver(content)
+        }
+    }
 
     private func deliver(_ content: UNMutableNotificationContent) async {
         do {
@@ -107,7 +128,10 @@ final class MarketNotifications: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void) {
         if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
             let instId = response.notification.request.content.userInfo["instId"] as? String
-            Task { @MainActor [weak self] in self?.onOpen?(instId) }
+            let strategyID = response.notification.request.content.userInfo["strategyID"] as? String
+            Task { @MainActor [weak self] in
+                if let strategyID { self?.onOpenLong?(strategyID) } else { self?.onOpen?(instId) }
+            }
         }
         completionHandler()
     }

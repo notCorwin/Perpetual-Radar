@@ -191,7 +191,10 @@ final class MonitorServiceTests: XCTestCase {
             throw FilterError("Lifecycle timeout")
         }
         let ui = try launch(helper: false)
-        try await wait("startup") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= 2 }
+        try await wait("startup") {
+            guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("ui-ready").path) else { return false }
+            return (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= 2
+        }
         var info = try await request(["serviceInfo": true])
         let helperPID = try XCTUnwrap(info["pid"] as? Int32)
         monitorPID = helperPID

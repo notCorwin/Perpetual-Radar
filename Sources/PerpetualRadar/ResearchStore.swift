@@ -165,7 +165,7 @@ final class ResearchStore {
         return ranges
     }
     func pinInputs(_ plan: DataPlan, owner: String) throws {
-        for instrument in plan.instruments {
+        for instrument in plan.inputInstruments {
             try ResearchPressure.shared.check()
             try database.execute("INSERT OR IGNORE INTO research_pins SELECT ?,revision FROM research_heads WHERE inst=? AND ts>=? AND ts<=?", [owner, instrument.id, plan.from-Int64(plan.warmupHours+1)*hourMS, plan.through+48*hourMS])
             if let id = instrument.metadataSourceID { try database.execute("INSERT OR IGNORE INTO research_source_pins VALUES (?,?)", [owner, id]) }
@@ -176,10 +176,11 @@ final class ResearchStore {
     }
     func freeze(_ plan: DataPlan) throws -> DataManifest {
         var manifest = DataManifest(planID: plan.id, from: plan.from, through: plan.through, instruments: plan.instruments, warnings: plan.warnings, unknownInstruments: plan.unknownInstruments)
+        manifest.referenceInstruments = plan.referenceInstruments
         if plan.spec.kind == "long" { manifest.engine = LongStudyEngine.version }
         var hash = SHA256()
         try database.transaction {
-            for instrument in plan.instruments {
+            for instrument in plan.inputInstruments {
                 if let source = instrument.metadataSourceID { try database.execute("INSERT OR IGNORE INTO research_source_pins VALUES (?,?)", [manifest.id, source]) }
                 try database.execute("INSERT INTO research_pins SELECT ?,h.revision FROM research_heads h WHERE h.inst=? AND h.ts>=? AND h.ts<=?", [manifest.id, instrument.id, plan.from - Int64(plan.warmupHours + 1) * hourMS, plan.through + 48 * hourMS])
             }
@@ -190,16 +191,16 @@ final class ResearchStore {
                 }
             }
             // Include successfully inspected empty funding ranges, not just rows.
-            for instrument in plan.instruments {
+            for instrument in plan.inputInstruments {
                 try database.execute("INSERT OR IGNORE INTO research_source_pins SELECT ?,source FROM research_coverage WHERE inst=? AND last>=? AND first<=?", [manifest.id, instrument.id, plan.from, plan.through + 48 * hourMS])
             }
             try database.query("SELECT digest FROM research_pins JOIN research_data USING(revision) WHERE manifest=? ORDER BY inst,kind,ts", [manifest.id]) { hash.update(data: Data(Self.text($0, 0).utf8)) }
             try database.query("SELECT source,kind,first,last,parser FROM research_coverage WHERE source IN (SELECT source FROM research_source_pins WHERE manifest=?) ORDER BY source", [manifest.id]) {
                 hash.update(data: Data("\(Self.text($0,0))|\(Self.text($0,1))|\(sqlite3_column_int64($0,2))|\(sqlite3_column_int64($0,3))|\(Self.text($0,4))".utf8))
             }
-            hash.update(data: Data(try researchJSON(plan.instruments).utf8))
-            for instrument in plan.instruments { manifest.fundingRanges[instrument.id] = try fundingCoverage(instrument.id, manifest: nil) }
-            manifest.coverage = try coverage(plan.instruments, from: plan.from - hourMS, through: plan.through + 48 * hourMS, manifest: manifest.id)
+            hash.update(data: Data(try researchJSON(plan.inputInstruments).utf8))
+            for instrument in plan.inputInstruments { manifest.fundingRanges[instrument.id] = try fundingCoverage(instrument.id, manifest: nil) }
+            manifest.coverage = try coverage(plan.inputInstruments, from: plan.from - hourMS, through: plan.through + 48 * hourMS, manifest: manifest.id)
             var sourceIDs: [String] = []
             try database.query("SELECT source FROM research_source_pins WHERE manifest=? ORDER BY source", [manifest.id]) { sourceIDs.append(Self.text($0,0)) }
             manifest.sources = try sourceIDs.compactMap { try get($0, as: ResearchSource.self) }

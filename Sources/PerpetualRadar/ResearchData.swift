@@ -226,20 +226,39 @@ final class ResearchDataProvider {
         let rules = try spec.rules.map { try FilterCompiler.compile(FilterConfigV2.decode($0.filtersJSON)) }
         let warmup = ResearchVersion.warmup(rules)
         let last = min(spec.through + 48 * hourMS, researchNow() / hourMS * hourMS - hourMS)
-        try importRadar(chosen, from: max(0, first - Int64(warmup + 1) * hourMS), through: last)
         var plan = DataPlan(spec: spec, instruments: chosen, from: first, through: spec.through, warmupHours: warmup)
+        if rules.contains(where: \.referencesBTC) {
+            if let reference = registry.first(where: { $0.id == btcReferenceID && $0.verified && $0.listedAt != nil }) { plan.referenceInstruments = [reference] }
+            else { plan.warnings.append("BTC reference metadata is unavailable; BTC readings remain Unknown.") }
+        }
+        let inputs = plan.inputInstruments
+        try importRadar(inputs, from: max(0, first - Int64(warmup + 1) * hourMS), through: last)
         plan.unknownInstruments = Array(Set(registry.filter { !$0.verified || $0.listedAt == nil }.map(\.id) + spec.instruments.filter { id in !chosen.contains { $0.id == id } })).sorted()
-        plan.warnings = ["Historic eligibility is limited to instruments with verified metadata. Archive-only symbols without verified classification or listing dates are reported separately.", "Hourly OI has limited public coverage. Full and partial Opportunity scores are reported separately."]
+        plan.warnings += ["Historic eligibility is limited to instruments with verified metadata. Archive-only symbols without verified classification or listing dates are reported separately.", "Hourly OI has limited public coverage. Full and partial Opportunity scores are reported separately."]
+        if rules.contains(where: \.hasLiveBTC) { plan.warnings.append("Hourly approximation of live BTC rules: check at the completed hourly close and execute at the next hourly open. Intrahour trigger times are not reconstructed.") }
         let metrics = Set(rules.flatMap { $0.metrics }), scoreInputs = spec.kind == "score" || metrics.contains { $0.hasPrefix("opportunity") }
         let needSpread = metrics.contains("spread"), needFlow = scoreInputs || !metrics.isDisjoint(with: ["buy", "sell", "takerRatio", "buyVsSell"])
         let needOI = scoreInputs || !metrics.isDisjoint(with: ["oiUSD", "oiChange", "oiTrend"])
+        let btcMetrics = Set(rules.flatMap { $0.btcRequirements?.metrics ?? [] })
+        func needs(_ kind: String, _ id: String) -> Bool {
+            let target = chosen.contains { $0.id == id }
+            let reference = id == btcReferenceID && rules.contains(where: \.referencesBTC)
+            switch kind {
+            case "candle": return true
+            case "oi": return target && needOI || reference && (btcMetrics.contains { $0.hasPrefix("opportunity") } || !btcMetrics.isDisjoint(with: ["oiUSD", "oiChange", "oiTrend"]))
+            case "taker": return target && needFlow || reference && (btcMetrics.contains { $0.hasPrefix("opportunity") } || !btcMetrics.isDisjoint(with: ["buy", "sell", "buyVsSell", "takerRatio"]))
+            case "spread": return target && needSpread || reference && btcMetrics.contains("spread")
+            default: return target && spec.costs != nil
+            }
+        }
         let recent = researchNow() / hourMS * hourMS - 60 * 24 * hourMS
         let oldEnd = min(last, recent - hourMS)
         let earliestInput = max(0, first - Int64(warmup + 1) * hourMS)
         var catalogs: [Int: [ResearchSource]] = [:]
         // Batch up to ten families per catalog call; cached complete periods need no catalog requests.
-        for (module, kind, needed, end) in [(2, "candle", true, oldEnd), (1, "taker", needFlow, oldEnd), (3, "funding", spec.costs != nil, oldEnd), (4, "spread", needSpread, last)] where needed && earliestInput <= end {
-            let missing = try chosen.filter { instrument in
+        for (module, kind, end) in [(2, "candle", oldEnd), (1, "taker", oldEnd), (3, "funding", oldEnd), (4, "spread", last)] where earliestInput <= end {
+            let missing = try inputs.filter { instrument in
+                guard needs(kind, instrument.id) else { return false }
                 let begin = max(earliestInput, instrument.listedAt! / hourMS * hourMS)
                 guard begin <= end else { return false }
                 if refresh { return true }
@@ -253,8 +272,8 @@ final class ResearchDataProvider {
         func published(_ module: Int, _ id: String, _ from: Int64, _ through: Int64) -> [ResearchSource] {
             catalogs[module, default: []].filter { $0.instrument == id && $0.through >= from && $0.from <= through }
         }
-        for (index, instrument) in chosen.enumerated() {
-            try Task.checkCancellation(); await progress("Planning \(instrument.id) · \(index + 1)/\(chosen.count)")
+        for (index, instrument) in inputs.enumerated() {
+            try Task.checkCancellation(); await progress("Planning \(instrument.id) · \(index + 1)/\(inputs.count)")
             let begin = max(first - Int64(warmup + 1) * hourMS, instrument.listedAt! / hourMS * hourMS)
             guard begin <= last else { continue }
             plan.requestedHours += Int((last - begin) / hourMS) + 1
@@ -268,7 +287,7 @@ final class ResearchDataProvider {
                 let archiveRanges = archives.map { ResearchRange(from: $0.from, through: $0.through) }
                 for gap in Self.subtract(range, covered: archiveRanges) { plan.sources.append(restSource(instrument.id, kind: "candle", gap, refresh: refresh)) }
             }
-            for (kind, needed) in [("oi", needOI), ("taker", needFlow), ("funding", spec.costs != nil), ("mark", spec.costs != nil), ("spread", needSpread)] where needed {
+            for kind in ["oi", "taker", "funding", "mark", "spread"] where needs(kind, instrument.id) {
                 let ranges = refresh ? [ResearchRange(from: begin, through: last)] : try store.missing(instrument.id, kind: kind, from: begin, through: last)
                 for range in ranges {
                     if ["taker", "funding", "spread"].contains(kind), range.from <= oldEnd {
@@ -287,16 +306,15 @@ final class ResearchDataProvider {
             }
         }
         if !refresh {
-            let dependencies = Set(["candle"] + (needOI ? ["oi"] : []) + (needFlow ? ["taker"] : []) + (needSpread ? ["spread"] : []) + (spec.costs != nil ? ["funding", "mark"] : []))
             plan.sources += try store.objects("source", as: ResearchSource.self).filter { source in
-                source.parser != ResearchVersion.parser && dependencies.contains(source.kind) && source.through >= earliestInput && source.from <= last && chosen.contains(where: { $0.id == source.instrument })
+                source.parser != ResearchVersion.parser && needs(source.kind, source.instrument) && source.through >= earliestInput && source.from <= last && inputs.contains(where: { $0.id == source.instrument })
             }
         }
         plan.sources = Array(Dictionary(plan.sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }).values).sorted { ($0.instrument, $0.kind, $0.from) < ($1.instrument, $1.kind, $1.from) }
         for index in plan.sources.indices { plan.sources[index].cached = try store.rawIsComplete(plan.sources[index]) }
         plan.warnings = Array(Set(plan.warnings)).sorted()
         await progress("Inspecting local input coverage and gaps…")
-        plan.coverage = try store.coverage(chosen, from: max(0, first-Int64(warmup+1)*hourMS), through: last)
+        plan.coverage = try store.coverage(inputs, from: max(0, first-Int64(warmup+1)*hourMS), through: last)
         try store.put(plan.id, kind: "plan", plan)
         return plan
     }

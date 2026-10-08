@@ -52,7 +52,7 @@ type NativeBridge = {
   postMessage(request: { chartInstId: string; loadChart?: boolean; sinceRevision?: number; chartEndHour?: number }): Promise<ChartPollResponse>
 }
 declare global {
-  interface Window { radarNotificationContract?: string; radarAppearance?: WindowAppearance & { nativeWindowBackground?: boolean }; webkit: { messageHandlers: { radar: NativeBridge } } }
+  interface Window { radarNotificationContract?: string; radarNotificationStrategy?: string; radarAppearance?: WindowAppearance & { nativeWindowBackground?: boolean }; webkit: { messageHandlers: { radar: NativeBridge } } }
 }
 const ROC_PERIOD = 9
 const MAROC_PERIOD = 9
@@ -163,6 +163,20 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
   const [filterCombinations, setFilterCombinations] = useState<FilterCombination[]>([])
   const [filterCombinationId, setFilterCombinationId] = useState("")
   const [rows, setRows] = useState<NativeMarketRow[]>([])
+  const routedStrategy = useRef<string | null>(null)
+  useEffect(() => {
+    const openLong = () => {
+      const id = window.radarNotificationStrategy
+      if (ready && id && routedStrategy.current !== id) {
+        routedStrategy.current = id
+        onDecisions({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })
+      }
+    }
+    const notified = () => { routedStrategy.current = null; openLong() }
+    window.addEventListener('radar-open-long', notified)
+    openLong()
+    return () => window.removeEventListener('radar-open-long', notified)
+  }, [ready, listFilters, filterCombinations, metrics, templates, functions, onDecisions])
   const [status, setStatus] = useState("Connecting")
   const [error, setError] = useState("")
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)

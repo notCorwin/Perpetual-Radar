@@ -43,7 +43,7 @@ actor ResearchWorker {
             try Task.checkCancellation()
             await progress(index, plan.sources.count, source.filename)
             if checkpoint.completedSources.contains(source.id) { continue }
-            try await provider.prepare(source, instruments: plan.instruments)
+            try await provider.prepare(source, instruments: plan.inputInstruments)
             try store.pinInputs(plan, owner: study.id)
             checkpoint.completedSources.append(source.id); checkpoint.updatedAt = researchNow()
             try store.put("checkpoint:\(study.id)", kind: "checkpoint", checkpoint)

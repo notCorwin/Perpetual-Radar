@@ -1,10 +1,11 @@
 import { indicatorTemplates, type EditorExpression, type FilterMetric, type RuleNode } from "./rule-engine.ts"
 
-export type ExpressionParameter = { label: string; kind: "expression" | "number"; minimum?: number; step?: string; unit?: string }
+export type ExpressionParameter = { label: string; kind: "expression" | "number" | "choice"; minimum?: number; step?: string; unit?: string; choices?: { value: string; label: string }[] }
 export type ExpressionTemplate = { name: string; label: string; group: string; unit: string; parameters: ExpressionParameter[]; defaults: string[]; description: string }
 const hours = (label: string, minimum = 1): ExpressionParameter => ({ label, kind: "number", minimum, step: "1", unit: "hours" })
 const source: ExpressionParameter = { label: "Source expression", kind: "expression" }
 export const expressionTemplates: ExpressionTemplate[] = [
+  { name: 'BTC', label: 'BTC reference', group: 'BTC Market Context', unit: 'source unit', parameters: [source, { label: 'BTC clock', kind: 'choice', choices: [{ value: 'aligned', label: 'Aligned with decision' }, { value: 'live', label: 'Live BTC hour' }, { value: 'closed', label: 'Latest closed BTC hour' }] }], defaults: ['ROC(1)', '"aligned"'], description: 'Reads BTC-USDT-SWAP. Live and Closed BTC clocks are independent of the contract decision clock; explicit time offsets still apply.' },
   ...indicatorTemplates.map(item => ({
     name: item.expression.split("(")[0], label: item.label, group: "Parameterized indicators", unit: item.unit,
     parameters: item.params.map(label => label === "Deviations" ? { label, kind: "number" as const, minimum: 0, step: "any", unit: "standard deviations" } : hours(label)),
@@ -32,15 +33,15 @@ export function expressionSource(expression: EditorExpression): string {
   }
 }
 export function withExpressionArguments(expression: EditorExpression, index: number, argument: EditorExpression): EditorExpression {
-  const result = { ...expression, arguments: expression.arguments.map((value, i) => i === index ? argument : value) }
+  const result = { ...expression, arguments: Array.from({ length: Math.max(expression.arguments.length, index + 1) }, (_, i) => i === index ? argument : expression.arguments[i] ?? rawExpression('')) }
   return { ...result, source: expressionSource(result) }
 }
 export function templateExpression(template: ExpressionTemplate, argument?: EditorExpression): EditorExpression {
   const result: EditorExpression = {
     kind: "call", source: "", unit: template.unit, operation: template.name, choices: [],
-    arguments: template.defaults.map((value, i) => template.parameters[i].kind === "expression" ? argument ?? rawExpression(value) : numberExpression(value)),
+    arguments: template.defaults.map((value, i) => template.parameters[i].kind === "expression" ? argument ?? rawExpression(value) : template.parameters[i].kind === 'choice' ? { ...rawExpression(value, 'category'), kind: 'text' as const, value: JSON.parse(value) as string } : numberExpression(value)),
   }
-  if (argument && ["closed", "live"].includes(template.name)) { result.unit = argument.unit; result.choices = argument.choices }
+  if (argument && ["closed", "live", "BTC"].includes(template.name)) { result.unit = argument.unit; result.choices = argument.choices }
   return { ...result, source: expressionSource(result) }
 }
 export function arithmeticExpression(operation: string, argument: EditorExpression = rawExpression("Price")): EditorExpression {
@@ -55,6 +56,7 @@ export function functionCompletion(signature: string, templates = expressionTemp
     positive: "positive(ROC(9))", negative: "negative(ROC(9))", zero: "zero(ROC(9))", available: "available(oiUSD)", unavailable: "unavailable(oiUSD)",
     absgte: "absGte(ROC(9), 2)", abslte: "absLte(ROC(9), 2)",
     every: "every(RSI(14) > 50, 3)", recent: "recent(Close > PriorHigh(48), 48)", count: 'count(RSI(14) > 50, 48, "gte", 3)',
+    cooldown: 'cooldown(BTC(ROC(1), "live") <= -2, 0)',
     crossup: "crossUp(Close, EMA(200))", crossdown: "crossDown(Close, EMA(200))",
     sequence: 'sequence(6, stage("break", High > PriorHigh(48), 6, capture("level", PriorHigh(48))), stage("retest", Low <= break.level, 6), stage("reclaim", crossUp(Close, break.level), 6))',
   }

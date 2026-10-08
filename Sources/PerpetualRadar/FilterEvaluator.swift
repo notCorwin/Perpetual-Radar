@@ -19,6 +19,10 @@ struct FilterMarketData: Sendable {
     var historicalClose = false
     var longEntryPrice: Double?
     var longEnteredAt: Int64?
+    var referenceBTC: FilterReferenceSnapshot?
+    var evaluationTime: Int64?
+    var cooldowns: FilterCooldownMemory?
+    var recordCooldowns = true
 }
 
 final class FilterEvaluator {
@@ -26,10 +30,21 @@ final class FilterEvaluator {
     let filter: CompiledFilter
     private var cache: [String: FilterScalar] = [:]
     private var breaksCache: [String: (highBreakout: BreakResult, lowBreakdown: BreakResult)] = [:]
-    init(market: FilterMarketData, filter: CompiledFilter, sharedReadings: [String: FilterScalar] = [:]) { self.market = market; self.filter = filter; cache = sharedReadings }
+    private var sources: [String: [FilterReadingSource]] = [:]
+    private let referenceOnly: Bool
+    init(market: FilterMarketData, filter: CompiledFilter, sharedReadings: [String: FilterScalar] = [:], referenceOnly: Bool = false) { self.market = market; self.filter = filter; cache = sharedReadings; self.referenceOnly = referenceOnly }
     var sharedReadings: [String: FilterScalar] { cache.filter { ($0.key.hasPrefix("metric|") || $0.key.hasPrefix("indicator|")) && !$0.key.contains("LongEntryPrice") && !$0.key.contains("LongReturn") && !$0.key.contains("LongHeldHours") } }
     func evaluate(explain: Bool = false) -> FilterTrace {
         let root = filter.config.root
+        // BTC cooldowns describe the shared market context. Observe them even
+        // when a preceding contract condition short-circuits the visible tree.
+        func observe(_ node: FilterNode, at hour: Int64) {
+            if node.kind == "cooldown", node.hours > 0, !filter.usesContractInput(node), filter.referencesBTC(in: node) {
+                _ = rule(node, at: hour, scope: [:], explain: false); return
+            }
+            for child in node.children { observe(child, at: hour-(node.mode == "closed" ? hourMS : 0)) }
+        }
+        if market.cooldowns != nil, market.recordCooldowns { observe(root, at: market.hour) }
         if ["all", "any"].contains(root.kind), root.children.isEmpty {
             var trace = FilterTrace(id: root.id, label: root.name.isEmpty ? "All exchange markets" : root.name, result: .yes, hour: market.hour)
             trace.reason = "An empty rule tree includes every contract in the exchange universe."
@@ -60,6 +75,7 @@ final class FilterEvaluator {
         if let cached = cache[key] { return cached }; let value = calculate(); cache[key] = value; return value
     }
     func metric(_ name: String, at hour: Int64) -> FilterScalar {
+        if referenceOnly { return .unknown("This contract input awaits its normal decision clock.") }
         guard let key = FilterCatalog.key(name) else { return .unknown("Unknown metric: \(name).") }
         if !market.historicalClose, hour == market.hour, let value = market.current[key] { return value }
         return cached("metric|\(key)|\(hour)") { read(key, at: hour) }
@@ -174,7 +190,8 @@ final class FilterEvaluator {
             expansion: expansionHours.flatMap { n in complete.map { BandWidthExpansion(hours: Int(n), complete: $0 == "complete") } }, high: events.highBreakout, low: events.lowBreakdown))
     }
     private func indicator(_ name: String, _ args: [Double], at hour: Int64) -> FilterScalar {
-        cached("indicator|\(name)|\(args)|\(hour)") {
+        if referenceOnly { return .unknown("This contract indicator awaits its normal decision clock.") }
+        return cached("indicator|\(name)|\(args)|\(hour)") {
             let n = Int(args[0])
             func number(_ x: Double?) -> FilterScalar { numeric(x, "\(name) requires complete hourly history.", at: hour) }
             if name == "priorhigh" || name == "priorlow" {
@@ -186,6 +203,15 @@ final class FilterEvaluator {
                 return unknown(result == .none ? "No event in the search window" : "Breakout history is incomplete", at: hour)
             }
             if name == "roc" { return change(metric("Close", at: hour), metric("Close", at: hour - Int64(n) * hourMS)) }
+            if name == "efficiency" {
+                var closes: [Double] = []
+                for age in 0...n {
+                    if Task.isCancelled { return .unknown("Evaluation cancelled.") }
+                    guard let b = bar(hour - Int64(age) * hourMS) else { return number(nil) }; closes.append(b.close)
+                }
+                let movement = zip(closes, closes.dropFirst()).reduce(0.0) { $0 + abs($1.0 - $1.1) }
+                return number(movement == 0 ? 0 : abs(closes[0] - closes[n]) / movement)
+            }
             if name == "maroc" {
                 var readings: [Double] = []
                 for offset in 0..<Int(args[1]) {
@@ -238,12 +264,15 @@ final class FilterEvaluator {
         }
     }
     private func expressionValue(_ expr: FilterExpression, at hour: Int64, scope: [String: FilterScalar]) -> FilterScalar {
-        if scope.isEmpty {
-            let key = "expr|\(expr.source)|\(hour)"
-            if let value = cache[key] { return value }
-            let value = rawExpression(expr, at: hour, scope: scope); cache[key] = value; return value
+        let key = "expr|\(expr.source)|\(hour)"
+        if scope.isEmpty, let value = cache[key] { return value }
+        let value = rawExpression(expr, at: hour, scope: scope)
+        if scope.isEmpty { cache[key] = value }
+        if filter.referencesBTC {
+            let provenance = expressionSources(expr, at: hour)
+            if !provenance.isEmpty { sources["\(expr.source)|\(hour)"] = provenance }
         }
-        return rawExpression(expr, at: hour, scope: scope)
+        return value
     }
     private func rawExpression(_ expr: FilterExpression, at hour: Int64, scope: [String: FilterScalar]) -> FilterScalar {
         func eval(_ x: FilterExpression, _ h: Int64? = nil) -> FilterScalar { expressionValue(x, at: h ?? hour, scope: scope) }
@@ -260,6 +289,7 @@ final class FilterEvaluator {
             return value.isNaN ? .unknown("Arithmetic result is undefined.") : .number(value)
         case .call(let name, let args):
             let f = name.lowercased()
+            if f == "btc" { return btcValue(args, source: expr.source, at: hour, scope: scope) }
             if f == "closed" { return eval(args[0], hour - hourMS) }
             if f == "live" { return eval(args[0]) }
             if f == "abs" { let value = eval(args[0]); return value.number.map { .number(abs($0)) } ?? value }
@@ -275,6 +305,75 @@ final class FilterEvaluator {
             }
             return indicator(f, args.map { if case .number(let n) = $0 { return n }; return 0 }, at: hour)
         }
+    }
+    private func btcValue(_ args: [FilterExpression], source: String, at hour: Int64, scope: [String: FilterScalar]) -> FilterScalar {
+        let clock = args.count == 2 ? (try? FilterParser.string(args[1])) ?? "aligned" : "aligned"
+        guard let reference = market.referenceBTC else { return .unknown("BTC-USDT-SWAP reference data is unavailable.") }
+        let snapshot = reference.market, offset = market.hour - hour
+        let base = clock == "aligned" ? market.hour : clock == "closed" && !snapshot.historicalClose ? snapshot.hour - hourMS : snapshot.hour
+        let target = base - offset
+        let hours = readingHours(args[0], at: target)
+        let provenance = Array(Set(hours)).sorted(by: >).map { h in
+            FilterReadingSource(instrument: btcReferenceID, hour: h, clock: h == snapshot.hour && !snapshot.historicalClose ? "live" : "closed", updatedAt: reference.receivedAt ?? snapshot.now)
+        }
+        sources["\(source)|\(hour)"] = provenance
+        let now = market.evaluationTime ?? market.now
+        if provenance.contains(where: { $0.clock == "live" }), (!reference.connected || reference.receivedAt == nil || now - (reference.receivedAt ?? 0) > 30_000) {
+            return .unknown("BTC live data is disconnected or older than 30 seconds.")
+        }
+        guard target <= snapshot.hour else { return .unknown("BTC data is later than the evaluation boundary.") }
+        let key = filter.cooldownIdentity + "|\(clock)|\(target)|" + args[0].source
+        if scope.isEmpty, let value = reference.reading(key) { return value }
+        var input = snapshot
+        input.current = [:]; input.referenceBTC = reference; input.cooldowns = nil; input.evaluationTime = now
+        let evaluator = FilterEvaluator(market: input, filter: filter)
+        let value = evaluator.expressionValue(args[0], at: target, scope: scope)
+        if scope.isEmpty { reference.save(value, for: key) }
+        return value
+    }
+    private func readingHours(_ expression: FilterExpression, at hour: Int64) -> [Int64] {
+        switch expression {
+        case .name(let name): return filter.definitions[name].map { readingHours($0, at: hour) } ?? [hour]
+        case .unary(_, let value): return readingHours(value, at: hour)
+        case .binary(_, let left, let right): return readingHours(left, at: hour) + readingHours(right, at: hour)
+        case .call(let name, let args):
+            let f = name.lowercased()
+            if f == "closed" { return readingHours(args[0], at: hour-hourMS) }
+            if f == "lag" { return readingHours(args[0], at: hour-Int64(try! FilterParser.integer(args[1], zero: true))*hourMS) }
+            if ["live", "abs"].contains(f) { return readingHours(args[0], at: hour) }
+            if ["mean", "sum", "highest", "lowest", "stddev", "change"].contains(f) {
+                // The selected endpoints describe the source interval without
+                // allocating one provenance record per potentially huge slot.
+                let n = try! FilterParser.integer(args[1]), ages = f == "change" ? [0, n] : [0, n-1]
+                return ages.flatMap { readingHours(args[0], at: hour-Int64($0)*hourMS) }
+            }
+            return [hour]
+        default: return []
+        }
+    }
+    private func expressionSources(_ expr: FilterExpression, at hour: Int64, visiting: Set<String> = []) -> [FilterReadingSource] {
+        if let found = sources["\(expr.source)|\(hour)"] { return found }
+        switch expr {
+        case .name(let name): if let def = filter.definitions[name], !visiting.contains(name) { return expressionSources(def, at: hour, visiting: visiting.union([name])) }
+        case .unary(_, let x): return expressionSources(x, at: hour, visiting: visiting)
+        case .binary(_, let a, let b): return expressionSources(a, at: hour, visiting: visiting) + expressionSources(b, at: hour, visiting: visiting)
+        case .call(let name, let args):
+            let f = name.lowercased()
+            if f == "closed" { return expressionSources(args[0], at: hour-hourMS, visiting: visiting) }
+            if f == "lag" { return expressionSources(args[0], at: hour-Int64(try! FilterParser.integer(args[1], zero: true))*hourMS, visiting: visiting) }
+            if ["mean", "sum", "highest", "lowest", "stddev", "change"].contains(f) {
+                let n = try! FilterParser.integer(args[1])
+                if f == "change" { return [0,n].flatMap { expressionSources(args[0], at: hour-Int64($0)*hourMS, visiting: visiting) } }
+                let prefix = args[0].source + "|", first = hour-Int64(n-1)*hourMS
+                return sources.compactMap { key, values -> [FilterReadingSource]? in
+                    guard key.hasPrefix(prefix), let timestamp = Int64(key.dropFirst(prefix.count)), timestamp >= first, timestamp <= hour else { return nil }
+                    return values
+                }.flatMap { $0 }.sorted { $0.hour > $1.hour }
+            }
+            return args.flatMap { expressionSources($0, at: hour, visiting: visiting) }
+        default: break
+        }
+        return []
     }
     private func comparison(_ op: String, _ left: FilterScalar, _ right: FilterScalar, _ upper: FilterScalar = .number(0)) -> FilterTruth {
         if op == "present" { return left.reason == nil ? .yes : .no }
@@ -309,11 +408,23 @@ final class FilterEvaluator {
                 if !explain && ((node.kind == "all" && result.result == .no) || (node.kind == "any" && result.result == .yes)) { break }
             }
             trace.result = node.children.isEmpty ? .yes : node.kind == "not" ? children[0].result.negated : node.kind == "all" ? .all(children.map(\.result)) : .any(children.map(\.result))
+            trace.referenceDriven = children.contains { $0.referenceDriven && (node.kind != "any" || $0.result == trace.result) }
             if explain { trace.children = children }
         case "condition":
             let unary = ["positive", "negative", "zero", "present", "missing"].contains(node.comparison)
+            let operands = [node.left] + (unary ? [] : [node.right]) + (node.comparison == "between" ? [node.upper] : [])
+            let bound = Set(scope.filter { $0.value.reason == nil }.keys)
+            if referenceOnly, operands.contains(where: { filter.expressions[$0].map { filter.usesContractInput($0, bound: bound) } ?? false }) {
+                trace.reason = "This comparison depends on the tracked contract's decision clock."; return trace
+            }
             let left = eval(node.left), right = unary ? .number(0) : eval(node.right), upper = node.comparison == "between" ? eval(node.upper) : .number(0)
             trace.result = comparison(node.comparison, left, right, upper)
+            for source in operands where filter.referencesBTC {
+                if let expression = filter.expressions[source] {
+                    let provenance = expressionSources(expression, at: hour)
+                    if !provenance.isEmpty { trace.readingSources[source] = provenance; trace.referenceDriven = true }
+                }
+            }
             if explain {
                 trace.readings[node.left] = left
                 if !["positive", "negative", "zero", "present", "missing"].contains(node.comparison) { trace.readings[node.right] = right }
@@ -321,18 +432,58 @@ final class FilterEvaluator {
                 trace.reason = left.reason ?? right.reason ?? (node.comparison == "between" ? upper.reason : nil) ?? "Comparison evaluated at the selected hour."
             }
         case "crossup", "crossdown":
+            let bound = Set(scope.filter { $0.value.reason == nil }.keys)
+            if referenceOnly, [node.left, node.right].contains(where: { filter.expressions[$0].map { filter.usesContractInput($0, bound: bound) } ?? false }) {
+                trace.reason = "This crossing depends on the tracked contract's decision clock."; return trace
+            }
             let a = eval(node.left), b = eval(node.right), oldA = scalar(node.left, at: hour - hourMS, scope: scope), oldB = scalar(node.right, at: hour - hourMS, scope: scope)
             if let a = a.number, let b = b.number, let oldA = oldA.number, let oldB = oldB.number { trace.result = (node.kind == "crossup" ? oldA <= oldB && a > b : oldA >= oldB && a < b) ? .yes : .no }
             // Equal operands are valid expressions and must not create duplicate
             // dictionary-literal keys in the native preview or explanation.
             trace.readings[node.left] = a; trace.readings[node.right] = b
             trace.readings["Previous \(node.left)"] = oldA; trace.readings["Previous \(node.right)"] = oldB
+            for source in [node.left, node.right] where filter.referencesBTC {
+                guard let expression = filter.expressions[source] else { continue }
+                for (key, h) in [(source, hour), ("Previous \(source)", hour-hourMS)] {
+                    let provenance = expressionSources(expression, at: h)
+                    if !provenance.isEmpty { trace.readingSources[key] = provenance; trace.referenceDriven = true }
+                }
+            }
             trace.reason = a.reason ?? b.reason ?? oldA.reason ?? oldB.reason ?? "Equality is allowed at the previous hour; the new reading must strictly cross."
+        case "cooldown":
+            let child = rule(node.children[0], at: hour, scope: scope, explain: explain)
+            trace.result = child.result; trace.referenceDriven = child.referenceDriven
+            if explain { trace.children = [child] }
+            guard node.hours > 0 else { trace.reason = "Cooldown disabled (0 hours)."; return trace }
+            let now = (market.evaluationTime ?? market.now) - (market.hour-hour)
+            let shared = !filter.usesContractInput(node) && filter.referencesBTC(in: node)
+            let key = filter.cooldownIdentity + "|\(shared ? btcReferenceID : market.id)|\(node.id)|\(shared ? "btc" : referenceOnly ? "reference" : "full")"
+            var latest = market.cooldowns?.lastMatch(key, through: now)
+            var missing = child.result == .unknown
+            if child.result == .yes { latest = now }
+            if child.result != .yes, latest == nil || latest! + Int64(node.hours)*hourMS <= now {
+                for age in 1...node.hours {
+                    if Task.isCancelled { trace.reason = "Evaluation cancelled."; return trace }
+                    let previous = rule(node.children[0], at: hour-Int64(age)*hourMS, scope: scope, explain: false)
+                    missing = missing || previous.result == .unknown
+                    if previous.result == .yes { latest = now-Int64(age)*hourMS; trace.referenceDriven = trace.referenceDriven || previous.referenceDriven; break }
+                }
+            }
+            if let latest {
+                if market.recordCooldowns, hour == market.hour { market.cooldowns?.record(key, at: latest) }
+                let remaining = max(0, latest+Int64(node.hours)*hourMS-now)
+                trace.readings["Cooldown remaining"] = .number(Double(remaining)/Double(hourMS))
+                trace.eventHours = [latest]
+                if child.result == .yes || remaining > 0 { trace.result = .yes; trace.referenceDriven = trace.referenceDriven || shared }
+                else { trace.result = missing ? .unknown : child.result }
+                trace.reason = remaining > 0 ? "Cooldown remains active after the last match; no new trigger is delayed." : "Cooldown elapsed."
+            } else { trace.result = missing ? .unknown : child.result; trace.reason = "No known trigger within the cooldown window." }
         case "every", "recent", "count":
             var yes = 0, unknown = 0, children: [FilterTrace] = []
             for age in 0..<node.hours {
                 if Task.isCancelled { trace.reason = "Evaluation cancelled."; return trace }
                 let result = rule(node.children[0], at: hour - Int64(age) * hourMS, scope: scope, explain: explain)
+                trace.referenceDriven = trace.referenceDriven || result.referenceDriven
                 if result.result == .yes { yes += 1 }; if result.result == .unknown { unknown += 1 }
                 if explain { children.append(result) }
                 if node.kind == "recent", result.result == .yes { trace.result = .yes; trace.eventHours = [result.hour]; break }
@@ -382,6 +533,10 @@ final class FilterEvaluator {
                 for item in stage.captures {
                     let name = "\(stage.name).\(item.name)", value = scalar(item.expression, at: result.hour, scope: captured)
                     captured[name] = value; if explain { result.readings[name] = value }
+                    if filter.referencesBTC, let expression = filter.expressions[item.expression] {
+                        let provenance = expressionSources(expression, at: result.hour)
+                        if !provenance.isEmpty { result.readingSources[name] = provenance; result.referenceDriven = true }
+                    }
                 }
                 let nextPath = path + [result], truth = FilterTruth.all([certainty, result.result])
                 if last {
@@ -394,6 +549,7 @@ final class FilterEvaluator {
         }
         _ = search(0, nil, scope, [], .yes)
         if trace.result != .yes, !uncertain.isEmpty { trace.result = .unknown; trace.children = uncertain; trace.eventHours = uncertainTimes }
+        trace.referenceDriven = trace.children.contains(where: \.referenceDriven)
         trace.reason = trace.result == .yes ? "A complete ordered path ends at this hour. Captured values belong to their event hours." : trace.result == .unknown ? "A possible ordered path contains unavailable data." : "No ordered path satisfies the window and stage gaps."
         if !explain { trace.children = [] }
         return trace

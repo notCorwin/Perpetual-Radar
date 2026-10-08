@@ -8,6 +8,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var server: MonitorIPCServer?
     private var radar: Radar?
     private var monitor: FilterMonitor?
+    private let longExitTracker = LongExitTracker()
     private var notifications: MarketNotifications?
     private var activity: NSObjectProtocol?
     private var statusItem: NSStatusItem?
@@ -63,6 +64,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             center.delegate = service; notifications = service
         }
         notifications?.onOpen = { [weak self] id in self?.openInterface(instId: id) }
+        notifications?.onOpenLong = { [weak self] id in self?.openInterface(instId: nil, strategyID: id) }
         notifications?.onStateChanged = { [weak self] in self?.renderMenu() }
         Task { await notifications?.refresh() }
         if !MonitorRuntime.backgroundMonitoringEnabled, loginStatus == "enabled" || loginStatus == "requiresApproval" { try? setLogin(false) }
@@ -140,11 +142,12 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let radar, monitor == nil, collectionAllowed else { return }
         if fixture == nil { radar.start() }
         activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Monitor OKX contracts and deliver saved-filter notifications after the interface quits")
-        monitor = FilterMonitor(interval: fixture == nil ? .seconds(2) : .milliseconds(100), sample: { [weak self] in
+        monitor = FilterMonitor(interval: fixture == nil ? .seconds(2) : .milliseconds(100), longTracker: longExitTracker, sample: { [weak self] in
             guard let self, let radar = self.radar else { return nil }
             if let fixture { return try await fixture.observe(configuration: radar.marketFiltersV2JSON) }
             return try await radar.observeSavedFilters()
-        }, onChanges: { [weak self] changes in await self?.notifications?.send(changes) }, onError: { [weak self] error in self?.monitoringError = error; self?.renderMenu() })
+        }, onChanges: { [weak self] changes in await self?.notifications?.send(changes) }, onLongExits: { [weak self] changes in await self?.notifications?.sendLongExits(changes) }, onError: { [weak self] error in self?.monitoringError = error; self?.renderMenu() })
+        radar.onBTCUpdate = { [weak self] in self?.monitor?.wake() }
         monitor?.start()
     }
 
@@ -195,9 +198,10 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     @objc private func showInterface() { openInterface(instId: nil) }
-    private func openInterface(instId: String?) {
+    private func openInterface(instId: String?, strategyID: String? = nil) {
         let configuration = NSWorkspace.OpenConfiguration(); configuration.activates = true
-        if let instId, let url = URL(string: "perpetualradar://contract/\(instId)") {
+        let target = strategyID.map { "perpetualradar://long/\($0)" } ?? instId.map { "perpetualradar://contract/\($0)" }
+        if let target, let url = URL(string: target) {
             NSWorkspace.shared.open([url], withApplicationAt: MonitorRuntime.appURL, configuration: configuration)
         } else {
             NSWorkspace.shared.openApplication(at: MonitorRuntime.appURL, configuration: configuration)

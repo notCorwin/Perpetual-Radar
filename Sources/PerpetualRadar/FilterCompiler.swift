@@ -140,6 +140,7 @@ struct FilterParser {
                 return FilterNode(kind: "condition", left: args[0].source, comparison: f == "between" ? f : f == "absgte" ? "abs-gte" : "abs-lte", right: args[1].source, upper: f == "between" ? args[2].source : "0")
             }
             if ["every", "recent"].contains(f), args.count == 2 { return FilterNode(kind: f, children: [try rule(args[0])], hours: try integer(args[1])) }
+            if f == "cooldown", args.count == 2 { return FilterNode(kind: f, children: [try rule(args[0])], hours: try integer(args[1], zero: true)) }
             if f == "count", (4...5).contains(args.count) { return FilterNode(kind: f, children: [try rule(args[0])], comparison: try string(args[2]), upper: args.count == 5 ? args[4].source : "0", hours: try integer(args[1]), minimum: try integer(args[3], zero: true)) }
             if f == "crossup" || f == "crossdown", args.count == 2 { return FilterNode(kind: f, left: args[0].source, right: args[1].source) }
             if f == "sequence", args.count >= 3 {
@@ -175,7 +176,7 @@ extension FilterNode {
             else if comparison == "between" { value = "between(\(left), \(right), \(upper))" }
             else if comparison == "abs-gte" || comparison == "abs-lte" { value = "\(comparison == "abs-gte" ? "absGte" : "absLte")(\(left), \(right))" }
             else { value = "\(comparison == "present" ? "available" : comparison == "missing" ? "unavailable" : comparison)(\(left))" }
-        case "every", "recent": value = "\(kind)(\(children.first?.formula ?? "true"), \(hours))"
+        case "every", "recent", "cooldown": value = "\(kind)(\(children.first?.formula ?? "true"), \(hours))"
         case "count": value = "count(\(children.first?.formula ?? "true"), \(hours), \(formulaQuote(comparison)), \(minimum)\(comparison == "between" ? ", \(upper)" : ""))"
         case "crossup", "crossdown": value = "\(kind == "crossup" ? "crossUp" : "crossDown")(\(left), \(right))"
         case "sequence":
@@ -198,6 +199,9 @@ struct CompiledFilter: Sendable {
     var needsStats = false
     var needsQuotes = false
     var metrics = Set<String>()
+    var btcRequirements: FilterSourceRequirements?
+    var btcClocks = Set<String>()
+    var cooldownIdentity = ""
     var units: [String: String] = [:]
     var editorExpressions: [String: FilterEditorExpression] = [:]
     var formula: String { config.definitions.map { "let \($0.name) = \($0.expression);" }.joined(separator: "\n") + (config.definitions.isEmpty ? "" : "\n\n") + config.root.formula }
@@ -247,6 +251,9 @@ struct FilterCompiler {
         for (name, expr) in compiled.definitions { compiled.units[name] = expressionUnit(expr); compiled.units[expr.source] = expressionUnit(expr) }
         compiled.units.merge(captureUnits) { _, unit in unit }
         normalizeConfiguration()
+        try collectSourceRequirements()
+        guard max(compiled.requiredHours, compiled.btcRequirements?.hours ?? 0) < Int(Int64.max / hourMS / 4) else { throw FilterError("Combined history dependencies exceed the supported timestamp range.") }
+        compiled.cooldownIdentity = researchHash(compiled.config.json)
         for (source, expression) in compiled.expressions { compiled.editorExpressions[source] = editorExpression(expression) }
         for (name, expression) in compiled.definitions {
             compiled.editorExpressions[name] = editorExpression(.name(name))
@@ -287,12 +294,16 @@ struct FilterCompiler {
             guard ["+", "-", "*", "/"].contains(op), try scalarKind(a, scope: scope), try scalarKind(b, scope: scope) else { throw FilterError("Arithmetic requires numeric operands.") }; return true
         case .call(let name, let args):
             let f = name.lowercased()
+            if f == "btc", (1...2).contains(args.count) {
+                if args.count == 2 { guard ["aligned", "live", "closed"].contains(try FilterParser.string(args[1])) else { throw FilterError("Choose aligned, live or closed for the BTC clock.") } }
+                return try scalarKind(args[0], scope: scope)
+            }
             if ["closed", "live"].contains(f), args.count == 1 { return try scalarKind(args[0], scope: scope) }
             if f == "abs", args.count == 1, try scalarKind(args[0], scope: scope) { return true }
             if ["mean", "sum", "highest", "lowest", "stddev", "lag", "change"].contains(f), args.count == 2, try scalarKind(args[0], scope: scope) {
                 _ = try FilterParser.integer(args[1], zero: f == "lag"); return true
             }
-            if ["ema", "rsi", "roc", "vwap", "priorhigh", "priorlow"].contains(f), args.count == 1 { _ = try FilterParser.integer(args[0]); return true }
+            if ["ema", "rsi", "roc", "efficiency", "vwap", "priorhigh", "priorlow"].contains(f), args.count == 1 { _ = try FilterParser.integer(args[0]); return true }
             if ["maroc", "breakoutage", "breakdownage"].contains(f), args.count == 2 { for arg in args { _ = try FilterParser.integer(arg) }; return true }
             if ["logbbupper", "logbbmiddle", "logbblower"].contains(f), args.count == 2 {
                 _ = try FilterParser.integer(args[0]); guard case .number(let k) = args[1], k > 0 else { throw FilterError("Log BB deviations must be positive.") }; return true
@@ -309,9 +320,9 @@ struct FilterCompiler {
         case "all", "any":
             guard root || !node.children.isEmpty else { throw FilterError("Add a condition to the empty group.") }
             for child in node.children { try validate(child, scope: scope) }
-        case "not", "every", "recent", "count":
+        case "not", "every", "recent", "count", "cooldown":
             guard node.children.count == 1 else { throw FilterError("\(node.kind) requires exactly one child rule.") }
-            if node.kind != "not" { _ = try FilterParser.integer(.number(Double(node.hours))) }
+            if node.kind != "not" { _ = try FilterParser.integer(.number(Double(node.hours)), zero: node.kind == "cooldown") }
             if node.kind == "count" {
                 guard ["eq", "neq", "gt", "gte", "lt", "lte", "between"].contains(node.comparison), node.minimum >= 0 else { throw FilterError("Choose a valid count comparison and nonnegative threshold.") }
                 if node.comparison == "between" { guard let upper = Double(node.upper), upper.isFinite, upper.rounded() == upper, upper >= Double(node.minimum) else { throw FilterError("Count maximum must be a whole number no smaller than minimum.") } }
@@ -370,8 +381,9 @@ struct FilterCompiler {
         case .binary(_, let a, let b): return max(try scalarRequirement(a, visiting: visiting), try scalarRequirement(b, visiting: visiting))
         case .call(let name, let args):
             let f = name.lowercased()
+            if f == "btc" { return 0 }
             if ["ema", "rsi"].contains(f) { return max(250, try FilterParser.integer(args[0]) + 1) }
-            if ["roc", "vwap", "priorhigh", "priorlow"].contains(f) || f.hasPrefix("logbb") { return try FilterParser.integer(args[0]) + 1 }
+            if ["roc", "efficiency", "vwap", "priorhigh", "priorlow"].contains(f) || f.hasPrefix("logbb") { return try FilterParser.integer(args[0]) + 1 }
             if ["maroc", "breakoutage", "breakdownage"].contains(f) { return try FilterParser.integer(args[0]) + FilterParser.integer(args[1]) }
             if ["mean", "sum", "highest", "lowest", "stddev", "lag", "change"].contains(f) { return try scalarRequirement(args[0], visiting: visiting) + FilterParser.integer(args[1], zero: f == "lag") }
             return try scalarRequirement(args[0], visiting: visiting) + (f == "closed" ? 1 : 0)
@@ -383,9 +395,60 @@ struct FilterCompiler {
             if let expr = compiled.expressions[source] { need = max(need, try scalarRequirement(expr)) }
         }
         for child in node.children { need = max(need, try requirement(child)) }
-        if ["every", "recent", "count", "sequence"].contains(node.kind) { need += node.hours }
+        if ["every", "recent", "count", "sequence", "cooldown"].contains(node.kind) { need += node.hours }
         if node.kind == "crossup" || node.kind == "crossdown" { need += 1 }
         return need + (node.mode == "closed" ? 1 : 0)
+    }
+
+    private mutating func collectSourceRequirements() throws {
+        var own = FilterSourceRequirements()
+        var btc: FilterSourceRequirements?
+        var clocks = Set<String>()
+        func scan(_ expression: FilterExpression, reference: Bool, offset: Int, visiting: Set<String> = []) throws {
+            if reference {
+                var need = btc ?? .init()
+                need.hours = max(need.hours, offset + (try scalarRequirement(expression)))
+                btc = need
+            } else if compiled.usesContractInput(expression) {
+                own.hours = max(own.hours, offset + (try scalarRequirement(expression)))
+            }
+            switch expression {
+            case .name(let name):
+                if let definition = compiled.definitions[name], !visiting.contains(name) { try scan(definition, reference: reference, offset: offset, visiting: visiting.union([name])) }
+                else if let key = FilterCatalog.key(name) {
+                    if reference {
+                        guard !key.hasPrefix("Long") else { throw FilterError("Long position readings belong to the tracked contract, not BTC.") }
+                        btc?.metrics.insert(key)
+                    } else { own.metrics.insert(key) }
+                }
+            case .unary(_, let x): try scan(x, reference: reference, offset: offset, visiting: visiting)
+            case .binary(_, let a, let b): try scan(a, reference: reference, offset: offset, visiting: visiting); try scan(b, reference: reference, offset: offset, visiting: visiting)
+            case .call(let name, let args):
+                let f = name.lowercased()
+                if f == "btc" {
+                    let clock = args.count == 2 ? try FilterParser.string(args[1]) : "aligned"
+                    clocks.insert(clock); btc = btc ?? .init()
+                    try scan(args[0], reference: true, offset: offset + (clock == "closed" ? 1 : 0), visiting: visiting)
+                } else {
+                    let extra = f == "closed" ? 1 : ["mean", "sum", "highest", "lowest", "stddev", "lag", "change"].contains(f) ? try FilterParser.integer(args[1], zero: f == "lag") : 0
+                    for argument in args { try scan(argument, reference: reference, offset: offset + extra, visiting: visiting) }
+                }
+            default: break
+            }
+        }
+        func node(_ value: FilterNode, offset: Int) throws {
+            let next = offset + (value.mode == "closed" ? 1 : 0)
+            let window = ["every", "recent", "count", "sequence", "cooldown"].contains(value.kind) ? value.hours : ["crossup", "crossdown"].contains(value.kind) ? 1 : 0
+            let expressions = ["condition", "crossup", "crossdown"].contains(value.kind) ? [value.left, value.right, value.upper] : []
+            for source in expressions + value.captures.map(\.expression) {
+                if let expression = compiled.expressions[source] { try scan(expression, reference: false, offset: next + window) }
+            }
+            for child in value.children { try node(child, offset: next + window) }
+        }
+        try node(compiled.config.root, offset: 0)
+        compiled.metrics = own.metrics; compiled.needsStats = own.needsStats; compiled.needsQuotes = own.needsQuotes
+        compiled.requiredHours = own.hours
+        compiled.btcRequirements = btc; compiled.btcClocks = clocks
     }
 
     private func expressionUnit(_ expr: FilterExpression, visiting: Set<String> = []) -> String {
@@ -406,6 +469,7 @@ struct FilterCompiler {
         case .call(let name, let args):
             let f = name.lowercased()
             if f == "rsi" { return "0–100" }
+            if f == "efficiency" { return "ratio" }
             if ["roc", "maroc", "change"].contains(f) { return "%" }
             if ["breakoutage", "breakdownage"].contains(f) { return "hours" }
             if ["ema", "vwap", "priorhigh", "priorlow"].contains(f) || f.hasPrefix("logbb") { return "USDT" }
@@ -420,7 +484,7 @@ struct FilterCompiler {
                 return expressionChoices(definition, visiting: visiting.union([name]))
             }
             return FilterCatalog.key(name).map(FilterCatalog.choices) ?? []
-        case .call(let name, let arguments) where ["closed", "live"].contains(name.lowercased()):
+        case .call(let name, let arguments) where ["closed", "live", "btc"].contains(name.lowercased()):
             return arguments.first.map { expressionChoices($0, visiting: visiting) } ?? []
         default: return []
         }
@@ -464,7 +528,7 @@ extension FilterConfigV2 {
                 if !["condition", "crossup", "crossdown"].contains(node.kind) { value.left = old.left; value.right = old.right }
                 if node.kind == "condition", ["present", "missing", "positive", "negative", "zero"].contains(node.comparison) { value.right = old.right }
                 if node.comparison != "between" { value.upper = old.upper }
-                if !["every", "recent", "count", "sequence"].contains(node.kind) { value.hours = old.hours }
+                if !["every", "recent", "count", "sequence", "cooldown"].contains(node.kind) { value.hours = old.hours }
                 if node.kind != "count" { value.minimum = old.minimum }
                 if !stage { value.gapHours = old.gapHours }
                 value.captures = node.captures.map { item in var next = item; if let prior = old.captures.first(where: { $0.name == item.name }) { next.id = prior.id }; return next }

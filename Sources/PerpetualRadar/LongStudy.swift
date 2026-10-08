@@ -38,7 +38,7 @@ struct LongStudyReport: Codable, Sendable {
 }
 
 enum LongStudyEngine {
-    static let version = "long-filters-1"
+    static let version = "long-filters-btc-2"
     static func period(_ timestamp: Int64, manifest: DataManifest) -> Int {
         let span = manifest.through-manifest.from
         let a = manifest.from+Int64(Double(span)*0.6)/hourMS*hourMS, b = manifest.from+Int64(Double(span)*0.8)/hourMS*hourMS
@@ -91,15 +91,17 @@ enum LongStudyEngine {
                 try ResearchPressure.shared.check()
                 guard ProcessInfo.processInfo.thermalState != .critical else { throw FilterError("Research paused under critical thermal pressure. The checkpoint is retained.") }
                 let last = min(end-hourMS, hour+63*hourMS), from = max(0, hour-Int64(warmup+1)*hourMS)
-                let size = try store.count("SELECT COALESCE(SUM(length(json)),0) FROM research_pins p JOIN research_data d USING(revision) WHERE p.manifest=? AND d.inst=? AND d.ts>=? AND d.ts<=?", [manifest.id,instrument.id,from,last+hourMS])
+                let referenceID = filters.contains(where: \.referencesBTC) ? btcReferenceID : instrument.id
+                let size = try store.count("SELECT COALESCE(SUM(length(json)),0) FROM research_pins p JOIN research_data d USING(revision) WHERE p.manifest=? AND d.inst IN (?,?) AND d.ts>=? AND d.ts<=?", [manifest.id,instrument.id,referenceID,from,last+hourMS])
                 guard size < ResearchVersion.memoryBudget/4 else { throw FilterError("The lookback exceeds the 128 MiB research budget. Its checkpoint is retained.") }
                 let series = ResearchEngine.reconstruct(try store.series(instrument.id, from: from, through: last+hourMS, manifest: manifest.id))
+                let reference = try ResearchEngine.btcSeries(store: store, manifest: manifest, from: from, through: last, required: filters.contains(where: \.referencesBTC))
                 try store.database.transaction {
                     for h in stride(from: hour, through: last, by: Int(hourMS)) {
                         try ResearchPressure.shared.check()
                         let timestamp = h+hourMS
                         var counters = checkpoint.longCounters ?? .init(); counters.evaluated += 1
-                        var context = ResearchEngine.context(instrument: instrument, hour: h, series: series)
+                        var context = ResearchEngine.context(instrument: instrument, hour: h, series: series, reference: reference)
                         context.longEntryPrice = checkpoint.longPosition?.trade.entryPrice; context.longEnteredAt = checkpoint.longPosition?.trade.entryTime
                         let key = "indicator:"+researchHash(manifest.digest+manifest.engine+instrument.id+String(h))
                         let saved = try store.get(key, as: [String: ResearchCachedScalar].self)?.mapValues(\.scalar) ?? [:]
@@ -115,7 +117,7 @@ enum LongStudyEngine {
                                 score: opportunity.score, scoreComplete: ResearchEngine.scoreComplete(opportunity), status: opportunity.status, setup: opportunity.setup,
                                 split: ResearchEngine.split(timestamp: timestamp, from: manifest.from, through: manifest.through), outcomes: [],
                                 traceJSON: String(decoding: try JSONSerialization.data(withJSONObject: trace.snapshot, options: [.sortedKeys]), as: UTF8.self), opportunityJSON: String(decoding: try JSONSerialization.data(withJSONObject: opportunity.snapshot, options: [.sortedKeys]), as: UTF8.self),
-                                sources: Array(Set(series.sources+[instrument.metadataSourceID].compactMap { $0 })).sorted())
+                                sources: Array(Set(series.sources+[instrument.metadataSourceID].compactMap { $0 }+(reference?.sources ?? []))).sorted())
                         }
                         if var position = checkpoint.longPosition {
                             accrue(&position, hour: h, series: series)

@@ -42,6 +42,7 @@ struct LongDecisionRow: Codable, Sendable {
     var position: LongTrackedPosition?
     var entryTraceJSON: String?
     var exitTraceJSON: String?
+    var btcExit = false
 }
 
 enum LongDecision {
@@ -58,6 +59,7 @@ enum LongDecision {
     static func context(_ input: FilterMarketData, forming: Bool) -> FilterMarketData {
         if forming { return input }
         var market = input
+        market.evaluationTime = input.evaluationTime ?? input.now
         market.hour -= hourMS; market.now = market.hour + hourMS
         market.current = [:]; market.previousEMA = nil; market.historicalClose = true
         let series = ResearchEngine.reconstruct(ResearchSeries(candles: market.candles, stats: market.stats, quotes: market.quotes))
@@ -67,31 +69,50 @@ enum LongDecision {
 }
 
 actor LongDecisionWorker {
-    func evaluate(_ markets: [FilterMarketData], strategy: LongStrategy, positions: [LongTrackedPosition], forming: Bool, available: Bool, detailID: String? = nil) throws -> [LongDecisionRow] {
+    func evaluate(_ markets: [FilterMarketData], strategy: LongStrategy, positions: [LongTrackedPosition], forming: Bool, available: Bool, detailID: String? = nil, reference: FilterReferenceSnapshot? = nil) throws -> [LongDecisionRow] {
         let (entry, exit) = try strategy.compiled()
         let held = Dictionary(uniqueKeysWithValues: positions.filter { $0.strategyID == strategy.id && $0.exitedAt == nil }.map { ($0.instrument, $0) })
-        var result = try markets.map { original in
+        let present = Set(markets.map(\.id))
+        let btc = reference ?? markets.first?.referenceBTC
+        let unavailable = held.values.filter { !present.contains($0.instrument) }.map { position in
+            FilterMarketData(id: position.instrument, hour: btc?.market.hour ?? researchNow()/hourMS*hourMS, now: btc?.market.now ?? researchNow(), listedAt: nil, candles: [:], stats: [:], quotes: [:], referenceBTC: btc, evaluationTime: btc?.market.now, cooldowns: markets.first?.cooldowns)
+        }
+        return try (markets + unavailable).map { original in
             try Task.checkCancellation()
             var market = LongDecision.context(original, forming: forming)
+            if forming { market.recordCooldowns = false }
             market.longEntryPrice = held[market.id]?.entryPrice; market.longEnteredAt = held[market.id]?.enteredAt
             let explain = original.id == detailID
             let e = FilterEvaluator(market: market, filter: entry), a = e.evaluate(explain: explain)
-            let b = FilterEvaluator(market: market, filter: exit, sharedReadings: e.sharedReadings).evaluate(explain: explain)
+            var b = FilterEvaluator(market: market, filter: exit, sharedReadings: e.sharedReadings).evaluate(explain: explain)
             let readingTime = forming ? market.now : market.hour+hourMS
             let waitingForEntryClose = held[market.id].map { $0.enteredAt >= readingTime } == true
             let ready = available && !waitingForEntryClose && market.candles[market.hour].map { forming ? !$0.confirmed : $0.confirmed } == true
             var decision = LongDecision.action(entry: a.result, exit: b.result, holding: held[market.id] != nil, available: ready)
             if waitingForEntryClose { decision = ("Unknown", "Waiting for the first evaluated close after your actual entry. The tracked Long remains open.") }
+            var btcExit = false
+            if available, held[market.id] != nil, exit.referencesBTC {
+                var confirmed = LongDecision.context(original, forming: false)
+                confirmed.longEntryPrice = market.longEntryPrice; confirmed.longEnteredAt = market.longEnteredAt
+                let referenceEvaluator = FilterEvaluator(market: confirmed, filter: exit, referenceOnly: true)
+                let independent = referenceEvaluator.evaluate(explain: explain)
+                if independent.result == .yes, independent.referenceDriven {
+                    btcExit = true; b = explain ? independent : referenceEvaluator.evaluate(explain: true)
+                    func causes(_ trace: FilterTrace) -> [String] {
+                        guard trace.result == .yes else { return [] }
+                        if !trace.readingSources.isEmpty { return [trace.label] }
+                        if trace.reason.hasPrefix("Cooldown remains active") { return [trace.reason] }
+                        return trace.children.flatMap(causes)
+                    }
+                    let reason = Array(Set(causes(b))).sorted().joined(separator: "; ")
+                    decision = ("Exit Long", "Confirmed BTC risk: \(reason.isEmpty ? "the BTC exit rule matches" : reason). Independent of the contract close and forming-hour preview.")
+                }
+            }
             func json(_ trace: FilterTrace) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: trace.snapshot, options: [.sortedKeys]), as: UTF8.self) }
             return LongDecisionRow(instrument: market.id, hour: market.hour, entry: a.result.rawValue, exit: b.result.rawValue, action: decision.0, reason: decision.1,
                 price: market.candles[market.hour]?.close, position: held[market.id],
-                entryTraceJSON: explain ? try json(a) : nil, exitTraceJSON: explain ? try json(b) : nil)
+                entryTraceJSON: explain ? try json(a) : nil, exitTraceJSON: explain ? try json(b) : nil, btcExit: btcExit)
         }
-        let present = Set(markets.map(\.id)), hour = (markets.first?.hour ?? researchNow()/hourMS*hourMS) - (forming ? 0 : hourMS)
-        for (id, position) in held where !present.contains(id) {
-            result.append(.init(instrument: id,hour: hour,entry: "unknown",exit: "unknown",action: "Unknown",reason: "This tracked contract is unavailable or no longer in the live universe. Tracking is retained; record an actual exit manually.",position: position))
-        }
-        return result
     }
 }
 

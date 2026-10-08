@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var frostedBackgroundEnabled = MonitorRuntime.defaults.object(forKey: "LastWindowFrostedEnabled") as? Bool ?? true
     private var frostedBackgroundOpacity = MonitorRuntime.defaults.object(forKey: "LastWindowFrostedOpacity") as? Double ?? 0.3
     private var pendingNotificationInstId: String?
+    private var pendingNotificationStrategyID: String?
     private var filterPreviewTask: Task<Void, Never>?
     private var filterExplainTask: Task<Void, Never>?
     private var startupError = ""
@@ -189,6 +190,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
+            if let strategy = RadarNotificationRoute.longStrategy(in: url) {
+                pendingNotificationStrategyID = strategy; showWindow(); openNotificationContract(); continue
+            }
             guard let id = RadarNotificationRoute.contract(in: url) else { continue }
             pendingNotificationInstId = id
             showWindow(); openNotificationContract()
@@ -246,6 +250,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationDidUnhide(_ notification: Notification) { updateRelaunchPresentation() }
 
     private func openNotificationContract() {
+        if let strategy = pendingNotificationStrategyID, let webView, !webView.isLoading {
+            pendingNotificationStrategyID = nil
+            webView.callAsyncJavaScript("window.radarNotificationStrategy = strategyID; window.dispatchEvent(new Event('radar-open-long'));", arguments: ["strategyID": strategy], in: nil, in: .page, completionHandler: nil)
+        }
         guard let id = pendingNotificationInstId, let webView, !webView.isLoading else { return }
         pendingNotificationInstId = nil
         webView.callAsyncJavaScript("window.radarNotificationContract = instId; window.dispatchEvent(new Event('radar-open-contract'));",

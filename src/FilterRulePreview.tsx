@@ -20,7 +20,7 @@ const formatHour = (hour: number) => new Date(hour).toLocaleString('en-US', { mo
 type Props = { atClose?: boolean; strategyID?: string; nodeId: string; rows: NativeMarketRow[]; results: Record<string, FilterTruth>; filtersJSON: string | null; revision: number; instId: string | null; onSelect: (id: string) => void; onExplain: (id: string) => void; metrics: FilterMetric[]; expressions: Record<string, EditorExpression>; templates: ExpressionTemplate[]; units: Record<string, string>; valid: boolean }
 function readingTraces(trace: FilterTrace): FilterTrace[] { return [...(Object.keys(trace.readings).length ? [trace] : []), ...trace.children.flatMap(readingTraces)] }
 function HourlyReading({ trace, context }: { trace: FilterTrace; context: ReadingContext }) {
-  return <div data-surface="panel" className="flex flex-col gap-1 rounded-md border bg-card p-2"><div className="flex items-center justify-between gap-2"><time className="text-xs text-muted-foreground" dateTime={new Date(trace.hour).toISOString()}>{formatHour(trace.hour)}</time><FilterTruthBadge value={trace.result} /></div><FilterReadings readings={trace.readings} {...context} />{trace.reason && <FieldDescription>{trace.reason}</FieldDescription>}</div>
+  return <div data-surface="panel" className="flex flex-col gap-1 rounded-md border bg-card p-2"><div className="flex items-center justify-between gap-2"><time className="text-xs text-muted-foreground" dateTime={new Date(trace.hour).toISOString()}>{formatHour(trace.hour)}</time><FilterTruthBadge value={trace.result} /></div><FilterReadings readings={trace.readings} readingSources={trace.readingSources} {...context} />{trace.reason && <FieldDescription>{trace.reason}</FieldDescription>}</div>
 }
 export function FilterRulePreview({ nodeId, rows, results, filtersJSON, revision, instId, onSelect, onExplain, metrics, expressions, templates, units, valid, atClose, strategyID }: Props) {
   const [open, setOpen] = useState(false), [search, setSearch] = useState('')
@@ -53,7 +53,7 @@ export function FilterRulePreview({ nodeId, rows, results, filtersJSON, revision
     {loading && <FieldDescription className="flex items-center gap-2"><Spinner aria-hidden="true" />Updating readings…</FieldDescription>}
     {error && <FieldError role="alert">{error}</FieldError>}
     {selectedTrace ? <div className="flex flex-col gap-2" aria-live="polite"><div className="flex items-center justify-between gap-2"><FilterTruthBadge value={selectedTrace.result} /><time className="text-xs text-muted-foreground" dateTime={new Date(selectedTrace.hour).toISOString()}>{formatHour(selectedTrace.hour)}</time></div>
-      <FilterReadings readings={selectedTrace.readings} {...context} />
+      <FilterReadings readings={selectedTrace.readings} readingSources={selectedTrace.readingSources} {...context} />
       {!Object.keys(selectedTrace.readings).length && latestChecks.length > 0 && <><FieldDescription>Latest checked hour</FieldDescription>{latestChecks.map((item, index) => <HourlyReading key={`${item.id}:${item.hour}:${index}`} trace={item} context={context} />)}</>}
       {selectedTrace.reason && <FieldDescription>{selectedTrace.reason}</FieldDescription>}
       {selectedTrace.eventHours.length > 0 && <FieldDescription>Event path: {selectedTrace.eventHours.map(formatHour).join(' → ')}</FieldDescription>}

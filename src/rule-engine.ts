@@ -2,7 +2,7 @@ import type { MarketRow } from "./market-row.ts"
 import type { OpportunityResult } from "./market-opportunity.ts"
 
 export type FilterTruth = "true" | "false" | "unknown"
-export type RuleKind = "all" | "any" | "not" | "condition" | "every" | "recent" | "count" | "crossup" | "crossdown" | "sequence"
+export type RuleKind = "all" | "any" | "not" | "condition" | "every" | "recent" | "count" | "cooldown" | "crossup" | "crossdown" | "sequence"
 export type NamedFormula = { id: string; name: string; expression: string }
 export type RuleNode = {
   id: string; kind: RuleKind; name: string; mode: "live" | "closed"; children: RuleNode[]
@@ -16,7 +16,7 @@ export const initialLibraryPreferences = (): FilterLibraryPreferences => ({ favo
 export type FilterCombination = { id: string; name: string; filtersJSON: string; filterConfigJSON?: string }
 export type EditorExpression = { kind: "number" | "text" | "name" | "unary" | "binary" | "call" | "raw"; source: string; unit: string; value?: string; operation?: string; arguments: EditorExpression[]; choices: FilterMetricChoice[] }
 export type CompileResponse = { configJSON?: string; formula?: string; diagnostics: string[]; requiredHours?: number; units?: Record<string, string>; expressions?: Record<string, EditorExpression> }
-export type FilterTrace = { id: string; label: string; result: FilterTruth; hour: number; readings: Record<string, string>; reason: string; children: FilterTrace[]; eventHours: number[] }
+export type FilterTrace = { id: string; label: string; result: FilterTruth; hour: number; readings: Record<string, string>; reason: string; children: FilterTrace[]; eventHours: number[]; readingSources?: Record<string, { instrument: string; hour: number; clock: string; updatedAt: number }[]>; referenceDriven?: boolean }
 export type ExplainResponse = { instId: string; filterToken: string; revision: number; trace: FilterTrace }
 export type NativeMarketRow = MarketRow & { opportunity: OpportunityResult }
 export type FilterDraftRevision = { config: FilterConfigV2; source: string | null; expressionDrafts?: Record<string, EditorExpression> }
@@ -36,7 +36,7 @@ export function newRuleID(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 export const makeRule = (kind: RuleKind = "condition"): RuleNode => ({
-  id: newRuleID(), kind, name: "", mode: "live", children: [], left: "Price", comparison: "gte", right: "0", upper: "100", hours: 3, minimum: 1, gapHours: 6, captures: [],
+  id: newRuleID(), kind, name: "", mode: "live", children: [], left: "Price", comparison: "gte", right: "0", upper: "100", hours: kind === 'cooldown' ? 0 : 3, minimum: 1, gapHours: 6, captures: [],
 })
 export const emptyFilterConfig = (): FilterConfigV2 => ({ version: 2, root: makeRule("all"), definitions: [] })
 export function parseFilterConfig(json: string): FilterConfigV2 {
@@ -62,7 +62,7 @@ export function removeRule(root: RuleNode, id: string): RuleNode {
 export function cloneRule(node: RuleNode): RuleNode {
   return { ...node, id: newRuleID(), captures: node.captures.map(item => ({ ...item, id: newRuleID() })), children: node.children.map(cloneRule) }
 }
-export function canReceiveChildren(node: RuleNode): boolean { return ["all", "any", "sequence"].includes(node.kind) || ["not", "every", "recent", "count"].includes(node.kind) && node.children.length === 0 }
+export function canReceiveChildren(node: RuleNode): boolean { return ["all", "any", "sequence"].includes(node.kind) || ["not", "every", "recent", "count", "cooldown"].includes(node.kind) && node.children.length === 0 }
 export function moveRule(root: RuleNode, sourceId: string, parentId: string, index: number): RuleNode {
   const source = findRule(root, sourceId), oldParent = findParent(root, sourceId), target = findRule(root, parentId)
   if (!source || !oldParent || !target || !Number.isInteger(index) || index < 0 || index > target.children.length || findRule(source, parentId)) return root
@@ -95,7 +95,7 @@ export function wrapRule(root: RuleNode, id: string, kind: RuleKind): RuleNode {
 }
 export function unwrapRule(root: RuleNode, id: string): RuleNode {
   const node = findRule(root, id)
-  if (!node || node.children.length !== 1 || !["not", "every", "recent", "count", "all", "any"].includes(node.kind)) return root
+  if (!node || node.children.length !== 1 || !["not", "every", "recent", "count", "cooldown", "all", "any"].includes(node.kind)) return root
   const stage = findParent(root, id)?.kind === "sequence", child = node.children[0]
   const replacement = { ...child, name: node.name || child.name, gapHours: node.gapHours, captures: stage ? [...node.captures, ...child.captures] : child.captures }
   // Preserve both closed anchors when the child independently uses closed data.
@@ -104,6 +104,7 @@ export function unwrapRule(root: RuleNode, id: string): RuleNode {
 }
 export const ruleCount = (node: RuleNode): number => (node.kind === "condition" || node.kind.startsWith("cross") ? 1 : 0) + node.children.reduce((sum, child) => sum + ruleCount(child), 0)
 export const ruleKinds: { value: RuleKind; label: string }[] = [
+  { value: "cooldown", label: "Cooldown after trigger" },
   { value: "condition", label: "Comparison" }, { value: "all", label: "All (AND)" }, { value: "any", label: "Any (OR)" }, { value: "not", label: "Not (NOT)" },
   { value: "every", label: "Every hour" }, { value: "recent", label: "Recently occurred" }, { value: "count", label: "Occurrence count" },
   { value: "crossup", label: "Crosses above" }, { value: "crossdown", label: "Crosses below" }, { value: "sequence", label: "Ordered sequence" },
@@ -118,6 +119,7 @@ export const indicatorTemplates = [
   { expression: "EMA(200)", label: "EMA", unit: "USDT", params: ["Period (h)"] },
   { expression: "RSI(14)", label: "RSI", unit: "0–100", params: ["Period (h)"] },
   { expression: "ROC(9)", label: "ROC", unit: "%", params: ["Period (h)"] },
+  { expression: "Efficiency(24)", label: "Direction efficiency", unit: "ratio", params: ["Period (h)"] },
   { expression: "MAROC(9, 9)", label: "MAROC", unit: "%", params: ["ROC period (h)", "Mean period (h)"] },
   ...["Upper", "Middle", "Lower"].map(band => ({ expression: `LogBB${band}(20, 2)`, label: `Log BB ${band}`, unit: "USDT", params: ["Period (h)", "Deviations"] })),
   { expression: "VWAP(14)", label: "VWAP", unit: "USDT", params: ["Period (h)"] },

@@ -120,8 +120,11 @@ struct FilterTrace: Sendable {
     var reason = ""
     var children: [FilterTrace] = []
     var eventHours: [Int64] = []
+    var readingSources: [String: [FilterReadingSource]] = [:]
+    var referenceDriven = false
     var snapshot: [String: Any] {
         ["id": id, "label": label, "result": result.rawValue, "hour": hour, "readings": readings.mapValues(\.display), "reason": reason,
-         "children": children.map(\.snapshot), "eventHours": eventHours]
+         "children": children.map(\.snapshot), "eventHours": eventHours,
+         "readingSources": readingSources.mapValues { $0.map(\.snapshot) }, "referenceDriven": referenceDriven]
     }
 }

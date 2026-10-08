@@ -65,7 +65,7 @@ export function MarketFilters(props: Props) {
     onEditorChange(current => ({ ...current, source, selectedRuleId: selectedId ?? current.selectedRuleId, past: coalesce ? current.past : [...current.past, previous].slice(-40), future: [], nameDrafts: Object.fromEntries(Object.entries(current.nameDrafts).filter(([id]) => names.has(id))), expressionDrafts: Object.fromEntries(Object.entries(current.expressionDrafts).filter(([key]) => sources.has(key))) }))
     lastEdit.current = field; window.clearTimeout(coalesceTimer.current); coalesceTimer.current = window.setTimeout(() => { lastEdit.current = '' }, 700); setSaveError(''); setFeedback('')
   }
-  const edit = (config: FilterConfigV2, selectedId?: string) => { record(null, selectedId, config); onDraftChange(config) }
+  const edit = (config: FilterConfigV2, selectedId?: string) => { record(null, selectedId ?? selectedRule.id, config); onDraftChange(config) }
   const travel = (direction: 'undo' | 'redo') => {
     const list = direction === 'undo' ? editor.past : editor.future, next = list[list.length - 1]
     if (!next) return

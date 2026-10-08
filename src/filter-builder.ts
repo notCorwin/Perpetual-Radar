@@ -10,10 +10,16 @@ export function makeVisualBranch(kind: RuleKind): RuleNode {
     return branch('sequence', [first, { ...condition('Low', 'lte', 'break.level'), name: 'retest' }, { ...condition('Close', 'gt', 'break.level'), kind: 'crossup', name: 'reclaim' }], 6)
   }
   if (['all', 'any'].includes(kind)) return branch(kind, [])
-  if (['not', 'every', 'recent', 'count'].includes(kind)) return branch(kind, [condition('RSI(14)', 'gt', '50')])
+  if (['not', 'every', 'recent', 'count', 'cooldown'].includes(kind)) return branch(kind, [condition('RSI(14)', 'gt', '50')], kind === 'cooldown' ? 0 : 3)
   return makeRule(kind)
 }
+const btcCrash = () => ({ ...branch('cooldown', [branch('any', [condition('BTC(ROC(1), "live")', 'lte', '-2'), condition('BTC(ROC(3), "live")', 'lte', '-4')])], 0), name: 'BTC Crash' })
+const btcRanging = () => ({ ...branch('cooldown', [branch('every', [condition('BTC(Efficiency(24), "closed")', 'lte', '0.30')], 3)], 0), name: 'BTC Ranging' })
 export const visualPresets = [
+  { id: 'preset:btc-crash', label: 'BTC Crash', description: 'Live BTC 1h change ≤ −2% OR 3h change ≤ −4%. Optional cooldown defaults to 0h. Editable example thresholds; not validated by backtest.', keywords: ['BTC Bitcoin crash market context 暴跌 大盘 冷却'], create: btcCrash },
+  { id: 'preset:btc-ranging', label: 'BTC Ranging', description: 'BTC 24h direction efficiency ≤ 0.30 for three completed hours. Includes narrow and wide directionless movement. Editable example parameters.', keywords: ['BTC Bitcoin ranging sideways efficiency 震荡 横盘'], create: btcRanging },
+  { id: 'preset:btc-entry', label: 'BTC Entry Gate', description: 'Combines with all existing entry rules using AND: neither BTC Crash nor BTC Ranging. Every restriction is visible and editable.', keywords: ['BTC Bitcoin entry gate 入场'], create: () => ({ ...branch('not', [branch('any', [btcCrash(), btcRanging()])]), name: 'BTC Entry Gate' }) },
+  { id: 'preset:btc-exit', label: 'BTC Exit Signal', description: 'Combines with all existing exit rules using OR: BTC Crash or BTC Ranging. Live BTC exits can precede the next contract close.', keywords: ['BTC Bitcoin exit signal 出场'], create: () => ({ ...branch('any', [btcCrash(), btcRanging()]), name: 'BTC Exit Signal' }) },
   { id: 'preset:oi', label: 'OI rising', description: 'OI Trend is Rising. Live or closed readings, with an editable time requirement.', keywords: ['open interest trend', '持仓上涨', '持仓趋势'], create: () => condition('oiTrend', 'eq', '"rising"') },
   { id: 'preset:body', label: 'Body above EMA', description: 'Whole candle body above EMA 200 for 48 consecutive closed hours. Wicks are excluded.', keywords: ['body ema 200 48h candle open close', 'K线 实体 均线 连续'], create: () => ({ ...branch('every', [branch('all', [condition('Open', 'gt', 'EMA(200)'), condition('Close', 'gt', 'EMA(200)')])], 48), mode: 'closed' as const }) },
   { id: 'preset:volume', label: 'Volume surge', description: 'Quote volume greater than 2 × the mean of the previous 20 closed candles. Excludes the evaluated hour.', keywords: ['volume average mean 20 two times', '成交量 放量 均量 两倍'], create: () => condition('Volume', 'gt', '(mean(lag(Volume, 1), 20) * 2)') },
@@ -23,7 +29,7 @@ export const visualPresets = [
 ]
 export function conditionLibrary(metrics: FilterMetric[], templates: ExpressionTemplate[] = expressionTemplates): LibraryItem[] {
   return [
-    ...visualPresets.map(p => ({ ...p, group: 'Ready to use' })),
+    ...visualPresets.map(p => ({ ...p, group: p.id.startsWith('preset:btc-') ? 'BTC Market Context' : 'Ready to use' })),
     ...metrics.map(metric => ({ id: `metric:${metric.key}`, label: metric.label, group: metric.group, description: metric.description, keywords: [metric.key, ...(metric.aliases ?? [])], unit: metric.unit, metric,
       create: () => condition(metric.key, metric.numeric ? 'gte' : 'eq', metric.numeric ? metric.unit === '0–100' ? '50' : '0' : JSON.stringify(metric.choices[0]?.value ?? '')) })),
     ...templates.map(template => ({ id: `function:${template.name}`, label: template.label, group: template.group === 'Expression functions' ? 'Value blocks' : template.group, description: template.description, keywords: [template.name], unit: template.unit, template,
@@ -34,6 +40,13 @@ export function conditionLibrary(metrics: FilterMetric[], templates: ExpressionT
 }
 export function addLibraryRule(config: FilterConfigV2, selectedId: string | null, item: LibraryItem): { config: FilterConfigV2; selectedId: string } {
   const child = item.create()
+  if (['preset:btc-entry', 'preset:btc-exit'].includes(item.id)) {
+    const kind: RuleKind = item.id === 'preset:btc-entry' ? 'all' : 'any'
+    const root = config.root
+    const combined = root.children.length === 0 ? { ...root, kind, children: [child] } : root.kind === kind && root.mode === 'live'
+      ? { ...root, children: [...root.children, child] } : branch(kind, [root, child])
+    return { config: { ...config, root: combined }, selectedId: child.id }
+  }
   let target = selectedId ? findRule(config.root, selectedId) : config.root
   if (target && !canReceiveChildren(target)) target = findParent(config.root, target.id)
   while (target && !canReceiveChildren(target)) target = findParent(config.root, target.id)
@@ -65,7 +78,7 @@ export const anchorOffset = (root: RuleNode, id: string) => rulePath(root, id).f
 export function topLevelSelection(root: RuleNode, ids: string[]): string[] {
   return ids.filter(id => id !== root.id && findRule(root, id) && !rulePath(root, id).slice(0, -1).some(n => ids.includes(n.id)))
 }
-export const timeWrapper = (n: RuleNode) => ['every', 'recent', 'count'].includes(n.kind)
+export const timeWrapper = (n: RuleNode) => ['every', 'recent', 'count', 'cooldown'].includes(n.kind)
 export function renameValueReferences(config: FilterConfigV2, symbols: Record<string, string>, expressions: Record<string, EditorExpression>): FilterConfigV2 {
   const change = (tree: EditorExpression): EditorExpression => {
     const next = { ...tree, arguments: tree.arguments.map(change) }
@@ -122,6 +135,7 @@ export function ruleSentence(n: RuleNode, metrics: FilterMetric[], expressions: 
   if (n.kind === 'every') return `${child} · every hour for ${n.hours}h`
   if (n.kind === 'recent') return `${child} · at least once in ${n.hours}h`
   if (n.kind === 'count') return `${child} · ${n.comparison === 'between' ? `between ${n.minimum} and ${n.upper}` : `${comparisons.find(c => c[0] === n.comparison)?.[1] ?? n.comparison} ${n.minimum}`} times in ${n.hours}h`
+  if (n.kind === 'cooldown') return `${child} · cooldown ${n.hours}h${n.hours === 0 ? ' (disabled)' : ''}`
   const left = valueLabel(n.left, metrics, expressions, templates), right = valueLabel(n.right, metrics, expressions, templates)
   if (n.kind.startsWith('cross')) return `${left} crosses ${n.kind === 'crossup' ? 'above' : 'below'} ${right}`
   const op: Record<string, string> = { eq: 'is', neq: 'is not', gt: '>', gte: '≥', lt: '<', lte: '≤', 'abs-gte': 'absolute value ≥', 'abs-lte': 'absolute value ≤', positive: 'is positive', negative: 'is negative', zero: 'is zero', present: 'is available', missing: 'is unavailable' }
@@ -133,6 +147,7 @@ export function ruleHelp(kind: RuleKind): string {
     condition: 'Compare constants, indicators and reusable values. Only True selects a market. Available / Unavailable can explicitly select missing data.',
     every: 'Requires every hourly slot to match, including the evaluated hour. Missing slots are not skipped.', recent: 'At least one matching hour in the full window, including the evaluated hour. Use this to find already completed sequences.',
     count: 'Counts matching hours in the full window. Missing hours remain Unknown whenever they could change the answer.',
+    cooldown: 'Triggers immediately and stays active for the configured hours after the last match. 0h disables the cooldown. Live triggers are retained in memory; historical studies use hourly samples.',
     crossup: 'Previous hour ≤ reference; evaluated hour strictly > reference. Equality is allowed only at the starting point.', crossdown: 'Previous hour ≥ reference; evaluated hour strictly < reference. Equality is allowed only at the starting point.',
     sequence: 'Stages occur in order at different hours. Each gap is measured from the previous stage; the last stage must occur at the evaluated hour. Captured values stay frozen along each feasible path.',
   }

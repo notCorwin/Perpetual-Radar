@@ -22,7 +22,7 @@ export function TraceNode({ trace, config, context }: { trace: FilterTrace; conf
   return <details open className="rounded-lg border p-3">
     <summary className="flex cursor-pointer list-none items-center gap-2 text-sm"><Truth value={trace.result} /><span className="min-w-0 flex-1 break-words font-medium">{node ? node.name || ruleSentence(node, context.metrics, context.expressions, context.templates) : trace.label}</span><time className="shrink-0 text-xs text-muted-foreground" dateTime={new Date(trace.hour).toISOString()}>{new Date(trace.hour).toLocaleString("en-US", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</time></summary>
     <div className="mt-2 flex flex-col gap-2">
-      <FilterReadings readings={trace.readings} {...context} />
+      <FilterReadings readings={trace.readings} readingSources={trace.readingSources} {...context} />
       {trace.reason && <p className="text-xs text-muted-foreground">{trace.reason}</p>}
       {trace.eventHours.length > 0 && <p className="text-xs text-muted-foreground">Event path: {trace.eventHours.map(hour => new Date(hour).toLocaleString("en-US")).join(" → ")}</p>}
       {trace.children.length > 0 && <div className="ml-2 flex flex-col gap-2 border-l pl-3">{trace.children.slice(0, limit).map((child, index) => <TraceNode key={`${child.id}:${child.hour}:${index}`} trace={child} config={config} context={context} />)}{trace.children.length > limit && <Button type="button" variant="outline" size="sm" onClick={() => setLimit(limit + 50)}>Show more hourly decisions</Button>}</div>}

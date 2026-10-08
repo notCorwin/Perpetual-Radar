@@ -13,7 +13,7 @@ export type StudySpec = {
 }
 export type ResearchInstrument = { id: string; listedAt?: number; delistedAt?: number; verified: boolean; contractValue?: number; source: string; observedAt: number }
 export type ResearchSource = { id: string; instrument: string; kind: string; from: number; through: number; filename: string; url: string; sizeBytes?: number; archive: boolean; module?: number; cached: boolean; rawHash?: string }
-export type DataPlan = { id: string; spec: StudySpec; instruments: ResearchInstrument[]; from: number; through: number; warmupHours: number; sources: ResearchSource[]; coverage: ResearchCoverage[]; cachedHours: number; requestedHours: number; warnings: string[]; unknownInstruments: string[] }
+export type DataPlan = { id: string; spec: StudySpec; instruments: ResearchInstrument[]; referenceInstruments?: ResearchInstrument[]; from: number; through: number; warmupHours: number; sources: ResearchSource[]; coverage: ResearchCoverage[]; cachedHours: number; requestedHours: number; warnings: string[]; unknownInstruments: string[] }
 export type ResearchStudy = { id: string; spec: StudySpec; planID: string; manifestID?: string; createdAt: number; phase: string }
 export type ResearchJob = { id: string; phase: string; completed: number; total: number; message: string; error: string; resultID?: string }
 export type ResearchOutcome = { hours: number; gross?: number; net?: number; mfe?: number; mae?: number; reason?: string; netReason?: string }
@@ -25,7 +25,7 @@ export type ResearchSummary = {
 }
 export type StudyReport = { studyID: string; manifestID: string; spec: StudySpec; summaries: ResearchSummary[]; evaluated: number; unknown: number; directionless: number; commonPool: number; uncertain: number; baseline: number; warnings: string[]; completedAt: number; long?: LongStudyReport }
 export type ResearchCoverage = { instrument: string; kind: string; available: number; expected: number; first?: number; last?: number; gaps: { from: number; through: number }[] }
-export type DataManifest = { id: string; digest: string; from: number; through: number; parser: string; engine: string; sourceRevision: string; instruments: ResearchInstrument[]; unknownInstruments: string[]; warnings: string[]; coverage: ResearchCoverage[]; sources: ResearchSource[] }
+export type DataManifest = { id: string; digest: string; from: number; through: number; parser: string; engine: string; sourceRevision: string; instruments: ResearchInstrument[]; referenceInstruments?: ResearchInstrument[]; unknownInstruments: string[]; warnings: string[]; coverage: ResearchCoverage[]; sources: ResearchSource[] }
 export type ResearchChartData = ChartResponse & { endHour: number; oldestHour?: number; latestHour?: number; signalHour: number; manifestID: string }
 export type ResearchRequest = { action: string; spec?: StudySpec; refresh?: boolean; planID?: string; studyID?: string; eventID?: string; offset?: number; endHour?: number; kind?: string }
 export type ResearchResponse = { jobID?: string; job?: ResearchJob | null; studies?: ResearchStudy[]; plan?: DataPlan; estimatedBytes?: number; study?: ResearchStudy; report?: StudyReport | null; manifest?: DataManifest | null; events?: ResearchEvent[]; count?: number; trades?: ResearchLongTrade[]; chart?: ResearchChartData; cacheDirectory?: string; cachedRows?: number; rawFiles?: number; bytesRemoved?: number; ok?: boolean; cancelled?: boolean }

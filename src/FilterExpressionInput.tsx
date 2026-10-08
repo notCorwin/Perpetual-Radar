@@ -50,7 +50,7 @@ export function ExpressionInput({ label, displayLabel = label, value, onChange, 
   }
   const insert = (next: EditorExpression) => { changeTree(next, true); setCustom(false); selectedExpression.current = true; setOpen(false); trigger.current?.focus() }
   const shared = { metrics, definitions, units, expressions, templates, onExpressionDraft }
-  const wrappers = templates.filter(item => item.parameters[0]?.kind === "expression" && (!["category", "text"].includes(resolvedUnit) || ["closed", "live"].includes(item.name)))
+  const wrappers = templates.filter(item => item.parameters[0]?.kind === "expression" && (!["category", "text"].includes(resolvedUnit) || ["closed", "live", "BTC"].includes(item.name)))
   const hasParts = ["binary", "unary"].includes(tree.kind) || tree.kind === "call" && template
   return <FieldGroup className="gap-2" data-expression-field={label} data-expression-source={value}>
     <Field>
@@ -94,7 +94,7 @@ export function ExpressionInput({ label, displayLabel = label, value, onChange, 
         {template && tree.kind === "call" && <>
           {template.parameters.map((parameter, index) => parameter.kind === "number" ? <Field key={index}>
             <FieldLabel htmlFor={`${fieldID}-${index}`}>{parameter.label}</FieldLabel><Input id={`${fieldID}-${index}`} type="number" min={parameter.minimum} step={parameter.step} value={tree.arguments[index]?.value ?? tree.arguments[index]?.source ?? ""} aria-label={`${label} ${parameter.label}`} onChange={event => changeTree(withExpressionArguments(tree, index, numberExpression(event.target.value)))} /><FieldDescription>{parameter.unit}</FieldDescription>
-          </Field> : <ExpressionInput key={index} label={`${label} ${parameter.label}`} displayLabel={parameter.label} value={tree.arguments[index]?.source ?? ""} expression={tree.arguments[index]} onChange={(next, nextTree) => changeTree(withExpressionArguments(tree, index, nextTree ?? rawExpression(next)))} {...shared} />)}
+          </Field> : parameter.kind === 'choice' ? <Field key={index}><FieldLabel>{parameter.label}</FieldLabel><ExpressionSelect label={`${label} ${parameter.label}`} value={tree.arguments[index]?.value ?? 'aligned'} choices={(parameter.choices ?? []).map(choice => [choice.value, choice.label])} onChange={value => changeTree(withExpressionArguments(tree, index, { ...rawExpression(JSON.stringify(value), 'category'), kind: 'text', value }))} /></Field> : <ExpressionInput key={index} label={`${label} ${parameter.label}`} displayLabel={parameter.label} value={tree.arguments[index]?.source ?? ""} expression={tree.arguments[index]} onChange={(next, nextTree) => changeTree(withExpressionArguments(tree, index, nextTree ?? rawExpression(next)))} {...shared} />)}
           <FieldDescription>{template.description}</FieldDescription>
         </>}
         {tree.kind === "binary" && <>
