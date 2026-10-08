@@ -46,6 +46,7 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var launchAtLogin = "disabled"
     var loginSettingsOpenCount = 0
     let worker = FilterEvaluationWorker()
+    let longWorker = LongDecisionWorker()
     init(root: URL) throws {
         self.root = root; suite = "RuleUI-\(UUID())"
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
@@ -81,6 +82,33 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         if let parameters = request["research"] as? [String: Any], let research {
             Task { do { replyHandler(try await research.handle(parameters), nil) } catch { replyHandler(nil, error.localizedDescription) } }; return
         }
+        if let parameters = request["longDecision"] as? [String: Any] {
+            Task {
+                do {
+                    let action = parameters["action"] as? String
+                    if action == "open" || action == "close" {
+                        // The fixture universe is held by this bridge, rather than
+                        // Radar's network collector. Keep the production universe
+                        // check intact and persist records through the same Store.
+                        let store = try Store(url: directory.appendingPathComponent("radar.sqlite3"))
+                        guard let id = parameters["strategyID"] as? String, let instrument = parameters["instrument"] as? String,
+                              let price = parameters["price"] as? Double, let timestamp = parameters["timestamp"] as? Int64,
+                              action == "close" || contexts.contains(where: { $0.id == instrument }) else { throw FilterError("Choose an available fixture contract.") }
+                        try store.trackLong(strategyID: id,instrument: instrument,price: price,timestamp: timestamp,close: action == "close")
+                    }
+                    var response = try await radar.longDecisionRequest(["evaluate", "open", "close"].contains(action ?? "") ? ["action": "inventory"] : parameters)
+                    if parameters["action"] as? String == "evaluate" {
+                        let strategies = try JSONDecoder().decode([LongStrategy].self, from: JSONSerialization.data(withJSONObject: response["strategies"]!))
+                        let positions = try JSONDecoder().decode([LongTrackedPosition].self, from: JSONSerialization.data(withJSONObject: response["positions"]!))
+                        if let strategy = strategies.first(where: { $0.id == parameters["strategyID"] as? String }) {
+                            let result = try await longWorker.evaluate(contexts, strategy: strategy, positions: positions, forming: parameters["forming"] as? Bool == true, available: !radar.monitoringPaused, detailID: parameters["instrument"] as? String)
+                            response["decisions"] = try JSONSerialization.jsonObject(with: Data(try researchJSON(result).utf8)); response["rows"] = rows; response["revision"] = revision
+                        }
+                    }
+                    response["paused"] = radar.monitoringPaused; replyHandler(response, nil)
+                } catch { replyHandler(nil, error.localizedDescription) }
+            }; return
+        }
         radarRequests += 1
         if request["backgroundMonitoringEnabled"] != nil || request["notificationsEnabled"] != nil || request["notificationAction"] != nil || request["monitoringPaused"] != nil || request["launchAtLogin"] != nil {
             do {
@@ -108,22 +136,22 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
             return
         }
         if let compile = request["compileMarketFilters"] as? [String: Any] { replyHandler(radar.compileMarketFilters(compile), nil); return }
-        if let preview = request["previewMarketFilters"] as? [String: String] {
+        if let preview = request["previewMarketFilters"] as? [String: Any] {
             var original = snapshot()
             if pulseRows { pulse += 0.01; original["rows"] = rows.map { var row = $0; row["price"] = 110 + pulse; return row } }
-            let source = preview["filtersJSON"]!, token = preview["token"]!, delay = previewDelay
+            let source = preview["filtersJSON"] as! String, token = preview["token"] as! String, delay = previewDelay
             Task {
                 do {
                     let filter = try FilterCompiler.compile(FilterConfigV2.decode(source))
-                    let results = await worker.evaluate(contexts, filter: filter)
+                    let results = await worker.evaluate(contexts.map { LongDecision.context($0, forming: preview["atClose"] as? Bool != true) }, filter: filter)
                     if delay > 0 { try await Task.sleep(nanoseconds: delay) }
                     var result = original; result["filterToken"] = token; result["filterResults"] = results.mapValues(\.rawValue); result["historyProgress"] = ["pending": 0, "completed": 0, "error": ""]
                     replyHandler(result, nil)
                 } catch { replyHandler(nil, String(describing: error)) }
             }; return
         }
-        if let explain = request["explainMarketFilters"] as? [String: String], let market = contexts.first(where: { $0.id == explain["instId"] }) {
-            do { let filter = try FilterCompiler.compile(FilterConfigV2.decode(explain["filtersJSON"]!)); replyHandler(["instId": market.id, "filterToken": explain["token"]!, "revision": revision, "trace": FilterEvaluator(market: market, filter: filter).evaluate(explain: true).snapshot], nil) }
+        if let explain = request["explainMarketFilters"] as? [String: Any], let market = contexts.first(where: { $0.id == explain["instId"] as? String }) {
+            do { let filter = try FilterCompiler.compile(FilterConfigV2.decode(explain["filtersJSON"] as! String)); replyHandler(["instId": market.id, "filterToken": explain["token"]!, "revision": revision, "trace": FilterEvaluator(market: LongDecision.context(market, forming: explain["atClose"] as? Bool != true), filter: filter).evaluate(explain: true).snapshot], nil) }
             catch { replyHandler(nil, String(describing: error)) }; return
         }
         if let json = request["marketFiltersJSON"] as? String {
@@ -205,6 +233,84 @@ final class RuleEditorUITests: XCTestCase {
             window.setFrameOrigin(NSPoint(x: edge + 1000, y: 0))
             window.orderBack(nil)
         }
+    }
+
+    @MainActor
+    func testLongFiltersLiveTrackingPairedBacktestEvidenceAndExportsInNativeWebKit() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        let directory = bridge.directory.appendingPathComponent("Research"), store = try ResearchStore(directory: directory)
+        try ResearchFixture.seed(store)
+        bridge.research = try ResearchController(directory: directory,transport: ResearchFixtureTransport(),radarURL: bridge.directory.appendingPathComponent("absent"),exportDestination: { kind,_ in directory.appendingPathComponent("long-\(kind).csv") })
+        let originalRadarRules = bridge.radar.marketFiltersV2JSON
+        configuration.userContentController.addScriptMessageHandler(bridge,contentWorld: .page,name: "radar")
+        configuration.setURLSchemeHandler(bridge,forURLScheme: "radar")
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0,y: 0,width: 1440,height: 900),styleMask: [.titled,.closable,.resizable],backing: .buffered,defer: false)
+        let view = WKWebView(frame: .zero,configuration: configuration), background = WindowBackgroundView(contentView: view)
+        bridge.windowBackground = background; window.contentView = background; present(window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar",contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view,"Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        try await click(view,"Long Decisions")
+        try await wait(view,"document.querySelector('[data-long-decisions]') !== null")
+        XCTAssertEqual(bridge.foregroundWorkspace,"radar","Long decisions keep the on-demand collector available.")
+        try await input(view,"#long-strategy-name","WK Long decisions")
+        try await click(view,"Formula")
+        try await input(view,"section[aria-label='Entry filter'] textarea","Close > 100",textarea: true)
+        try await click(view,"Exit filter")
+        try await click(view,"Formula")
+        try await input(view,"section[aria-label='Exit filter'] textarea","LongReturn >",textarea: true)
+        try await wait(view,"document.querySelector('[data-long-decisions] button').closest('main').innerText.includes('Last valid preview') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Save strategy' && b.disabled)")
+        try await input(view,"section[aria-label='Exit filter'] textarea","LongReturn >= 5 OR LongHeldHours >= 3",textarea: true)
+        try await click(view,"Save strategy")
+        try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Enter Long')")
+        XCTAssertEqual(bridge.radar.marketFiltersV2JSON,originalRadarRules,"Strategy edits must not change Radar filters.")
+        try await assertSharedSurfaces(view,opacity: bridge.radar.frostedBackgroundOpacity)
+        try await click(view,"Explain MKT000-USDT-SWAP decision")
+        try await wait(view,"document.querySelector('[role=dialog]')?.innerText.includes('Inactive while flat')")
+        try await dismissFloating(view)
+        try await input(view,"#long-search","MKT000")
+        try await click(view,"Record entry")
+        try await input(view,"#long-record-price","110")
+        let actualTime = Date(timeIntervalSince1970: Double(bridge.contexts[0].hour-hourMS)/1000)
+        let formatter = DateFormatter(); formatter.timeZone = TimeZone(secondsFromGMT: 0); formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        try await input(view,"#long-record-time",formatter.string(from: actualTime))
+        try await click(view,"Save tracking record")
+        try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Hold Long')")
+        var market = bridge.contexts[0]
+        let closed = market.hour-hourMS
+        market.candles[closed] = Candle(hour: closed,high: 122,low: 100,close: 120,quoteVolume: 100,baseVolume: 1,open: 105)
+        bridge.contexts[0] = market; bridge.revision += 1
+        try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Exit Long')")
+        try await click(view,"Record exit"); try await input(view,"#long-record-price","120"); try await click(view,"Save tracking record")
+        try await click(view,"Tracked positions")
+        try await wait(view,"document.querySelector('table[aria-label=\"Recorded Long exits\"] tbody')?.innerText.includes('MKT000-USDT-SWAP')")
+        try await click(view,"Backtest saved strategy")
+        try await wait(view,"document.querySelector('#study-name')?.value === 'WK Long decisions backtest'")
+        formatter.dateFormat = "yyyy-MM-dd"
+        try await input(view,"#study-from",formatter.string(from: Date(timeIntervalSince1970: Double(ResearchFixture.hour)/1000)))
+        try await input(view,"#study-through",formatter.string(from: Date(timeIntervalSince1970: Double(ResearchFixture.hour+192*hourMS)/1000)))
+        try await click(view,"Review data plan"); try await wait(view,"document.body.innerText.includes('This range is fully cached.')")
+        try await click(view,"Prepare Data"); try await wait(view,"document.body.innerText.includes('Frozen dataset') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Run Study')")
+        try await click(view,"Run Study")
+        try await wait(view,"document.querySelector('table[aria-label=\"Long backtest trades\"] tbody tr') !== null",seconds: 30)
+        try await assertSharedSurfaces(view,opacity: bridge.radar.frostedBackgroundOpacity)
+        try await click(view,"Inspect Long trade BTC-USDT-SWAP")
+        try await wait(view,"document.querySelector('section[aria-label=\"Frozen event chart\"] svg') !== null && document.querySelector('[role=dialog]')?.innerText.includes('Exit filter at the exit signal close')")
+        try await click(view,"Exit chart"); try await click(view,"Copy chart")
+        try await wait(view,"document.body.innerText.includes('Copied')"); XCTAssertEqual(bridge.chartSnapshotRGB.count,3)
+        try await dismissFloating(view)
+        for kind in ["summary","events"] {
+            try await click(view,"Export \(kind) CSV")
+            let file = directory.appendingPathComponent("long-\(kind).csv"), deadline = Date().addingTimeInterval(5)
+            while !FileManager.default.fileExists(atPath: file.path), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            let csv = try String(contentsOf: file,encoding: .utf8); XCTAssertTrue(csv.contains("data_digest"))
+            if kind == "events" { XCTAssertTrue(csv.contains("exit_trace_json")) }
+        }
+        try await click(view,"Long Decisions"); try await click(view,"Tracked positions")
+        try await wait(view,"document.querySelector('table[aria-label=\"Recorded Long exits\"] tbody')?.innerText.includes('MKT000-USDT-SWAP')")
+        XCTAssertEqual(bridge.foregroundWorkspace,"radar")
     }
 
     @MainActor
@@ -640,6 +746,8 @@ final class RuleEditorUITests: XCTestCase {
 
     @MainActor
     private func dismissFloating(_ view: WKWebView) async throws {
+        _ = try await js(view, "document.querySelector('[data-slot=\"dialog-content\"][data-state=\"open\"] [data-slot=\"dialog-close\"]')?.click(); true")
+        try await wait(view, "document.querySelector('[data-slot=\"dialog-content\"][data-state=\"open\"]') === null")
         _ = try await js(view, "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]')?.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); true")
         try await wait(view, "document.querySelector('[data-slot=\"popover-content\"][data-state=\"open\"]') === null")
         try await Task.sleep(nanoseconds: 150_000_000)
@@ -782,8 +890,9 @@ final class RuleEditorUITests: XCTestCase {
     }
     @MainActor
     private func click(_ view: WKWebView, _ label: String) async throws {
-        try await wait(view, "Array.from(document.querySelectorAll('button')).some(x => (x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))) && !x.disabled && x.getBoundingClientRect().height > 0)")
-        _ = try await js(view, "(() => { const x = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))); if (!x) throw new Error('Missing button: ' + \(formulaQuote(label))); x.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,button:0})); x.click(); return true; })()")
+        // Check and click in one renderer task so asynchronous native validation
+        // cannot disable a control between separate JavaScript evaluations.
+        try await wait(view, "(() => { const x = Array.from(document.querySelectorAll('button')).find(x => (x.textContent.trim() === \(formulaQuote(label)) || x.getAttribute('aria-label') === \(formulaQuote(label))) && !x.disabled && x.getBoundingClientRect().height > 0); if (!x) return false; x.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,button:0})); x.click(); return true; })()")
         if label == "Formula" { try await wait(view, "document.querySelector('textarea') !== null") }
         if label == "Add condition" {
             try await wait(view, "document.querySelector('[data-rule-library]') !== null")

@@ -47,13 +47,17 @@ struct StudySpec: Codable, Sendable {
     var costs: ResearchCosts?
     func validate() throws {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 120,
-              ["filter", "score", "comparison"].contains(kind), ["auto", "Long", "Short"].contains(direction),
+              ["filter", "score", "comparison", "long"].contains(kind), ["auto", "Long", "Short"].contains(direction),
               ["entries", "hourly"].contains(sampling), !rules.isEmpty, kind != "comparison" || rules.count >= 2,
               through % hourMS == 0, through <= researchNow() / hourMS * hourMS,
               from.map({ $0 >= 0 && $0 % hourMS == 0 && $0 < through }) ?? true else {
             throw FilterError("Choose a study name, complete rules, direction, sampling, and a valid completed-hour range.")
         }
         for rule in rules { _ = try FilterCompiler.compile(FilterConfigV2.decode(rule.filtersJSON)) }
+        if kind == "long" {
+            guard direction == "Long", rules.count == 2 else { throw FilterError("A Long strategy needs exactly one entry filter and one exit filter.") }
+            _ = try LongStrategy(name: String(name.prefix(80)), entryJSON: rules[0].filtersJSON, exitJSON: rules[1].filtersJSON).compiled()
+        }
         try costs?.validate()
     }
 }
@@ -148,6 +152,8 @@ struct Checkpoint: Codable, Sendable {
     var instrumentIndex = 0
     var nextHour: Int64?
     var episodes: [String: ResearchEpisode] = [:]
+    var longPosition: LongStudyPosition?
+    var longCounters: LongStudyCounters?
     var updatedAt = researchNow()
 }
 
@@ -253,6 +259,7 @@ struct StudyReport: Codable, Sendable {
     var baseline: Int
     var commonPool: Int
     var warnings: [String]
+    var long: LongStudyReport?
     var completedAt = researchNow()
 }
 

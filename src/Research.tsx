@@ -16,6 +16,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TraceNode } from '@/FilterExplanation'
 import { MarketOpportunity } from '@/MarketOpportunity'
 import { MarketListViewport } from '@/MarketListViewport'
+import { LongTradeResults } from '@/LongTradeResults'
 import { ResearchChart } from '@/ResearchChart'
 import { emptyFilterConfig, parseFilterConfig, type FilterTrace } from '@/rule-engine'
 import { keepSnapshotValue } from '@/market-snapshot'
@@ -40,14 +41,14 @@ function SummaryTable({ rows, report }: { rows: ResearchSummary[]; report: Study
   </Table>
 }
 
-export function Research({ inputs, onBack }: { inputs: ResearchInputs; onBack: () => void }) {
-  const [kind, setKind] = useState<StudySpec['kind']>('filter'), [name, setName] = useState('Signal study')
-  const [frozenRules, setFrozenRules] = useState<(StudyRule & { id: string })[]>([])
-  const [ruleID, setRuleID] = useState('current'), [compareID, setCompareID] = useState('')
-  const [from, setFrom] = useState(''), [through, setThrough] = useState(new Date().toISOString().slice(0, 10))
-  const [instrumentText, setInstrumentText] = useState('')
-  const [direction, setDirection] = useState<StudySpec['direction']>('auto'), [sampling, setSampling] = useState<StudySpec['sampling']>('entries')
-  const [fees, setFees] = useState({ entry: '', exit: '', slip: '' })
+export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: { inputs: ResearchInputs; onBack: () => void; initialSpec?: StudySpec | null; backLabel?: string }) {
+  const [kind, setKind] = useState<StudySpec['kind']>(initialSpec?.kind ?? 'filter'), [name, setName] = useState(initialSpec?.name ?? 'Signal study')
+  const [frozenRules, setFrozenRules] = useState<(StudyRule & { id: string })[]>(() => initialSpec?.rules.map((r, i) => ({ ...r, id: 'seed:' + i })) ?? [])
+  const [ruleID, setRuleID] = useState(initialSpec ? 'seed:0' : 'current'), [compareID, setCompareID] = useState(initialSpec ? 'seed:1' : '')
+  const [from, setFrom] = useState(initialSpec?.from == null ? '' : new Date(initialSpec.from).toISOString().slice(0, 10)), [through, setThrough] = useState(() => new Date(initialSpec?.through ?? Date.now()).toISOString().slice(0, 10))
+  const [instrumentText, setInstrumentText] = useState(initialSpec?.instruments.join(', ') ?? '')
+  const [direction, setDirection] = useState<StudySpec['direction']>(initialSpec?.direction ?? 'auto'), [sampling, setSampling] = useState<StudySpec['sampling']>(initialSpec?.sampling ?? 'entries')
+  const [fees, setFees] = useState({ entry: initialSpec?.costs ? String(initialSpec.costs.entryFeeBps) : '', exit: initialSpec?.costs ? String(initialSpec.costs.exitFeeBps) : '', slip: initialSpec?.costs ? String(initialSpec.costs.slippageBps) : '' })
   const [tab, setTab] = useState('configure'), [horizon, setHorizon] = useState('6'), [scoreView, setScoreView] = useState('Full')
   const [job, setJob] = useState<ResearchJob | null>(null), [studies, setStudies] = useState<ResearchStudy[]>([])
   const [plan, setPlan] = useState<DataPlan | null>(null), [estimatedBytes, setEstimatedBytes] = useState(0), [sourcePage, setSourcePage] = useState(0)
@@ -113,12 +114,13 @@ export function Research({ inputs, onBack }: { inputs: ResearchInputs; onBack: (
   }
   const createPlan = (refresh = false) => perform(async () => {
     const chosen = options.find(o => o.id === ruleID), comparison = options.find(o => o.id === compareID)
-    if (!chosen || kind === 'comparison' && (!comparison || chosen.id === comparison.id)) throw new Error('Choose two distinct complete rule snapshots to compare.')
+    if (!chosen || kind === 'long' && !comparison) throw new Error('Choose both the entry and exit filter snapshots.')
+    if (kind === 'comparison' && (!comparison || chosen.id === comparison.id)) throw new Error('Choose two distinct complete rule snapshots to compare.')
     const allEmpty = Object.values(fees).every(value => !value.trim())
     if (!allEmpty && Object.values(fees).some(value => !value.trim() || !Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) >= 10_000)) throw new Error('Enter all three costs in basis points, or leave all three blank for gross returns.')
-    const spec: StudySpec = { name: name.trim(), kind, rules: [chosen, ...(kind === 'comparison' && comparison ? [comparison] : [])].map(o => ({ name: o.name, filtersJSON: o.filtersJSON })),
+    const spec: StudySpec = { name: name.trim(), kind, rules: [chosen, ...((kind === 'comparison' || kind === 'long') && comparison ? [comparison] : [])].map(o => ({ name: o.name, filtersJSON: o.filtersJSON })),
       instruments: instrumentText.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean), ...researchDateRange(from, through),
-      direction, sampling, costs: allEmpty ? null : { entryFeeBps: Number(fees.entry), exitFeeBps: Number(fees.exit), slippageBps: Number(fees.slip) } }
+      direction: kind === 'long' ? 'Long' : direction, sampling, costs: allEmpty ? null : { entryFeeBps: Number(fees.entry), exitFeeBps: Number(fees.exit), slippageBps: Number(fees.slip) } }
     if (!spec.name) { document.getElementById('study-name')?.focus(); throw new Error('Give the study a name.') }
     setPlan(null); setStudy(null); setReport(null); setManifest(null)
     return requestResearch({ action: 'plan', spec, refresh })
@@ -143,13 +145,13 @@ export function Research({ inputs, onBack }: { inputs: ResearchInputs; onBack: (
     }
   }
   const coverage = manifest?.coverage ?? plan?.coverage ?? []
-  const selectedRows = report?.summaries.filter(s => s.hours === Number(horizon)) ?? []
+  const selectedRows = report?.summaries.filter(s => s.hours === (report?.long ? 0 : Number(horizon))) ?? []
   const resultRows = selectedRows.filter(s => !s.group.startsWith('Score ·'))
   const scoreRows = selectedRows.filter(s => s.group.startsWith('Score · ' + scoreView + ' ·') && (scoreView === 'Thresholds' ? true : !s.group.includes('≥')))
   const context = { metrics: inputs.metrics, expressions: {}, units: {}, templates: inputs.templates }
   return <MarketListViewport><main className="flex min-h-[inherit] flex-col gap-4 p-4 tabular-nums" data-research>
     <header className="flex items-center gap-3 border-b pb-3">
-      <Button variant="ghost" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Radar</Button>
+      <Button variant="ghost" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />{backLabel}</Button>
       <FlaskConical className="size-5" aria-hidden="true" /><h1 className="text-base font-semibold">Research</h1>
       <span className="flex-1 text-xs text-muted-foreground">OKX · Hourly close · Fixed local data</span>
       <Badge variant="outline"><Database data-icon="inline-start" aria-hidden="true" />{integer(cache.rows)} cached rows</Badge>
@@ -164,19 +166,19 @@ export function Research({ inputs, onBack }: { inputs: ResearchInputs; onBack: (
       <p className="text-xs text-muted-foreground">{job.total ? integer(job.completed) + ' / ' + integer(job.total) + ' work items · ' : ''}Pause or quit to save a checkpoint. Completed data stays on disk.</p>
     </section>}
     <Tabs value={tab} onValueChange={setTab}>
-      <TabsList variant="line"><TabsTrigger value="configure">Configure</TabsTrigger><TabsTrigger value="data">Data coverage</TabsTrigger><TabsTrigger value="results">Results</TabsTrigger><TabsTrigger value="scores">Score calibration</TabsTrigger><TabsTrigger value="history">Studies & cache</TabsTrigger></TabsList>
+      <TabsList variant="line"><TabsTrigger value="configure">Configure</TabsTrigger><TabsTrigger value="data">Data coverage</TabsTrigger><TabsTrigger value="results">Results</TabsTrigger>{!report?.long && kind !== 'long' && <TabsTrigger value="scores">Score calibration</TabsTrigger>}<TabsTrigger value="history">Studies & cache</TabsTrigger></TabsList>
       <TabsContent value="configure">
         <form onSubmit={e => { e.preventDefault(); void createPlan() }} className="flex flex-col gap-4">
           <FieldGroup className="grid grid-cols-2 items-start gap-6">
             <FieldSet><FieldLegend>Study configuration</FieldLegend><FieldDescription>Research samples original rules at each completed hourly close.</FieldDescription><FieldGroup>
               <Field><FieldLabel htmlFor="study-name">Study name</FieldLabel><Input id="study-name" name="studyName" autoComplete="off" value={name} onChange={e => setName(e.target.value)} disabled={busy} /></Field>
               <Field><FieldLabel>Research question</FieldLabel><ToggleGroup type="single" variant="outline" value={kind} disabled={busy} onValueChange={value => {
-                if (!value) return; setKind(value as StudySpec['kind']); if (value === 'score') { setRuleID('all'); setSampling('hourly') }
-              }} aria-label="Research question"><ToggleGroupItem value="filter">Filters</ToggleGroupItem><ToggleGroupItem value="score">Opportunity</ToggleGroupItem><ToggleGroupItem value="comparison">Compare rules</ToggleGroupItem></ToggleGroup></Field>
-              <Field><FieldLabel htmlFor="study-rule">{kind === 'score' ? 'Base universe rules' : 'Complete rule snapshot'}</FieldLabel><Select value={ruleID} disabled={busy} onValueChange={setRuleID}><SelectTrigger id="study-rule"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{options.map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>All conditions and original scoring weights are retained. Missing readings remain Unknown.</FieldDescription></Field>
-              {kind === 'comparison' && <Field><FieldLabel htmlFor="study-comparison">Compare with</FieldLabel><Select value={compareID} disabled={busy} onValueChange={setCompareID}><SelectTrigger id="study-comparison"><SelectValue placeholder="Choose another saved combination…" /></SelectTrigger><SelectContent><SelectGroup>{options.filter(o => o.id !== ruleID).map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>Both snapshots are recomputed on the same frozen data and common evaluable hours.</FieldDescription></Field>}
-              <Field><FieldLabel>Direction</FieldLabel><ToggleGroup type="single" variant="outline" value={direction} disabled={busy} onValueChange={value => { if (value) setDirection(value as StudySpec['direction']) }} aria-label="Study direction">{['auto', 'Long', 'Short'].map(value => <ToggleGroupItem key={value} value={value}>{value === 'auto' ? 'Original EMA direction' : value}</ToggleGroupItem>)}</ToggleGroup></Field>
-              <Field><FieldLabel>Signal sampling</FieldLabel><ToggleGroup type="single" variant="outline" value={kind === 'score' ? 'hourly' : sampling} disabled={busy || kind === 'score'} onValueChange={value => { if (value) setSampling(value as StudySpec['sampling']) }} aria-label="Signal sampling"><ToggleGroupItem value="entries">First entry per episode</ToggleGroupItem><ToggleGroupItem value="hourly">Every matching hour</ToggleGroupItem></ToggleGroup></Field>
+                if (!value) return; setKind(value as StudySpec['kind']); if (value === 'score') { setRuleID('all'); setSampling('hourly') } if (value === 'long') { setDirection('Long'); setSampling('entries') }
+              }} aria-label="Research question"><ToggleGroupItem value="long">Long entry / exit</ToggleGroupItem><ToggleGroupItem value="filter">Filters</ToggleGroupItem><ToggleGroupItem value="score">Opportunity</ToggleGroupItem><ToggleGroupItem value="comparison">Compare rules</ToggleGroupItem></ToggleGroup></Field>
+              <Field><FieldLabel htmlFor="study-rule">{kind === 'long' ? 'Entry filter snapshot' : kind === 'score' ? 'Base universe rules' : 'Complete rule snapshot'}</FieldLabel><Select value={ruleID} disabled={busy} onValueChange={setRuleID}><SelectTrigger id="study-rule"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{options.map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>All conditions and original scoring weights are retained. Missing readings remain Unknown.</FieldDescription></Field>
+              {(kind === 'comparison' || kind === 'long') && <Field><FieldLabel htmlFor="study-comparison">{kind === 'long' ? 'Exit filter snapshot' : 'Compare with'}</FieldLabel><Select value={compareID} disabled={busy} onValueChange={setCompareID}><SelectTrigger id="study-comparison"><SelectValue placeholder="Choose another saved combination…" /></SelectTrigger><SelectContent><SelectGroup>{options.filter(o => kind === 'long' || o.id !== ruleID).map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>{kind === 'long' ? 'Start flat. Entry applies while flat, exit while holding. Signals execute at the next hourly open; open trades stay open at the end.' : 'Both snapshots are recomputed on the same frozen data and common evaluable hours.'}</FieldDescription></Field>}
+              <Field><FieldLabel>Direction</FieldLabel><ToggleGroup type="single" variant="outline" value={direction} disabled={busy || kind === 'long'} onValueChange={value => { if (value) setDirection(value as StudySpec['direction']) }} aria-label="Study direction">{['auto', 'Long', 'Short'].map(value => <ToggleGroupItem key={value} value={value}>{value === 'auto' ? 'Original EMA direction' : value}</ToggleGroupItem>)}</ToggleGroup></Field>
+              <Field><FieldLabel>Signal sampling</FieldLabel><ToggleGroup type="single" variant="outline" value={kind === 'score' ? 'hourly' : sampling} disabled={busy || kind === 'score' || kind === 'long'} onValueChange={value => { if (value) setSampling(value as StudySpec['sampling']) }} aria-label="Signal sampling"><ToggleGroupItem value="entries">First entry per episode</ToggleGroupItem><ToggleGroupItem value="hourly">Every matching hour</ToggleGroupItem></ToggleGroup></Field>
             </FieldGroup></FieldSet>
             <FieldSet><FieldLegend>History and modeled costs</FieldLegend><FieldGroup>
               <Field><FieldLabel htmlFor="study-from">From (UTC date)</FieldLabel><Input id="study-from" name="studyFrom" type="date" value={from} onChange={e => setFrom(e.target.value)} disabled={busy} /><FieldDescription>Leave blank for the longest available history, including indicator warmup.</FieldDescription></Field>
@@ -211,16 +213,18 @@ export function Research({ inputs, onBack }: { inputs: ResearchInputs; onBack: (
         {!report ? <Empty><EmptyHeader><EmptyTitle>{study?.manifestID ? 'Ready to run' : 'No completed study selected'}</EmptyTitle><EmptyDescription>Prepare the fixed local dataset, run a study, or open an earlier result.</EmptyDescription></EmptyHeader>{study?.manifestID && <Button disabled={busy} onClick={() => void perform(() => requestResearch({ action: 'run', studyID: study.id }))}><Play data-icon="inline-start" aria-hidden="true" />Run Study</Button>}</Empty> : <>
           <div className="flex items-center gap-3"><h2 className="font-semibold">{report.spec.name}</h2><span className="flex-1 text-xs text-muted-foreground">{integer(report.evaluated)} rule-hours · {integer(report.unknown)} Unknown · {integer(report.directionless)} directionless · {integer(report.uncertain)} uncertain entries · {integer(report.baseline)} initial matches · {integer(report.commonPool)} common hours</span>
             <Button variant="outline" disabled={pending} onClick={() => void perform(() => requestResearch({ action: 'export', studyID: report.studyID, kind: 'summary' }))}>Export summary CSV</Button><Button variant="outline" disabled={pending} onClick={() => void perform(() => requestResearch({ action: 'export', studyID: report.studyID, kind: 'events' }))}>Export events CSV</Button></div>
-          <div className="flex items-center gap-4"><Field className="w-fit"><FieldLabel>Holding period</FieldLabel><ToggleGroup type="single" variant="outline" value={horizon} onValueChange={value => { if (value) setHorizon(value) }} aria-label="Holding period">{RESEARCH_HORIZONS.map(hours => <ToggleGroupItem key={hours} value={String(hours)}>{hours}h</ToggleGroupItem>)}</ToggleGroup></Field>
-            {view === 'scores' && <Field className="w-fit"><FieldLabel>Input coverage</FieldLabel><ToggleGroup type="single" variant="outline" value={scoreView} onValueChange={value => { if (value) setScoreView(value) }} aria-label="Score input coverage"><ToggleGroupItem value="Full">Full inputs</ToggleGroupItem><ToggleGroupItem value="Partial">Partial inputs</ToggleGroupItem><ToggleGroupItem value="Thresholds">Thresholds</ToggleGroupItem></ToggleGroup></Field>}</div>
+          {!report.long && <div className="flex items-center gap-4"><Field className="w-fit"><FieldLabel>Holding period</FieldLabel><ToggleGroup type="single" variant="outline" value={horizon} onValueChange={value => { if (value) setHorizon(value) }} aria-label="Holding period">{RESEARCH_HORIZONS.map(hours => <ToggleGroupItem key={hours} value={String(hours)}>{hours}h</ToggleGroupItem>)}</ToggleGroup></Field>
+            {view === 'scores' && <Field className="w-fit"><FieldLabel>Input coverage</FieldLabel><ToggleGroup type="single" variant="outline" value={scoreView} onValueChange={value => { if (value) setScoreView(value) }} aria-label="Score input coverage"><ToggleGroupItem value="Full">Full inputs</ToggleGroupItem><ToggleGroupItem value="Partial">Partial inputs</ToggleGroupItem><ToggleGroupItem value="Thresholds">Thresholds</ToggleGroupItem></ToggleGroup></Field>}</div>}
           <SummaryTable report={report} rows={view === 'results' ? resultRows : scoreView === 'Thresholds' ? selectedRows.filter(s => s.group.startsWith('Score · Full · ≥')) : scoreRows} />
           <p className="text-xs text-muted-foreground">Returns use 1 USDT initial notional and next-hour opens. Unknown, uncertain entry and purged boundary samples are excluded from main statistics. Net N includes only complete funding and settlement marks. Confidence intervals require 30 samples and 8 UTC weeks.</p>
+          {report.long ? <LongTradeResults report={report} inputs={inputs} manifest={manifest} /> : <>
           <h3 className="font-semibold">Signal events</h3>
           <Table aria-label="Signal events"><TableHeader><TableRow>{['Instrument', 'Signal close', 'Rules', 'Direction', 'Entry', 'Score inputs', 'Status', 'Split', 'Gross', 'Net', 'Inspect'].map(label => <TableHead key={label}>{label}</TableHead>)}</TableRow></TableHeader><TableBody>{events.map(e => {
             const outcome = e.outcomes.find(o => o.hours === Number(horizon))
             return <TableRow key={e.id}><TableCell>{e.instrument}</TableCell><TableCell>{researchTime(e.timestamp)}</TableCell><TableCell>{report.spec.rules[e.ruleIndex]?.name}</TableCell><TableCell>{e.direction}</TableCell><TableCell>{e.entry}</TableCell><TableCell>{e.score ?? '—'} · {e.scoreComplete ? 'Full' : 'Partial'}</TableCell><TableCell>{e.status}</TableCell><TableCell>{e.split}</TableCell><TableCell title={outcome?.reason} className={signed(outcome?.gross)}>{researchPercent(outcome?.gross)}</TableCell><TableCell title={outcome?.netReason} className={signed(outcome?.net)}>{researchPercent(outcome?.net)}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => setEvent(e)} aria-label={'Inspect ' + e.instrument + ' event'}>Inspect<ArrowRight data-icon="inline-end" aria-hidden="true" /></Button></TableCell></TableRow>
           })}</TableBody></Table>
           <div className="flex items-center gap-3"><Button variant="outline" disabled={offset === 0} onClick={() => void perform(() => pageEvents(report.studyID, Math.max(0, offset - 50)).then(() => undefined))}>Previous events</Button><span className="text-xs text-muted-foreground">{eventCount ? integer(offset + 1) + '–' + integer(Math.min(offset + events.length, eventCount)) : '0'} / {integer(eventCount)}</span><Button variant="outline" disabled={offset + 50 >= eventCount} onClick={() => void perform(() => pageEvents(report.studyID, offset + 50).then(() => undefined))}>Next events</Button></div>
+          </>}
         </>}
       </TabsContent>)}
       <TabsContent value="history" className="flex flex-col gap-4">

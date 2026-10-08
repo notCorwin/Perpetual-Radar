@@ -68,6 +68,12 @@ final class MonitorServiceTests: XCTestCase {
         try await wait("startup") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= 2 }
         let info = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(info["pid"] as? Int32)
         XCTAssertEqual(info["backgroundMonitoringEnabled"] as? Bool, false)
+        let longStrategy = LongStrategy(name: "Packaged Long",entryJSON: try FilterCompiler.compile(source: "Close > 0").config.json,exitJSON: try FilterCompiler.compile(source: "LongHeldHours >= 3").config.json)
+        let longReply = try await request(["longDecision": ["action": "save", "strategy": try JSONSerialization.jsonObject(with: Data(try researchJSON(longStrategy).utf8))]])
+        let savedLong = try XCTUnwrap(longReply["saved"] as? [String: Any])
+        XCTAssertEqual(savedLong["revision"] as? Int,1)
+        let liveLong = try await request(["longDecision": ["action": "evaluate", "strategyID": longStrategy.id]])
+        XCTAssertNotNil(liveLong["decisions"] as? [[String: Any]],"The packaged helper must serve the Long evaluation bridge.")
         _ = try await request(["workspace": "research"], interface: true)
         let samples = (try await request(["serviceInfo": true]))["samples"] as! Int
         try await Task.sleep(for: .milliseconds(350))
@@ -92,6 +98,9 @@ final class MonitorServiceTests: XCTestCase {
         let reopened = try launch()
         try await wait("reopened") { (try await request(["serviceInfo": true]))["pid"] != nil }
         let reopenedInfo = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(reopenedInfo["pid"] as? Int32)
+        let restoredLong = try await request(["longDecision": ["action": "inventory"]])
+        XCTAssertEqual(restoredLong["selectedID"] as? String,longStrategy.id)
+        XCTAssertEqual((restoredLong["strategies"] as? [[String: Any]])?.first?["exitJSON"] as? String,savedLong["exitJSON"] as? String)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(try researchJSON(store.get("checkpoint:\(studyID)", as: Checkpoint.self)), checkpoint, "Reopening must not resume research automatically.")
         _ = try await request(["workspace": "research", "research": ["action": "resume", "studyID": studyID]], interface: true)

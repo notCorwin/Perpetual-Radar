@@ -25,6 +25,8 @@ final class ResearchStore {
             try database.execute("CREATE TABLE IF NOT EXISTS research_outcomes (study TEXT, rule INTEGER, inst TEXT, ts INTEGER, hours INTEGER, gross REAL, net REAL, mfe REAL, mae REAL, reason TEXT, net_reason TEXT, PRIMARY KEY(study,rule,inst,ts,hours))")
             try database.execute("CREATE TABLE IF NOT EXISTS research_events (id TEXT PRIMARY KEY, study TEXT, ts INTEGER, json TEXT)")
             try database.execute("CREATE INDEX IF NOT EXISTS research_events_page ON research_events(study,ts,id)")
+            try database.execute("CREATE TABLE IF NOT EXISTS research_long_trades (id TEXT PRIMARY KEY, study TEXT, inst TEXT, ts INTEGER, json TEXT)")
+            try database.execute("CREATE INDEX IF NOT EXISTS research_long_trades_page ON research_long_trades(study,ts,id)")
         }
     }
 
@@ -174,6 +176,7 @@ final class ResearchStore {
     }
     func freeze(_ plan: DataPlan) throws -> DataManifest {
         var manifest = DataManifest(planID: plan.id, from: plan.from, through: plan.through, instruments: plan.instruments, warnings: plan.warnings, unknownInstruments: plan.unknownInstruments)
+        if plan.spec.kind == "long" { manifest.engine = LongStudyEngine.version }
         var hash = SHA256()
         try database.transaction {
             for instrument in plan.instruments {
@@ -228,7 +231,7 @@ final class ResearchStore {
     func deleteStudy(_ id: String) throws {
         let study = try get(id, as: ResearchStudy.self)
         try database.transaction {
-            for table in ["research_samples", "research_outcomes", "research_events"] { try database.execute("DELETE FROM \(table) WHERE study=?", [id]) }
+            for table in ["research_samples", "research_outcomes", "research_events", "research_long_trades"] { try database.execute("DELETE FROM \(table) WHERE study=?", [id]) }
             for key in [id, "checkpoint:\(id)", "report:\(id)"] { try database.execute("DELETE FROM research_objects WHERE id=?", [key]) }
             for table in ["research_pins", "research_source_pins"] { try database.execute("DELETE FROM \(table) WHERE manifest=?", [id]) }
             if let manifest = study?.manifestID {

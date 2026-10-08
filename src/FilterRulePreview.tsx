@@ -17,15 +17,15 @@ export function FilterTruthBadge({ value }: { value: FilterTruth | undefined }) 
 }
 function nodeTraces(trace: FilterTrace, id: string): FilterTrace[] { return [...(trace.id === id ? [trace] : []), ...trace.children.flatMap(child => nodeTraces(child, id))] }
 const formatHour = (hour: number) => new Date(hour).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-type Props = { nodeId: string; rows: NativeMarketRow[]; results: Record<string, FilterTruth>; filtersJSON: string | null; revision: number; instId: string | null; onSelect: (id: string) => void; onExplain: (id: string) => void; metrics: FilterMetric[]; expressions: Record<string, EditorExpression>; templates: ExpressionTemplate[]; units: Record<string, string>; valid: boolean }
+type Props = { atClose?: boolean; strategyID?: string; nodeId: string; rows: NativeMarketRow[]; results: Record<string, FilterTruth>; filtersJSON: string | null; revision: number; instId: string | null; onSelect: (id: string) => void; onExplain: (id: string) => void; metrics: FilterMetric[]; expressions: Record<string, EditorExpression>; templates: ExpressionTemplate[]; units: Record<string, string>; valid: boolean }
 function readingTraces(trace: FilterTrace): FilterTrace[] { return [...(Object.keys(trace.readings).length ? [trace] : []), ...trace.children.flatMap(readingTraces)] }
 function HourlyReading({ trace, context }: { trace: FilterTrace; context: ReadingContext }) {
   return <div data-surface="panel" className="flex flex-col gap-1 rounded-md border bg-card p-2"><div className="flex items-center justify-between gap-2"><time className="text-xs text-muted-foreground" dateTime={new Date(trace.hour).toISOString()}>{formatHour(trace.hour)}</time><FilterTruthBadge value={trace.result} /></div><FilterReadings readings={trace.readings} {...context} />{trace.reason && <FieldDescription>{trace.reason}</FieldDescription>}</div>
 }
-export function FilterRulePreview({ nodeId, rows, results, filtersJSON, revision, instId, onSelect, onExplain, metrics, expressions, templates, units, valid }: Props) {
+export function FilterRulePreview({ nodeId, rows, results, filtersJSON, revision, instId, onSelect, onExplain, metrics, expressions, templates, units, valid, atClose, strategyID }: Props) {
   const [open, setOpen] = useState(false), [search, setSearch] = useState('')
   const id = instId ?? rows[0]?.instId
-  const key = `${id ?? ''}|${filtersJSON ?? ''}`
+  const key = `${id ?? ''}|${filtersJSON ?? ''}|${atClose}|${strategyID ?? ''}`
   const [detail, setDetail] = useState<{ key: string; revision: number; trace: FilterTrace; error?: string } | null>(null)
   const [error, setError] = useState('')
   const [showChecks, setShowChecks] = useState(false), [checkLimit, setCheckLimit] = useState(50)
@@ -36,11 +36,11 @@ export function FilterRulePreview({ nodeId, rows, results, filtersJSON, revision
     if (!id || !filtersJSON) return
     let stopped = false
     const token = newRuleID()
-    void window.webkit.messageHandlers.radar.postMessage({ explainMarketFilters: { instId: id, filtersJSON, token } }).then(response => {
+    void window.webkit.messageHandlers.radar.postMessage({ explainMarketFilters: { instId: id, filtersJSON, token, atClose, strategyID } }).then(response => {
       if (!stopped && response.instId === id && previewResponseIsCurrent(response, token, revision)) { setDetail({ key, revision: response.revision, trace: response.trace }); setError('') }
     }).catch(cause => { if (!stopped) setError(cause instanceof Error ? cause.message : 'Cannot load the rule reading.') })
     return () => { stopped = true }
-  }, [id, filtersJSON, revision, key])
+  }, [id, filtersJSON, revision, key, atClose, strategyID])
   const filtered = rows.filter(row => row.instId.toLowerCase().includes(search.toLowerCase())).slice(0, 50)
   const selectedTrace = traces[0]
   const checks = traces.flatMap(readingTraces)

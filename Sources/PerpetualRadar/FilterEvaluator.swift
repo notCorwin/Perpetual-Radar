@@ -17,6 +17,8 @@ struct FilterMarketData: Sendable {
     var current: [String: FilterScalar] = [:]
     var previousEMA: Double?
     var historicalClose = false
+    var longEntryPrice: Double?
+    var longEnteredAt: Int64?
 }
 
 final class FilterEvaluator {
@@ -25,7 +27,7 @@ final class FilterEvaluator {
     private var cache: [String: FilterScalar] = [:]
     private var breaksCache: [String: (highBreakout: BreakResult, lowBreakdown: BreakResult)] = [:]
     init(market: FilterMarketData, filter: CompiledFilter, sharedReadings: [String: FilterScalar] = [:]) { self.market = market; self.filter = filter; cache = sharedReadings }
-    var sharedReadings: [String: FilterScalar] { cache.filter { $0.key.hasPrefix("metric|") || $0.key.hasPrefix("indicator|") } }
+    var sharedReadings: [String: FilterScalar] { cache.filter { ($0.key.hasPrefix("metric|") || $0.key.hasPrefix("indicator|")) && !$0.key.contains("LongEntryPrice") && !$0.key.contains("LongReturn") && !$0.key.contains("LongHeldHours") } }
     func evaluate(explain: Bool = false) -> FilterTrace {
         let root = filter.config.root
         if ["all", "any"].contains(root.kind), root.children.isEmpty {
@@ -68,6 +70,12 @@ final class FilterEvaluator {
         func fn(_ name: String, _ args: [Double]) -> FilterScalar { indicator(name.lowercased(), args, at: hour) }
         let b = bar(hour)
         switch key {
+        case "LongEntryPrice", "LongReturn", "LongHeldHours":
+            guard let price = market.longEntryPrice, price > 0, let entered = market.longEnteredAt,
+                  hour >= entered / hourMS * hourMS, min(hour+hourMS, market.now) >= entered else { return unknown("No Long was open at this reading", at: hour) }
+            if key == "LongEntryPrice" { return number(price) }
+            if key == "LongHeldHours" { return number(Double(min(hour+hourMS,market.now)-entered)/Double(hourMS)) }
+            return number(b.map { ($0.close/price-1)*100 }, "The Long return requires this hour's price.")
         case "Symbol": return .text(market.id)
         case "ListingAgeMonths":
             guard let listedAt = market.listedAt, listedAt > 0 else { return unknown("Listing date is unavailable", at: hour) }

@@ -30,14 +30,14 @@ export function TraceNode({ trace, config, context }: { trace: FilterTrace; conf
   </details>
 }
 
-type Props = ReadingContext & { open: boolean; onOpenChange: (open: boolean) => void; instId: string | null; onSelect: (id: string) => void; rows: NativeMarketRow[]; results: Record<string, FilterTruth>; filtersJSON: string | null; revision: number }
-export function FilterExplanation({ open, onOpenChange, instId, onSelect, rows, results, filtersJSON, revision, metrics, expressions, units, templates }: Props) {
+type Props = ReadingContext & { atClose?: boolean; strategyID?: string; open: boolean; onOpenChange: (open: boolean) => void; instId: string | null; onSelect: (id: string) => void; rows: NativeMarketRow[]; results: Record<string, FilterTruth>; filtersJSON: string | null; revision: number }
+export function FilterExplanation({ open, onOpenChange, instId, onSelect, rows, results, filtersJSON, revision, metrics, expressions, units, templates, atClose, strategyID }: Props) {
   const [search, setSearch] = useState(''), [limit, setLimit] = useState(50)
   const config = useMemo(() => filtersJSON ? parseFilterConfig(filtersJSON) : null, [filtersJSON])
   const searched = rows.filter(row => row.instId.toLowerCase().includes(search.trim().toLowerCase()))
   const context = { metrics, expressions, units, templates }
   const id = instId ?? rows[0]?.instId
-  const key = `${id ?? ""}|${filtersJSON ?? ""}`
+  const key = `${id ?? ""}|${filtersJSON ?? ""}|${atClose}|${strategyID ?? ""}`
   const [detail, setDetail] = useState<{ key: string; revision: number; trace: FilterTrace | null; error: string } | null>(null)
   const trace = detail?.key === key ? detail.trace : null
   const error = detail?.key === key && detail.revision >= revision ? detail.error : ""
@@ -46,11 +46,11 @@ export function FilterExplanation({ open, onOpenChange, instId, onSelect, rows, 
     if (!open || !id || !filtersJSON) return
     let stopped = false
     const token = newRuleID()
-    void window.webkit.messageHandlers.radar.postMessage({ explainMarketFilters: { instId: id, filtersJSON, token } }).then(response => {
+    void window.webkit.messageHandlers.radar.postMessage({ explainMarketFilters: { instId: id, filtersJSON, token, atClose, strategyID } }).then(response => {
       if (!stopped && response.instId === id && previewResponseIsCurrent(response, token, revision)) setDetail({ key, revision: response.revision, trace: response.trace, error: "" })
     }).catch(cause => { if (!stopped) setDetail(previous => ({ key, revision, trace: previous?.key === key ? previous.trace : null, error: cause instanceof Error ? cause.message : "Cannot explain this contract." })) })
     return () => { stopped = true }
-  }, [open, id, filtersJSON, revision, key])
+  }, [open, id, filtersJSON, revision, key, atClose, strategyID])
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="flex h-[min(calc(var(--market-list-layout-height)*0.85),60rem)] w-[min(calc(var(--market-list-layout-width)*0.92),84rem)] max-w-none scale-(--market-list-scale) flex-col gap-3 sm:max-w-none">
     <DialogHeader><DialogTitle>Market rule explanations</DialogTitle><DialogDescription>Inspect matching, unmatched, and unknown markets using the current valid preview. Times use your local time zone.</DialogDescription></DialogHeader>
     <div className="grid min-h-0 flex-1 grid-cols-[18rem_minmax(0,1fr)] gap-4">

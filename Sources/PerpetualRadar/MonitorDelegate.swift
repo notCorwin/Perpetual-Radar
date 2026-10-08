@@ -269,6 +269,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return decorated([:])
         }
         guard let radar else { throw FilterError(startupError.isEmpty ? "Collector is starting." : startupError) }
+        if let request = parameters["longDecision"] as? [String: Any] { return decorated(try await radar.longDecisionRequest(request)) }
         if let requested = parameters["monitoringPaused"] {
             guard let paused = requested as? Bool else { throw FilterError("Invalid monitoring setting.") }
             try setPaused(paused)
@@ -290,10 +291,10 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let request = parameters["compileMarketFilters"] as? [String: Any] { return radar.compileMarketFilters(request) }
         if let request = parameters["previewMarketFilters"] as? [String: Any], let json = request["filtersJSON"] as? String, let token = request["token"] as? String {
-            return decorated(try await radar.previewMarketFilters(filtersJSON: json, token: token))
+            return decorated(try await radar.previewMarketFilters(filtersJSON: json, token: token, atClose: request["atClose"] as? Bool == true, strategyID: request["strategyID"] as? String))
         }
         if let request = parameters["explainMarketFilters"] as? [String: Any], let json = request["filtersJSON"] as? String, let token = request["token"] as? String, let id = request["instId"] as? String {
-            return try await radar.explainMarketFilters(instId: id, filtersJSON: json, token: token)
+            return try await radar.explainMarketFilters(instId: id, filtersJSON: json, token: token, atClose: request["atClose"] as? Bool == true, strategyID: request["strategyID"] as? String)
         }
         if let id = parameters["chartInstId"] as? String {
             if let endHour = parameters["chartEndHour"] as? Int64 { return await radar.loadHistoricalChart(id, endingAt: endHour) }

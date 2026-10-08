@@ -9,8 +9,10 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/c
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { LongDecisions } from "@/LongDecisions"
+import type { LongRequest, LongResponse } from "@/long-decisions"
 import { Research } from "@/Research"
-import type { ResearchInputs, ResearchRequest, ResearchResponse } from "@/research-types"
+import type { ResearchInputs, ResearchRequest, ResearchResponse, StudySpec } from "@/research-types"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
@@ -37,12 +39,13 @@ type PreviewSnapshot = Snapshot & { filterResults: Record<string, FilterTruth>; 
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
 type SettingRequest = Partial<WindowAppearance> & { backgroundMonitoringEnabled?: boolean; notificationsEnabled?: boolean; monitoringPaused?: boolean; launchAtLogin?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
+  postMessage(request: { longDecision: LongRequest }): Promise<LongResponse>
   postMessage(request: { research: ResearchRequest }): Promise<ResearchResponse>
   postMessage(request: { foregroundWorkspace: "radar" | "research" }): Promise<{ ok: boolean }>
   postMessage(request: { rocPeriod: number; marocPeriod: number; sinceRevision: number }): Promise<Snapshot | UnchangedSnapshot>
   postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string } }): Promise<CompileResponse>
-  postMessage(request: { previewMarketFilters: { filtersJSON: string; token: string } }): Promise<PreviewSnapshot>
-  postMessage(request: { explainMarketFilters: { instId: string; filtersJSON: string; token: string } }): Promise<ExplainResponse>
+  postMessage(request: { previewMarketFilters: { filtersJSON: string; token: string; atClose?: boolean; strategyID?: string } }): Promise<PreviewSnapshot>
+  postMessage(request: { explainMarketFilters: { instId: string; filtersJSON: string; token: string; atClose?: boolean; strategyID?: string } }): Promise<ExplainResponse>
   postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { captureChart: { x: number; y: number; width: number; height: number; backgroundRGB: number[] } }): Promise<{ ok: boolean }>
   postMessage(request: { windowTintRGB: number[] }): Promise<{ ok: boolean }>
@@ -136,7 +139,7 @@ const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain }: { row
   return <MarketRowsViewport ids={rows.map(row => row.instId)}>{index => <MarketRowView row={rows[index]} index={index} onSelect={onSelect} onExplain={onExplain} />}</MarketRowsViewport>
 })
 
-function RadarApp({ active, onResearch }: { active: boolean; onResearch: (inputs: ResearchInputs) => void }) {
+function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onResearch: (inputs: ResearchInputs) => void; onDecisions: (inputs: ResearchInputs) => void }) {
   const revision = useRef(-1)
   const serviceSession = useRef<string | undefined>(undefined)
   const backgroundOpacityDraftDirty = useRef(false)
@@ -400,7 +403,8 @@ function RadarApp({ active, onResearch }: { active: boolean; onResearch: (inputs
     <main className="flex min-h-[inherit] flex-col">
       <header className="flex items-center gap-3 border-b px-4 py-3 whitespace-nowrap">
         <h1 className="text-base font-semibold tracking-tight">Perpetual Radar</h1>
-        <Button variant="outline" onClick={() => onResearch({ filters: listFilters, combinations: filterCombinations, metrics, templates })}>Research</Button>
+        <Button variant="outline" onClick={() => onDecisions({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })}>Long Decisions</Button>
+        <Button variant="outline" onClick={() => onResearch({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })}>Research</Button>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
         <Popover onOpenChange={open => { if (!open && backgroundOpacityDraftDirty.current) saveBackgroundOpacity(); if (open) void updateNotifications({ notificationAction: "refresh" }) }}>
@@ -523,21 +527,26 @@ function RadarApp({ active, onResearch }: { active: boolean; onResearch: (inputs
 }
 
 function App() {
-  const [workspace, setWorkspace] = useState<"radar" | "research">("radar")
+  const [workspace, setWorkspace] = useState<"radar" | "research" | "decisions">("radar")
   const [inputs, setInputs] = useState<ResearchInputs | null>(null)
   const [workspaceError, setWorkspaceError] = useState("")
-  const changeWorkspace = async (value: "radar" | "research", nextInputs?: ResearchInputs) => {
+  const [decisionsMounted, setDecisionsMounted] = useState(false)
+  const [researchSpec, setResearchSpec] = useState<StudySpec | null>(null)
+  const [researchReturn, setResearchReturn] = useState<"radar" | "decisions">("radar")
+  const changeWorkspace = async (value: "radar" | "research" | "decisions", nextInputs?: ResearchInputs) => {
     setWorkspaceError("")
     try {
-      await window.webkit.messageHandlers.radar.postMessage({ foregroundWorkspace: value })
+      await window.webkit.messageHandlers.radar.postMessage({ foregroundWorkspace: value === "research" ? "research" : "radar" })
       if (nextInputs) setInputs(nextInputs)
+      if (value === "decisions") setDecisionsMounted(true)
       setWorkspace(value)
     } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "Cannot switch workspace.") }
   }
   return <Fragment>
     {workspaceError && <p role="alert" className="p-3 text-destructive">{workspaceError}</p>}
-    <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} onResearch={value => void changeWorkspace("research", value)} /></div>
-    {workspace === "research" && inputs && <Research inputs={inputs} onBack={() => void changeWorkspace("radar")} />}
+    <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} onResearch={value => { setResearchSpec(null); setResearchReturn("radar"); void changeWorkspace("research", value) }} onDecisions={value => void changeWorkspace("decisions", value)} /></div>
+    {inputs && decisionsMounted && <div hidden={workspace !== "decisions"}><LongDecisions active={workspace === "decisions"} inputs={inputs} onBack={() => void changeWorkspace("radar")} onResearch={spec => { setResearchSpec(spec); setResearchReturn("decisions"); void changeWorkspace("research") }} /></div>}
+    {workspace === "research" && inputs && <Research inputs={inputs} initialSpec={researchSpec} backLabel={researchReturn === "decisions" ? "Long Decisions" : "Radar"} onBack={() => void changeWorkspace(researchReturn)} />}
   </Fragment>
 }
 

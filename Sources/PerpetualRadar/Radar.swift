@@ -96,6 +96,7 @@ final class Radar {
     private let snapshotWorker = MarketSnapshotWorker()
     private var snapshotGenerations: [String: Int] = [:]
     private var compiledFilters: [String: CompiledFilter] = [:]
+    private let longDecisionWorker = LongDecisionWorker()
     private var liveHourQuotes: [String: FilterQuote] = [:]
     private var closedHourQuotes: [String: [Int64: FilterQuote]] = [:]
     private(set) var selectedMarketFilterCombinationID = ""
@@ -353,8 +354,59 @@ final class Radar {
         } catch { return ["diagnostics": [String(describing: error)]] }
     }
 
-    func previewMarketFilters(filtersJSON: String, token: String) async throws -> [String: Any] {
-        let compiled = try compiledFilter(filtersJSON)
+    func longDecisionRequest(_ request: [String: Any]) async throws -> [String: Any] {
+        let action = request["action"] as? String ?? "inventory"
+        func snapshot<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with: Data(try researchJSON(value).utf8)) }
+        var saved: LongStrategy?
+        switch action {
+        case "save":
+            guard let value = request["strategy"] else { throw FilterError("Provide both strategy filters.") }
+            saved = try store.saveLongStrategy(JSONDecoder().decode(LongStrategy.self, from: JSONSerialization.data(withJSONObject: value)))
+        case "delete": try store.deleteLongStrategy(request["strategyID"] as? String ?? "")
+        case "select": try store.setPreference(request["strategyID"] as? String ?? "", forKey: "longSelectedStrategy")
+        case "open", "close":
+            guard let id = request["strategyID"] as? String, let instrument = request["instrument"] as? String,
+                  let price = request["price"] as? Double, let timestamp = request["timestamp"] as? Int64,
+                  action == "close" || rows[instrument] != nil else { throw FilterError("Choose an available contract and your actual trade price/time.") }
+            try store.trackLong(strategyID: id, instrument: instrument, price: price, timestamp: timestamp, close: action == "close")
+        case "removeTracking": try store.removeLongTracking(request["positionID"] as? String ?? "")
+        case "inventory", "evaluate": break
+        default: throw FilterError("Unknown Long decision action.")
+        }
+        let strategies = try store.longStrategies(), positions = try store.longPositions()
+        if let saved { try store.setPreference(saved.id, forKey: "longSelectedStrategy") }
+        let selected = try store.preference(forKey: "longSelectedStrategy")
+        var response: [String: Any] = ["strategies": try snapshot(strategies), "positions": try snapshot(positions), "selectedID": strategies.first(where: { $0.id == selected })?.id ?? strategies.first?.id ?? "", "paused": monitoringPaused || !running, "preferences": filterLibraryPreferences.snapshot]
+        if let saved { response["saved"] = try snapshot(saved) }
+        if action == "evaluate", let strategy = strategies.first(where: { $0.id == request["strategyID"] as? String }) {
+            let (entry, exit) = try strategy.compiled()
+            var hydration = entry
+            hydration.requiredHours = max(ResearchVersion.warmup([entry, exit]), max(entry.requiredHours, exit.requiredHours) + 1)
+            hydration.needsStats = entry.needsStats || exit.needsStats; hydration.needsQuotes = entry.needsQuotes || exit.needsQuotes
+            hydration.metrics.formUnion(exit.metrics)
+            let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
+            let prepared = try await historyLoader.prepare(captured.markets, filter: hydration)
+            if running { await historyLoader.schedule(prepared, filter: hydration) }
+            let decisions = try await longDecisionWorker.evaluate(prepared, strategy: strategy, positions: positions, forming: request["forming"] as? Bool == true, available: running && !monitoringPaused, detailID: request["instrument"] as? String)
+            response["decisions"] = try snapshot(decisions); response["rows"] = captured.response["rows"]
+            response["historyProgress"] = await historyLoader.progress().snapshot
+            response["revision"] = captured.response["revision"]
+        }
+        return response
+    }
+
+    private func longPreviewContexts(_ markets: [FilterMarketData], atClose: Bool, strategyID: String?) throws -> [FilterMarketData] {
+        let positions = try store.longPositions().filter { $0.strategyID == strategyID && $0.exitedAt == nil }
+        return markets.map { input in
+            var market = LongDecision.context(input, forming: !atClose)
+            let held = positions.first { $0.instrument == market.id }
+            market.longEntryPrice = held?.entryPrice; market.longEnteredAt = held?.enteredAt
+            return market
+        }
+    }
+    func previewMarketFilters(filtersJSON: String, token: String, atClose: Bool = false, strategyID: String? = nil) async throws -> [String: Any] {
+        var compiled = try compiledFilter(filtersJSON)
+        if atClose { compiled.requiredHours += 1 }
         for (id, closed) in try await historyLoader.consumeUpdatedHistory(through: hour - hourMS) where rows[id] != nil {
             candles[id, default: [:]].merge(closed) { _, observed in observed }
             invalidateSnapshot(id); touch(id)
@@ -364,7 +416,7 @@ final class Radar {
         let prepared = try await historyLoader.prepare(captured.markets, filter: compiled)
         try Task.checkCancellation()
         await historyLoader.schedule(prepared, filter: compiled)
-        let results = await filterWorker.evaluate(prepared, filter: compiled)
+        let results = await filterWorker.evaluate(try longPreviewContexts(prepared, atClose: atClose, strategyID: strategyID), filter: compiled)
         try Task.checkCancellation()
         response["filterResults"] = results.mapValues(\.rawValue)
         response["filterToken"] = token
@@ -394,12 +446,13 @@ final class Radar {
         return FilterObservation(configuration: configuration, universe: Set(prepared.map(\.id)), results: results)
     }
 
-    func explainMarketFilters(instId: String, filtersJSON: String, token: String) async throws -> [String: Any] {
-        let compiled = try compiledFilter(filtersJSON)
+    func explainMarketFilters(instId: String, filtersJSON: String, token: String, atClose: Bool = false, strategyID: String? = nil) async throws -> [String: Any] {
+        var compiled = try compiledFilter(filtersJSON)
+        if atClose { compiled.requiredHours += 1 }
         let captured = try await calculateSnapshot(rocPeriod: 9, marocPeriod: 9)
         guard let original = captured.markets.first(where: { $0.id == instId }) else { throw FilterError("Unknown contract.") }
         guard let market = try await historyLoader.prepare([original], filter: compiled).first else { throw FilterError("Contract data is unavailable.") }
-        let trace = await filterWorker.explain(market, filter: compiled)
+        let trace = await filterWorker.explain(try longPreviewContexts([market], atClose: atClose, strategyID: strategyID)[0], filter: compiled)
         return ["instId": instId, "filterToken": token, "revision": captured.response["revision"] ?? 0, "trace": trace.snapshot]
     }
 
