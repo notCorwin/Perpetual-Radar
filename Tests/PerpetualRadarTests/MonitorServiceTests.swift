@@ -3,7 +3,100 @@ import CoreFoundation
 import XCTest
 @testable import PerpetualRadar
 
+@MainActor
+private final class BackgroundFocusAudit {
+    private var activatedPIDs = Set<Int32>()
+    private var observer: NSObjectProtocol?
+
+    init() {
+        observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let pid = application.processIdentifier
+            MainActor.assumeIsolated { self?.activatedPIDs.insert(pid) }
+        }
+    }
+    func assertBackground(_ pids: [Int32], file: StaticString = #filePath, line: UInt = #line) {
+        var activated = activatedPIDs
+        if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier { activated.insert(pid) }
+        XCTAssertTrue(activated.isDisjoint(with: pids), "Packaged CI activated a test process: \(activated.intersection(pids))", file: file, line: line)
+    }
+    func stop() { if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; observer = nil }
+}
+
 final class MonitorServiceTests: XCTestCase {
+    @MainActor
+    func testPackagedDatabaseStartupFailuresRecoverInPlaceAndRetainSettings() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["RADAR_SERVICE_TESTS"] == "1", "Run after packaging; the application stays hidden.")
+        let app = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/app/Perpetual Radar.app")
+        let channel = UUID().uuidString, name = "com.perpetualradar.monitor.\(getuid()).\(channel)", suite = "RadarServiceTests.\(channel)"
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(channel), defaults = UserDefaults(suiteName: suite)!
+        let radarURL = directory.appendingPathComponent("radar.sqlite3"), researchDirectory = directory.appendingPathComponent("Research")
+        let researchURL = researchDirectory.appendingPathComponent("research.sqlite3")
+        let config = try FilterCompiler.compile(source: "Close > 105").config.json
+        let focus = BackgroundFocusAudit(); defer { focus.stop() }
+        let process = Process(); var helperPID: Int32?
+        defer {
+            if process.isRunning { process.terminate() }
+            if let helperPID { kill(helperPID, SIGTERM) }
+            defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory)
+        }
+        defaults.set(false, forKey: "BackgroundMonitoring"); defaults.set(false, forKey: "AutomaticallyInstallUpdates")
+        do {
+            let radar = try Radar(defaults: defaults, storeURL: radarURL)
+            XCTAssertTrue(try radar.setMarketFiltersJSON(config))
+            XCTAssertTrue(try radar.setFrostedBackground(enabled: true, opacity: 0.55))
+            let research = try ResearchStore(directory: researchDirectory)
+            try research.put("sentinel", kind: "test", ["value": "preserved"])
+        }
+        // A path temporarily occupied by a directory fails immediately without
+        // altering the saved SQLite files. Restore the same files after startup.
+        for url in [radarURL, researchURL] {
+            try FileManager.default.moveItem(at: url, to: url.appendingPathExtension("parked"))
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        process.executableURL = app.appendingPathComponent("Contents/MacOS/PerpetualRadar")
+        var environment = ProcessInfo.processInfo.environment
+        environment["PERPETUAL_RADAR_TEST_CHANNEL"] = channel; environment["PERPETUAL_RADAR_TEST_DIRECTORY"] = directory.path
+        environment["PERPETUAL_RADAR_BACKGROUND"] = "1"
+        environment["PERPETUAL_RADAR_READY_FILE"] = directory.appendingPathComponent("ui-ready").path
+        process.environment = environment; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run()
+        func request(_ body: [String: Any], interface: Bool = false) async throws -> [String: Any] {
+            try await MonitorIPC.request(body, name: name + (interface ? ".interface-tests" : ""), timeout: .seconds(15))
+        }
+        func wait(_ condition: () async throws -> Bool) async throws {
+            let deadline = ContinuousClock.now + .seconds(30)
+            while ContinuousClock.now < deadline {
+                if (try? await condition()) == true { return }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            throw FilterError("Startup recovery did not complete.")
+        }
+        try await wait { (try await request(["serviceInfo": true]))["pid"] != nil }
+        let failed = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(failed["pid"] as? Int32)
+        XCTAssertEqual(failed["databaseReady"] as? Bool, false)
+        XCTAssertTrue((failed["backgroundMonitoringError"] as? String)?.contains("Automatically retrying") == true)
+        do { _ = try await request(["research": ["action": "inventory"]], interface: true); XCTFail("The research cache is temporarily unavailable.") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Cannot open research cache")) }
+        for url in [radarURL, researchURL] {
+            try FileManager.default.removeItem(at: url)
+            try FileManager.default.moveItem(at: url.appendingPathExtension("parked"), to: url)
+        }
+        try await wait { (try await request(["monitor": [:]], interface: true))["filterConfigJSON"] as? String == config }
+        try await wait { (try await request(["research": ["action": "inventory"]], interface: true))["studies"] != nil }
+        let restored = try await request(["monitor": [:]], interface: true)
+        XCTAssertEqual(restored["frostedBackgroundOpacity"] as? Double, 0.55)
+        XCTAssertEqual(restored["backgroundMonitoringError"] as? String, "")
+        let recoveredInfo = try await request(["serviceInfo": true])
+        XCTAssertEqual(recoveredInfo["pid"] as? Int32, helperPID, "Database recovery must reuse the same monitor.")
+        XCTAssertEqual(try ResearchStore(directory: researchDirectory).get("sentinel", as: [String: String].self)?["value"], "preserved")
+        XCTAssertTrue(process.isRunning)
+        focus.assertBackground([process.processIdentifier, helperPID!])
+        _ = try await request(["quitCompletely": true])
+        try await wait { !process.isRunning && CFMessagePortCreateRemote(nil, name as CFString) == nil }
+        helperPID = nil
+    }
+
     @MainActor
     func testIPCAllowsConcurrentHistoryRequestsAndCancelsAbandonedWork() async throws {
         let name = "com.perpetualradar.tests.\(UUID())"
@@ -35,13 +128,13 @@ final class MonitorServiceTests: XCTestCase {
         let app = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/app/Perpetual Radar.app")
         let channel = UUID().uuidString, name = "com.perpetualradar.monitor.\(getuid()).\(channel)", suite = "RadarServiceTests.\(channel)"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(channel), defaults = UserDefaults(suiteName: suite)!
-        let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let focus = BackgroundFocusAudit(); defer { focus.stop() }
         let store = try ResearchStore(directory: directory.appendingPathComponent("Research"))
         try ResearchFixture.seed(store, bars: ResearchFixture.bars(through: ResearchFixture.hour+3048*hourMS))
         let spec = try ResearchFixture.spec(through: ResearchFixture.hour+3000*hourMS), plan = ResearchFixture.plan(spec)
         try store.put(plan.id, kind: "plan", plan)
         defaults.set(false, forKey: "BackgroundMonitoring"); defaults.set(false, forKey: "AutomaticallyInstallUpdates")
-        var processes: [Process] = [], helperPID: Int32?
+        var processes: [Process] = [], helperPID: Int32?, helperPIDs: [Int32] = []
         defer {
             processes.filter(\.isRunning).forEach { $0.terminate() }
             if let helperPID { kill(helperPID, SIGTERM) }
@@ -67,6 +160,7 @@ final class MonitorServiceTests: XCTestCase {
         let ui = try launch()
         try await wait("startup") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= 2 }
         let info = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(info["pid"] as? Int32)
+        helperPIDs.append(helperPID!)
         XCTAssertEqual(info["backgroundMonitoringEnabled"] as? Bool, false)
         let longStrategy = LongStrategy(name: "Packaged Long",entryJSON: try FilterCompiler.compile(source: "Close > 0").config.json,exitJSON: try FilterCompiler.compile(source: "LongHeldHours >= 3").config.json)
         let longReply = try await request(["longDecision": ["action": "save", "strategy": try JSONSerialization.jsonObject(with: Data(try researchJSON(longStrategy).utf8))]])
@@ -98,6 +192,7 @@ final class MonitorServiceTests: XCTestCase {
         let reopened = try launch()
         try await wait("reopened") { (try await request(["serviceInfo": true]))["pid"] != nil }
         let reopenedInfo = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(reopenedInfo["pid"] as? Int32)
+        helperPIDs.append(helperPID!)
         let restoredLong = try await request(["longDecision": ["action": "inventory"]])
         XCTAssertEqual(restoredLong["selectedID"] as? String,longStrategy.id)
         XCTAssertEqual((restoredLong["strategies"] as? [[String: Any]])?.first?["exitJSON"] as? String,savedLong["exitJSON"] as? String)
@@ -113,11 +208,12 @@ final class MonitorServiceTests: XCTestCase {
         let crashing = try launch()
         try await wait("crash-startup") { (try await request(["serviceInfo": true]))["pid"] != nil }
         let crashingInfo = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(crashingInfo["pid"] as? Int32)
+        helperPIDs.append(helperPID!)
         let orphan = helperPID!
         kill(crashing.processIdentifier, SIGKILL)
         try await wait("crash-exit") { !crashing.isRunning && kill(orphan,0) != 0 && CFMessagePortCreateRemote(nil, name as CFString) == nil }
         helperPID = nil
-        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, foreground, "Packaged CI must never take focus.")
+        focus.assertBackground(processes.map(\.processIdentifier) + helperPIDs)
     }
 
     @MainActor
@@ -140,6 +236,7 @@ final class MonitorServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let suite = "RadarServiceTests.\(channel)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let focus = BackgroundFocusAudit(); defer { focus.stop() }
         var processes: [Process] = []
         var monitorPID: Int32?
         defer {
@@ -245,7 +342,7 @@ final class MonitorServiceTests: XCTestCase {
         info = try await request(["serviceInfo": true])
         XCTAssertEqual(info["pid"] as? Int32, helperPID)
         _ = try await request(["monitoringPaused": true])
-        kill(helperPID, SIGTERM)
+        kill(helperPID, SIGKILL)
         try await wait("helper-restart") {
             let candidate = try await request(["serviceInfo": true])
             guard let pid = candidate["pid"] as? Int32, pid != helperPID else { return false }
@@ -257,11 +354,31 @@ final class MonitorServiceTests: XCTestCase {
         let afterRestart = try await request([:])
         XCTAssertEqual(afterRestart["filterConfigJSON"] as? String, config)
         XCTAssertEqual(afterRestart["frostedBackgroundOpacity"] as? Double, 0.55)
+        let stalledPID = monitorPID!
+        defer { if monitorPID == stalledPID { kill(stalledPID, SIGCONT) } }
+        XCTAssertEqual(kill(stalledPID, SIGSTOP), 0)
+        // Drive recovery through the actual interface client. Its heartbeat and
+        // UI requests must share one replacement even when the helper is hung.
+        var recoveredPID: Int32?
+        for _ in 0..<10 {
+            if let recovered = try? await MonitorIPC.request(["monitor": ["serviceInfo": true]], name: name + ".interface-tests"),
+               let pid = recovered["pid"] as? Int32, pid != stalledPID {
+                recoveredPID = pid; break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        monitorPID = try XCTUnwrap(recoveredPID, "A stalled helper must recover while the same interface remains open.")
+        XCTAssertTrue(reopened.isRunning)
+        let afterHang = try await request([:])
+        XCTAssertEqual(afterHang["filterConfigJSON"] as? String, config)
+        XCTAssertEqual(afterHang["frostedBackgroundOpacity"] as? Double, 0.55)
+        XCTAssertEqual(afterHang["monitoringPaused"] as? Bool, true)
         let quittingPID = monitorPID!
         _ = try await request(["quitCompletely": true])
         try await wait("quit-completely") { !reopened.isRunning && CFMessagePortCreateRemote(nil, name as CFString) == nil && kill(quittingPID, 0) != 0 }
         XCTAssertEqual(reopened.terminationStatus, 0)
         XCTAssertNotEqual(kill(quittingPID, 0), 0, "Quit Completely must terminate the helper too.")
+        focus.assertBackground(processes.map(\.processIdentifier) + [helperPID, stalledPID, quittingPID])
         monitorPID = nil
     }
 

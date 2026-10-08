@@ -11,7 +11,8 @@ final class ResearchStore {
         self.directory = directory
         database = try Store(url: directory.appendingPathComponent("research.sqlite3"))
         try FileManager.default.createDirectory(at: directory.appendingPathComponent("Raw"), withIntermediateDirectories: true)
-        try database.transaction {
+        if try database.preference(forKey: "researchSchemaVersion") != "1" { try database.transaction {
+            guard try database.preference(forKey: "researchSchemaVersion") != "1" else { return }
             try database.execute("CREATE TABLE IF NOT EXISTS research_objects (id TEXT PRIMARY KEY, kind TEXT NOT NULL, json TEXT NOT NULL)")
             try database.execute("CREATE TABLE IF NOT EXISTS research_data (revision INTEGER PRIMARY KEY AUTOINCREMENT, inst TEXT NOT NULL, kind TEXT NOT NULL, ts INTEGER NOT NULL, digest TEXT NOT NULL, json TEXT NOT NULL, UNIQUE(inst,kind,ts,digest))")
             try database.execute("CREATE INDEX IF NOT EXISTS research_data_key ON research_data(inst,kind,ts,revision)")
@@ -27,7 +28,8 @@ final class ResearchStore {
             try database.execute("CREATE INDEX IF NOT EXISTS research_events_page ON research_events(study,ts,id)")
             try database.execute("CREATE TABLE IF NOT EXISTS research_long_trades (id TEXT PRIMARY KEY, study TEXT, inst TEXT, ts INTEGER, json TEXT)")
             try database.execute("CREATE INDEX IF NOT EXISTS research_long_trades_page ON research_long_trades(study,ts,id)")
-        }
+            try database.setPreference("1", forKey: "researchSchemaVersion")
+        } }
     }
 
     static var defaultDirectory: URL {

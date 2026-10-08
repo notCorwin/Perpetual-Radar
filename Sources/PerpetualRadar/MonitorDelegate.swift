@@ -6,14 +6,17 @@ import UserNotifications
 final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let symbolName = "dot.radiowaves.left.and.right"
     private var server: MonitorIPCServer?
-    private var radar: Radar?
+    private let collector = RecoveringResource(label: "Cannot open local cache") {
+        try Radar(defaults: MonitorRuntime.defaults, storeURL: MonitorRuntime.storeURL)
+    }
+    private var radar: Radar? { collector.value }
     private var monitor: FilterMonitor?
     private let longExitTracker = LongExitTracker()
     private var notifications: MarketNotifications?
     private var activity: NSObjectProtocol?
     private var statusItem: NSStatusItem?
     private var monitoringError = ""
-    private var startupError = ""
+    private var startupError: String { collector.error }
     private var loginError = ""
     private let sessionID = UUID().uuidString
     private let sourceRevision = Bundle.main.object(forInfoDictionaryKey: "CFBundleSourceRevision") as? String ?? "development"
@@ -52,8 +55,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         } catch { NSApp.terminate(nil); return }
-        do { radar = try Radar(defaults: MonitorRuntime.defaults, storeURL: MonitorRuntime.storeURL) }
-        catch { startupError = "Cannot open local cache: \(error.localizedDescription)" }
+        _ = try? collector.get()
         if MonitorRuntime.testChannel != nil { fixture = MonitorFixture() }
         configureMenu()
         if let fixture {
@@ -185,7 +187,15 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func sendTest() { Task { await notifications?.sendTest() } }
     @objc private func openNotificationSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!) }
-    @objc private func resumeAfterWake(_ notification: Notification) { if collectionAllowed && radar?.monitoringPaused == false { radar?.resumeAfterWake() } }
+    @objc private func resumeAfterWake(_ notification: Notification) {
+        collector.retryNow(); recoverCollector()
+        if collectionAllowed && radar?.monitoringPaused == false { radar?.resumeAfterWake() }
+    }
+    private func recoverCollector() {
+        guard radar == nil else { return }
+        _ = try? collector.get()
+        reconcileMonitoring()
+    }
     private func reconcileMonitoring() {
         if collectionAllowed && radar?.monitoringPaused == false { startMonitoring() } else { stopMonitoring() }
         renderMenu()
@@ -196,6 +206,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             foregroundPID = nil; researchBusy = false
             if !MonitorRuntime.backgroundMonitoringEnabled { NSApp.terminate(nil) }
         }
+        if collectionAllowed { recoverCollector() }
     }
     @objc private func showInterface() { openInterface(instId: nil) }
     private func openInterface(instId: String?, strategyID: String? = nil) {
@@ -223,6 +234,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         result["backgroundMonitoringEnabled"] = MonitorRuntime.backgroundMonitoringEnabled
         result["foregroundWorkspace"] = foregroundWorkspace
         result["serviceSession"] = sessionID
+        result["databaseReady"] = radar != nil
         result["launchAtLogin"] = loginStatus; result["launchAtLoginError"] = loginError
         result["updateMenuTitle"] = checkUpdatesItem.title; result["updateMenuEnabled"] = !isCheckingUpdate && !isInstallingUpdate
         result["automaticUpdatesEnabled"] = AppDelegate.automaticUpdatesEnabled(in: MonitorRuntime.defaults)
@@ -272,7 +284,10 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             return decorated([:])
         }
-        guard let radar else { throw FilterError(startupError.isEmpty ? "Collector is starting." : startupError) }
+        let recovering = radar == nil
+        let radar = try collector.get()
+        // A request can be the first successful open after a startup failure.
+        if recovering { reconcileMonitoring() }
         if let request = parameters["longDecision"] as? [String: Any] { return decorated(try await radar.longDecisionRequest(request)) }
         if let requested = parameters["monitoringPaused"] {
             guard let paused = requested as? Bool else { throw FilterError("Invalid monitoring setting.") }

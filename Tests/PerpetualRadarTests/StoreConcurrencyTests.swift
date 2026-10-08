@@ -86,7 +86,7 @@ final class StoreConcurrencyTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    func testOpeningConnectionWaitsForAnActiveWriter() async throws {
+    func testOpeningCurrentSchemaDoesNotWaitForAnActiveWriter() async throws {
         try await withDatabase { url in
             let store = try Store(url: url)
             let locked = DispatchSemaphore(value: 0)
@@ -101,7 +101,10 @@ final class StoreConcurrencyTests: XCTestCase, @unchecked Sendable {
             defer { holder.cancel() }
             XCTAssertEqual(locked.wait(timeout: .now() + 5), .success)
             do {
+                let start = ContinuousClock.now
                 let reopened = try Store(url: url)
+                XCTAssertLessThan(start.duration(to: .now), .milliseconds(150), "Opening a reader must not acquire a write lock.")
+                XCTAssertNil(try reopened.preference(forKey: "startup"), "The reader sees the last committed snapshot.")
                 try await holder.value
                 XCTAssertEqual(try reopened.preference(forKey: "startup"), "saved")
             } catch {
@@ -110,6 +113,41 @@ final class StoreConcurrencyTests: XCTestCase, @unchecked Sendable {
             }
             XCTAssertEqual(try store.preference(forKey: "startup"), "saved")
         }
+    }
+
+    @MainActor
+    func testRadarAndResearchReopenWhileTheirBackgroundWritersAreBusy() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ReadOnlyOpen-\(UUID())")
+        let suite = "ReadOnlyOpen.\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
+        let radarURL = directory.appendingPathComponent("radar.sqlite3"), researchDirectory = directory.appendingPathComponent("Research")
+        do {
+            let radar = try Radar(defaults: defaults, storeURL: radarURL)
+            XCTAssertTrue(try radar.setFrostedBackground(enabled: true, opacity: 0.45))
+            let research = try ResearchStore(directory: researchDirectory)
+            try research.put("sentinel", kind: "test", ["value": "retained"])
+        }
+        let locked = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let holder = Task.detached {
+            let radarWriter = try Store(url: radarURL), researchWriter = try ResearchStore(directory: researchDirectory)
+            try radarWriter.transaction { try researchWriter.database.transaction {
+                try radarWriter.setPreference("0.8", forKey: "frostedBackgroundOpacity")
+                locked.signal()
+                _ = release.wait(timeout: .now() + 10)
+            } }
+        }
+        defer { release.signal(); holder.cancel() }
+        XCTAssertEqual(locked.wait(timeout: .now() + 5), .success)
+        let start = ContinuousClock.now
+        let radar = try Radar(defaults: defaults, storeURL: radarURL)
+        let research = try ResearchController(directory: researchDirectory)
+        let inventory = try await research.handle(["action": "inventory"])
+        XCTAssertNotNil(inventory["studies"])
+        XCTAssertEqual(radar.frostedBackgroundOpacity, 0.45)
+        XCTAssertLessThan(start.duration(to: .now), .milliseconds(500), "Existing settings and research should open without blocking behind workers.")
+        release.signal(); try await holder.value
+        XCTAssertEqual(try Radar(defaults: defaults, storeURL: radarURL).frostedBackgroundOpacity, 0.8)
+        XCTAssertEqual(try ResearchStore(directory: researchDirectory).get("sentinel", as: [String: String].self)?["value"], "retained")
     }
 
     func testLegacySchemaMigratesAtomicallyAcrossConcurrentConnections() async throws {

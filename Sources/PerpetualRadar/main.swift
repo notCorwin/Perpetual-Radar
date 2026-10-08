@@ -13,10 +13,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var pendingNotificationStrategyID: String?
     private var filterPreviewTask: Task<Void, Never>?
     private var filterExplainTask: Task<Void, Never>?
-    private var startupError = ""
     private var webRoot: URL?
-    private var research: ResearchController?
+    private lazy var researchCache = RecoveringResource(label: "Cannot open research cache") { [weak self] in
+        let controller = try ResearchController()
+        controller.onBusyChanged = { [weak self] busy in
+            guard let self else { return }; monitorClient.researchBusy = busy
+            renewForegroundLease()
+        }
+        return controller
+    }
+    private var research: ResearchController? { researchCache.value }
     private var leaseTimer: Timer?
+    private var leaseTask: Task<Void, Never>?
+    private var monitorSettingsInitialized = false
     private var terminating = false
     private var terminationReady = false
     private var quittingForUpdate = false
@@ -102,13 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                                         name: NSWorkspace.didWakeNotification, object: nil)
 
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(quitInterface(_:)), name: MonitorRuntime.quitUI, object: nil)
-        do {
-            research = try ResearchController()
-            research?.onBusyChanged = { [weak self] busy in
-                guard let self else { return }; monitorClient.researchBusy = busy
-                Task { if !self.terminating { _ = try? await self.monitorClient.request(["serviceInfo": true]) } }
-            }
-        } catch { startupError = "Cannot open research cache: \(error.localizedDescription)" }
+        _ = try? researchCache.get()
         if MonitorRuntime.testChannel != nil {
             // Packaged CI controls an isolated, hidden application instance.
             lifecycleTestServer = try? MonitorIPCServer(name: MonitorRuntime.portName + ".interface-tests") { [weak self] data in
@@ -118,7 +121,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     if let workspace = body["workspace"] as? String {
                         monitorClient.workspace = workspace; _ = try await monitorClient.request(["serviceInfo": true])
                     }
-                    if let request = body["research"] as? [String: Any] { value = try await research?.handle(request) ?? [:] }
+                    if let request = body["research"] as? [String: Any] { value = try await researchCache.get().handle(request) }
+                    if let request = body["monitor"] as? [String: Any] { value = try await monitorClient.request(request) }
                     if body["minimize"] as? Bool == true {
                         let edge = NSScreen.screens.map { $0.frame.maxX }.max() ?? 1440
                         NSApp.setActivationPolicy(.regular)
@@ -133,15 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         let leaseTimer = Timer(timeInterval: 2, target: self, selector: #selector(renewForegroundLease), userInfo: nil, repeats: true)
         RunLoop.main.add(leaseTimer, forMode: .common); self.leaseTimer = leaseTimer
-        Task {
-            do {
-                try await monitorClient.ensureRunning()
-                let info = try await monitorClient.request(["serviceInfo": true])
-                let settings = try await monitorClient.request(["notificationAction": !launchInBackground && info["notificationsEnabled"] as? Bool == true ? "requestPermission" : "refresh"])
-                acceptNativeSettings(settings)
-                MonitorRuntime.markReady()
-            } catch { startupError = error.localizedDescription }
-        }
+        renewForegroundLease()
 
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("Web/index.html")
         let development = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("dist/index.html")
@@ -162,14 +158,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
         filterPreviewTask?.cancel(); filterExplainTask?.cancel()
-        leaseTimer?.invalidate(); lifecycleTestServer?.invalidate()
+        leaseTimer?.invalidate(); leaseTask?.cancel(); lifecycleTestServer?.invalidate()
         MonitorRuntime.defaults.set(MonitorRuntime.backgroundMonitoringEnabled, forKey: AppUpdater.backgroundRelaunchKey)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminationReady { return .terminateNow }
         if terminating { return .terminateCancel }
-        terminating = true; leaseTimer?.invalidate()
+        terminating = true; leaseTimer?.invalidate(); leaseTask?.cancel()
         if !quittingForUpdate && !MonitorRuntime.backgroundMonitoringEnabled {
             try? FileManager.default.createDirectory(at: MonitorRuntime.updateSuppressionURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? Data().write(to: MonitorRuntime.updateSuppressionURL, options: .atomic)
@@ -184,7 +180,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         return .terminateCancel
     }
-    @objc private func renewForegroundLease() { if !terminating { Task { _ = try? await monitorClient.request(["serviceInfo": true]) } } }
+    @objc private func renewForegroundLease() {
+        guard !terminating, leaseTask == nil else { return }
+        leaseTask = Task {
+            defer { leaseTask = nil }
+            if research == nil { _ = try? researchCache.get() }
+            do {
+                let info = try await monitorClient.request(["serviceInfo": true])
+                guard !terminating else { return }
+                acceptNativeSettings(info)
+                if !monitorSettingsInitialized, info["databaseReady"] as? Bool == true {
+                    let launchInBackground = ProcessInfo.processInfo.environment["PERPETUAL_RADAR_BACKGROUND"] == "1"
+                    let settings = try await monitorClient.request(["notificationAction": !launchInBackground && info["notificationsEnabled"] as? Bool == true ? "requestPermission" : "refresh"])
+                    guard !terminating else { return }
+                    acceptNativeSettings(settings); monitorSettingsInitialized = true
+                }
+                if monitorSettingsInitialized { MonitorRuntime.markReady() }
+            } catch { /* The next lease or interface request shares the recovery attempt. */ }
+        }
+    }
 
     @objc private func quitInterface(_ notification: Notification) { if !terminating { quittingForUpdate = notification.userInfo?["update"] as? Bool == true }; NSApp.terminate(nil) }
 
@@ -264,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func resumeAfterWake(_ notification: Notification) {
         applyWindowBackground()
-        webView.reload()
+        researchCache.retryNow(); renewForegroundLease()
     }
 
     func windowDidBecomeKey(_ notification: Notification) { applyWindowBackground() }
@@ -328,9 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return
         }
         if let request = parameters["research"] as? [String: Any] {
-            guard let research else { replyHandler(nil, startupError.isEmpty ? "Research cache is unavailable." : startupError); return }
             Task {
-                do { replyHandler(try await research.handle(request, window: window), nil) }
+                do { replyHandler(try await researchCache.get().handle(request, window: window), nil) }
                 catch { replyHandler(nil, error.localizedDescription) }
             }
             return

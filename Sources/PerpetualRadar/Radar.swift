@@ -170,24 +170,27 @@ final class Radar {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         // Both the applied configuration and every saved combination migrate in
         // one transaction. Legacy JSON remains available for recovery/older builds.
-        let migration = try store.transaction { () -> (String, [MarketFilterCombination]) in
-            if storedFilters != marketFiltersJSON { try store.setPreference(marketFiltersJSON, forKey: marketFiltersKey) }
-            let sourceConfig = try (try store.preference(forKey: marketFiltersV2Key)).map(FilterConfigV2.decode) ?? FilterConfigV2.migrate(marketFiltersJSON,
+        let storedV2 = try store.preference(forKey: marketFiltersV2Key)
+        let sourceConfig = try storedV2.map(FilterConfigV2.decode) ?? FilterConfigV2.migrate(marketFiltersJSON,
+            turnover: minimum24hTurnoverUSDT, spread: spreadFilterEnabled ? maximumSpreadPercent : nil, ageMonths: contractAgeFilterEnabled ? minimumContractAgeMonths : nil)
+        let config = try FilterCompiler.compile(sourceConfig).config
+        let combinations = try legacyCombinations.map { original in
+            var combination = original
+            let sourceConfig = try original.filtersV2JSON.map(FilterConfigV2.decode) ?? FilterConfigV2.migrate(original.filtersJSON,
                 turnover: minimum24hTurnoverUSDT, spread: spreadFilterEnabled ? maximumSpreadPercent : nil, ageMonths: contractAgeFilterEnabled ? minimumContractAgeMonths : nil)
             let config = try FilterCompiler.compile(sourceConfig).config
-            try store.setPreference(config.json, forKey: marketFiltersV2Key)
-            let combinations = try legacyCombinations.map { original in
-                var combination = original
-                let sourceConfig = try original.filtersV2JSON.map(FilterConfigV2.decode) ?? FilterConfigV2.migrate(original.filtersJSON,
-                    turnover: minimum24hTurnoverUSDT, spread: spreadFilterEnabled ? maximumSpreadPercent : nil, ageMonths: contractAgeFilterEnabled ? minimumContractAgeMonths : nil)
-                let config = try FilterCompiler.compile(sourceConfig).config
-                if original.filtersV2JSON != config.json { try store.saveCombinationV2(original.id, json: config.json) }
-                combination.filtersV2JSON = config.json
-                return combination
-            }
-            return (config.json, combinations)
+            combination.filtersV2JSON = config.json
+            return combination
         }
-        marketFiltersV2JSON = migration.0; marketFilterCombinations = migration.1
+        let changedCombinations = zip(legacyCombinations, combinations).filter { $0.0.filtersV2JSON != $0.1.filtersV2JSON }.map { $0.1 }
+        if storedFilters != marketFiltersJSON || storedV2 != config.json || !changedCombinations.isEmpty {
+            try store.transaction {
+                if storedFilters != marketFiltersJSON { try store.setPreference(marketFiltersJSON, forKey: marketFiltersKey) }
+                if storedV2 != config.json { try store.setPreference(config.json, forKey: marketFiltersV2Key) }
+                for combination in changedCombinations { try store.saveCombinationV2(combination.id, json: combination.filtersV2JSON!) }
+            }
+        }
+        marketFiltersV2JSON = config.json; marketFilterCombinations = combinations
         defaults.removeObject(forKey: marketFiltersKey)
         if let savedSelection = try store.preference(forKey: selectedMarketFilterCombinationKey) {
             if marketFilterCombinations.contains(where: { $0.id == savedSelection }) {

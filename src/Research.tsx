@@ -56,6 +56,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
   const [events, setEvents] = useState<ResearchEvent[]>([]), [eventCount, setEventCount] = useState(0), [offset, setOffset] = useState(0), [event, setEvent] = useState<ResearchEvent | null>(null)
   const [cache, setCache] = useState({ directory: '', rows: 0, files: 0 })
   const [error, setError] = useState(''), [pending, setPending] = useState(false)
+  const [pollError, setPollError] = useState('')
   const [confirm, setConfirm] = useState<{ action: 'delete' | 'cleanCache'; studyID?: string } | null>(null)
   const [notice, setNotice] = useState('')
   const handledJob = useRef(''), selection = useRef(0), polling = useRef(false)
@@ -88,7 +89,6 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
         setCache(current => keepSnapshotValue(current, { directory: result.cacheDirectory ?? '', rows: result.cachedRows ?? 0, files: result.rawFiles ?? 0 }))
         const j = result.job, key = j?.id + ':' + j?.phase + ':' + j?.resultID
         if (j && key !== handledJob.current && ['planned', 'ready', 'completed', 'paused', 'failed', 'cancelled'].includes(j.phase)) {
-          handledJob.current = key
           if (j.phase === 'planned' && j.resultID) {
             const detail = await requestResearch({ action: 'planDetail', planID: j.resultID })
             if (stopped) return
@@ -99,8 +99,10 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
             if (j.phase === 'completed') setTab('results')
           }
           if (j.error) setError(j.error)
+          handledJob.current = key
         }
-      } catch (cause) { if (!stopped) setError(cause instanceof Error ? cause.message : 'Cannot open research.') }
+        setPollError('')
+      } catch (cause) { if (!stopped) setPollError(cause instanceof Error ? cause.message : 'Cannot open research.') }
       finally { polling.current = false; if (!stopped) timer = window.setTimeout(refresh, 1000) }
     }
     void refresh()
@@ -156,7 +158,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
       <span className="flex-1 text-xs text-muted-foreground">OKX · Hourly close · Fixed local data</span>
       <Badge variant="outline"><Database data-icon="inline-start" aria-hidden="true" />{integer(cache.rows)} cached rows</Badge>
     </header>
-    {(error || job?.error) && <Alert variant="destructive"><AlertTitle>Research needs attention</AlertTitle><AlertDescription>{error || job?.error}</AlertDescription></Alert>}
+    {(error || pollError || job?.error) && <Alert variant="destructive"><AlertTitle>Research needs attention</AlertTitle><AlertDescription>{error || pollError || job?.error}</AlertDescription></Alert>}
     {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
     {job && <section data-surface="panel" className="flex flex-col gap-2 rounded-lg border bg-card p-3" aria-label="Research task">
       <div className="flex items-center gap-3"><Badge variant="secondary">{job.phase}</Badge><span className="min-w-0 flex-1 truncate text-sm" role="status">{job.message || 'Cached files and checkpoints are retained.'}</span>

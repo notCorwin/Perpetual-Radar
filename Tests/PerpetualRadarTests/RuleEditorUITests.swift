@@ -45,6 +45,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var radarRequests = 0
     var longEvaluationRequests = 0
     var longEvaluationDelay: UInt64 = 0
+    var longReadError: String?
+    var researchReadError: String?
     var research: ResearchController?
     var launchAtLogin = "disabled"
     var loginSettingsOpenCount = 0
@@ -83,9 +85,11 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
         let request = message.body as! [String: Any]
         if let workspace = request["foregroundWorkspace"] as? String { foregroundWorkspace = workspace; replyHandler(["ok": true], nil); return }
         if let parameters = request["research"] as? [String: Any], let research {
+            if parameters["action"] as? String == "inventory", let researchReadError { replyHandler(nil, researchReadError); return }
             Task { do { replyHandler(try await research.handle(parameters), nil) } catch { replyHandler(nil, error.localizedDescription) } }; return
         }
         if let parameters = request["longDecision"] as? [String: Any] {
+            if ["inventory", "evaluate"].contains(parameters["action"] as? String ?? "inventory"), let longReadError { replyHandler(nil, longReadError); return }
             Task {
                 do {
                     let action = parameters["action"] as? String
@@ -357,6 +361,11 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertGreaterThan(bridge.longEvaluationRequests,evaluations,"The entry must overlap an in-flight evaluation.")
         try await click(view,"Save tracking record")
         try await wait(view,"document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Hold Long')")
+        bridge.longReadError = "Monitor reconnect fixture"
+        try await wait(view,"document.querySelector('[data-long-decisions] [role=alert]')?.innerText.includes('Monitor reconnect fixture')")
+        bridge.longReadError = nil
+        try await wait(view,"!document.body.innerText.includes('Monitor reconnect fixture') && document.querySelector('table[aria-label=\"Long live decisions\"]')?.innerText.includes('Hold Long')")
+        XCTAssertEqual(try Store(url: bridge.directory.appendingPathComponent("radar.sqlite3")).longPositions().filter { $0.exitedAt == nil }.count, 1)
         var market = bridge.contexts[0]
         let closed = market.hour-hourMS
         market.candles[closed] = Candle(hour: closed,high: 122,low: 100,close: 120,quoteVolume: 100,baseVolume: 1,open: 105)
@@ -416,6 +425,12 @@ final class RuleEditorUITests: XCTestCase {
         try await Task.sleep(for: .milliseconds(2300))
         XCTAssertEqual(bridge.radarRequests, radarRequests, "Radar polling and live chart loads must stop while researching.")
         try await input(view, "#study-name", "WKWebView experiment")
+        bridge.researchReadError = "Research cache temporarily locked"
+        try await wait(view,"document.querySelector('[data-research] [role=alert]')?.innerText.includes('Research cache temporarily locked')")
+        bridge.researchReadError = nil
+        try await wait(view,"!document.body.innerText.includes('Research cache temporarily locked')")
+        let recoveredName = try await js(view,"document.querySelector('#study-name').value") as? String
+        XCTAssertEqual(recoveredName,"WKWebView experiment", "Reconnection must preserve the research draft.")
         _ = try await openMenu(view, selector: "#study-rule")
         try await option(view, "All verified exchange markets")
         try await click(view, "Long"); try await click(view, "Every matching hour")

@@ -35,6 +35,7 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
   const [search, setSearch] = useState(''), [view, setView] = useState('all'), [page, setPage] = useState(0)
   const [openPage, setOpenPage] = useState(0), [exitPage, setExitPage] = useState(0)
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [pending, setPending] = useState(false)
+  const [pollError, setPollError] = useState('')
   const [detail, setDetail] = useState<LongDecisionRow | null>(null), [chart, setChart] = useState<string | null>(null)
   const [record, setRecord] = useState<{ kind: 'open' | 'close'; instrument: string; price: string; time: string } | null>(null)
   const [confirm, setConfirm] = useState<{ kind: 'load' | 'delete' | 'remove'; strategy?: LongStrategy; position?: LongPosition } | null>(null)
@@ -50,6 +51,7 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
     setOpenPage(0)
   }, [inputs.filters, resetEntry, resetExit])
   const accept = useCallback((response: LongResponse) => {
+    setPollError('')
     setStrategies(current => keepSnapshotValue(current, response.strategies)); setPositions(current => keepSnapshotValue(current, response.positions)); setPaused(response.paused)
     if (response.preferences) setPreferences(current => keepSnapshotValue(current, response.preferences!))
     if (response.decisions) setDecisions(current => keepSnapshotValue(current, response.decisions!))
@@ -70,7 +72,7 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
             if (strategy) { setSelectedID(strategy.id); load(strategy); setTab('live') }
           }
         }
-      } catch (cause) { if (!stopped) setError(cause instanceof Error ? cause.message : 'Cannot read Long decisions.') }
+      } catch (cause) { if (!stopped) setPollError(cause instanceof Error ? cause.message : 'Cannot read Long decisions.') }
       finally {
         // A stale reply can be ignored while the live polling loop continues.
         if (!stopped) timer = window.setTimeout(refresh, 2000)
@@ -141,7 +143,7 @@ export function LongDecisions({ active, inputs, onBack, onResearch }: { active: 
       <span className="flex-1 text-xs text-muted-foreground">Entry while flat · Exit while holding · Manual execution</span><Badge variant="outline">Long only</Badge>
       <Button variant="outline" disabled={!selected || pending} onClick={backtest}><FlaskConical data-icon="inline-start" aria-hidden="true" />Backtest saved strategy</Button>
     </header>
-    {error && <Alert variant="destructive" role="alert"><AlertTitle>Long decisions need attention</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+    {(error || pollError) && <Alert variant="destructive" role="alert"><AlertTitle>Long decisions need attention</AlertTitle><AlertDescription>{error || pollError}</AlertDescription></Alert>}
     {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
     <FieldGroup className="grid grid-cols-[minmax(20rem,1fr)_auto_auto_auto] items-end gap-3">
       <Field><FieldLabel>Saved Long strategy</FieldLabel><Select value={selectedID} disabled={pending} onValueChange={id => { const next = strategies.find(s => s.id === id); if (next) chooseWithDraft(next) }}><SelectTrigger aria-label="Saved Long strategy"><SelectValue placeholder="Create your first Long strategy…" /></SelectTrigger><SelectContent><SelectGroup>{strategies.map(s => <SelectItem key={s.id} value={s.id}>{s.name} · v{s.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>

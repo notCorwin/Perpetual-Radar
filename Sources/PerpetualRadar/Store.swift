@@ -3,6 +3,7 @@ import CSQLite
 
 final class Store {
     private static let busyTimeoutMilliseconds: Int32 = 5_000
+    private static let schemaVersion: Int64 = 1
     private var db: OpaquePointer?
     let url: URL
 
@@ -15,9 +16,11 @@ final class Store {
             // WAL lets readers proceed during writes; competing writers wait briefly.
             guard sqlite3_busy_timeout(db, Self.busyTimeoutMilliseconds) == SQLITE_OK else { throw failure() }
             try enableWriteAheadLogging()
-            // Recheck the schema only after taking the write lock so connections
-            // cannot race to add the same legacy column.
-            try transaction {
+            // Opening a current database is read-only. History readers must not
+            // queue behind the writer merely to repeat already completed DDL.
+            if try version() < Self.schemaVersion { try transaction {
+                // A concurrent connection may have migrated while we waited.
+                guard try version() < Self.schemaVersion else { return }
                 try execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS market_filter_combinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE, filters_json TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, open REAL, PRIMARY KEY(inst_id,hour))")
@@ -30,7 +33,8 @@ final class Store {
                 if try !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
                 if try !columns("market_filter_combinations").contains("filters_v2_json") { try execute("ALTER TABLE market_filter_combinations ADD COLUMN filters_v2_json TEXT") }
                 try execute("CREATE TABLE IF NOT EXISTS hourly_quotes (inst_id TEXT, hour INTEGER, turnover REAL, spread REAL, quote_timestamp INTEGER NOT NULL, PRIMARY KEY(inst_id,hour))")
-            }
+                try execute("PRAGMA user_version=\(Self.schemaVersion)")
+            } }
         } catch {
             sqlite3_close(db)
             db = nil
@@ -68,9 +72,15 @@ final class Store {
         let deadline = ProcessInfo.processInfo.systemUptime + Double(Self.busyTimeoutMilliseconds) / 1_000
         while true {
             do {
+                let current = try statement("PRAGMA journal_mode")
+                var mode = ""
+                do {
+                    defer { sqlite3_finalize(current) }
+                    try readRows(current) { mode = String(cString: sqlite3_column_text(current, 0)) }
+                }
+                if mode == "wal" { return }
                 let stmt = try statement("PRAGMA journal_mode=WAL")
                 defer { sqlite3_finalize(stmt) }
-                var mode = ""
                 try readRows(stmt) { mode = String(cString: sqlite3_column_text(stmt, 0)) }
                 guard mode == "wal" else {
                     throw NSError(domain: "SQLite", code: Int(SQLITE_ERROR),
@@ -83,6 +93,13 @@ final class Store {
                 Thread.sleep(forTimeInterval: min(0.01, remaining))
             }
         }
+    }
+
+    private func version() throws -> Int64 {
+        let stmt = try statement("PRAGMA user_version")
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }
+        return sqlite3_column_int64(stmt, 0)
     }
 
     private func bind(_ values: [Any?], to stmt: OpaquePointer) {
