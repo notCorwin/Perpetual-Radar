@@ -173,7 +173,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
                     if delay > 0 { try await Task.sleep(nanoseconds: delay) }
                     if let error { replyHandler(nil, error); return }
                     _ = try radar.setMarketFiltersJSON(json); revision += 1
-                    replyHandler(snapshot(), nil)
+                    var response = radar.appliedFilterSnapshot(); response["revision"] = revision
+                    replyHandler(response, nil)
                 } catch { replyHandler(nil, String(describing: error)) }
             }
             return
@@ -1565,6 +1566,46 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "document.querySelector('textarea')?.value.includes('every((emaBody == \"above\"), 48)')")
         print("500-market menu paint timings (ms): \(timings.map { Int($0) }); max=\(Int(timings.max() ?? 0))")
         XCTAssertLessThan(timings.max() ?? 0, 250, "Menus must open promptly, including their animation and first paint.")
+    }
+
+    @MainActor
+    func testApplyFiltersSavesPromptlyWhilePreviewIsSlowAndKeepsMarketRows() async throws {
+        guard ProcessInfo.processInfo.environment["RADAR_UI_TESTS"] == "1" else { throw XCTSkip("Run npm run test:ui after building the Web renderer.") }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try RuleUIBridge(root: project.appendingPathComponent("dist")), configuration = uiConfiguration()
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "radar")
+        configuration.setURLSchemeHandler(bridge, forURLScheme: "radar")
+        let window = BackgroundTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), configuration: configuration)
+        window.contentView = view; present(window)
+        defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
+        view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
+        try await click(view, "Filters"); try await click(view, "Formula")
+        try await input(view, "textarea", "Close > 0", textarea: true); try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 500")
+
+        bridge.previewDelay = 2_000_000_000
+        try await input(view, "textarea", "oiTrend == \"rising\"", textarea: true); try await validDraft(view)
+        try await wait(view, "document.querySelector('[data-filter-summary]')?.innerText.includes('Updating preview')")
+        let start = ContinuousClock.now
+        try await click(view, "Apply filters")
+        try await wait(view, "document.querySelector('[data-filter-unsaved]') === null && document.body.innerText.includes('Filters applied and saved.')")
+        let elapsed = start.duration(to: .now)
+        print("500-market Apply filters with a 2s preview delay: \(elapsed)")
+        XCTAssertLessThan(elapsed, .milliseconds(500), "Persisting filters must not wait for market evaluation.")
+        let countAfterSave = try await js(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount)") as? Int
+        XCTAssertEqual(countAfterSave, 500, "A metadata acknowledgment must preserve the existing list.")
+        let saved = bridge.radar.marketFiltersV2JSON
+        XCTAssertEqual(try Store(url: bridge.directory.appendingPathComponent("radar.sqlite3")).preference(forKey: "marketFiltersV2JSON"), saved)
+        bridge.previewDelay = 0
+        try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 167")
+        let stillSaved = try await js(view, "document.querySelector('[data-filter-unsaved]') === null") as? Bool
+        XCTAssertEqual(stillSaved, true, "A preview captured before saving must not undo the acknowledged rules.")
+        try await click(view, "Formula")
+        let formulaRetained = try await js(view, "document.querySelector('textarea')?.value.includes('oiTrend')") as? Bool
+        XCTAssertEqual(formulaRetained, true)
+        XCTAssertEqual(bridge.radar.marketFiltersV2JSON, saved)
     }
 
     @MainActor

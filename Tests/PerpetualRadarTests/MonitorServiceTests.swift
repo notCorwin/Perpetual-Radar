@@ -162,6 +162,15 @@ final class MonitorServiceTests: XCTestCase {
         let info = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(info["pid"] as? Int32)
         helperPIDs.append(helperPID!)
         XCTAssertEqual(info["backgroundMonitoringEnabled"] as? Bool, false)
+        let appliedJSON = try FilterCompiler.compile(source: "Close > 0").config.json
+        let applyStart = ContinuousClock.now
+        let applied = try await request(["marketFiltersJSON": appliedJSON])
+        print("Packaged Apply filters persistence acknowledgment: \(applyStart.duration(to: .now))")
+        XCTAssertEqual(applied["filterConfigJSON"] as? String, appliedJSON)
+        XCTAssertNotNil(applied["revision"] as? Int); XCTAssertNotNil(applied["serviceSession"] as? String)
+        XCTAssertNil(applied["rows"], "Saving filters must not rebuild the market snapshot.")
+        XCTAssertNil(applied["filterMetricsCatalog"], "A save acknowledgment must not retransmit the full editor catalog.")
+        XCTAssertEqual(try Store(url: directory.appendingPathComponent("radar.sqlite3")).preference(forKey: "marketFiltersV2JSON"), appliedJSON)
         let longStrategy = LongStrategy(name: "Packaged Long",entryJSON: try FilterCompiler.compile(source: "Close > 0").config.json,exitJSON: try FilterCompiler.compile(source: "LongHeldHours >= 3").config.json)
         let longReply = try await request(["longDecision": ["action": "save", "strategy": try JSONSerialization.jsonObject(with: Data(try researchJSON(longStrategy).utf8))]])
         let savedLong = try XCTUnwrap(longReply["saved"] as? [String: Any])

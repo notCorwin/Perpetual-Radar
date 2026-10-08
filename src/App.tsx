@@ -37,7 +37,8 @@ type HistoryProgress = { pending: number; completed: number; error: string }
 type Snapshot = WindowAppearance & NotificationSettings & { rows: NativeMarketRow[]; updatedAt: number | null; error: string; revision: number; serviceSession?: string; filterConfigJSON: string; filterMetricsCatalog: FilterMetric[]; filterFunctions: string[]; filterFunctionCatalog: ExpressionTemplate[]; filterLibraryPreferences: FilterLibraryPreferences; marketFilterCombinations: FilterCombination[]; selectedMarketFilterCombinationID: string }
 type PreviewSnapshot = Snapshot & { filterResults: Record<string, FilterTruth>; filterToken: string; historyProgress: HistoryProgress }
 type UnchangedSnapshot = { unchanged: true; revision: number; error: string }
-type SettingRequest = Partial<WindowAppearance> & { backgroundMonitoringEnabled?: boolean; notificationsEnabled?: boolean; monitoringPaused?: boolean; launchAtLogin?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; marketFiltersJSON?: string; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
+type AppliedFilterSnapshot = { filterConfigJSON: string; revision: number; serviceSession?: string }
+type SettingRequest = Partial<WindowAppearance> & { backgroundMonitoringEnabled?: boolean; notificationsEnabled?: boolean; monitoringPaused?: boolean; launchAtLogin?: boolean; notificationAction?: "refresh" | "requestPermission" | "test" | "openSettings"; filterLibraryPreferencesJSON?: string; saveMarketFilterCombination?: { name: string; filtersJSON: string }; deleteMarketFilterCombination?: string; selectedMarketFilterCombinationID?: string }
 type NativeBridge = {
   postMessage(request: { longDecision: LongRequest }): Promise<LongResponse>
   postMessage(request: { research: ResearchRequest }): Promise<ResearchResponse>
@@ -46,6 +47,7 @@ type NativeBridge = {
   postMessage(request: { compileMarketFilters: { filtersJSON?: string; source?: string; previousJSON?: string } }): Promise<CompileResponse>
   postMessage(request: { previewMarketFilters: { filtersJSON: string; token: string; atClose?: boolean; strategyID?: string } }): Promise<PreviewSnapshot>
   postMessage(request: { explainMarketFilters: { instId: string; filtersJSON: string; token: string; atClose?: boolean; strategyID?: string } }): Promise<ExplainResponse>
+  postMessage(request: { marketFiltersJSON: string }): Promise<AppliedFilterSnapshot>
   postMessage(request: SettingRequest): Promise<Snapshot>
   postMessage(request: { captureChart: { x: number; y: number; width: number; height: number; backgroundRGB: number[] } }): Promise<{ ok: boolean }>
   postMessage(request: { windowTintRGB: number[] }): Promise<{ ok: boolean }>
@@ -144,6 +146,7 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
   const serviceSession = useRef<string | undefined>(undefined)
   const backgroundOpacityDraftDirty = useRef(false)
   const appliedJSON = useRef("")
+  const appliedRevision = useRef(-1)
   const compileEpoch = useRef(0)
   const previewEpoch = useRef(0)
   const [ready, setReady] = useState(false)
@@ -230,7 +233,7 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     return () => theme.removeEventListener("change", updateTint)
   }, [frostedBackgroundEnabled, frostedBackgroundOpacity])
   const acceptSnapshot = (snapshot: Snapshot) => {
-    if (snapshot.serviceSession && snapshot.serviceSession !== serviceSession.current) { serviceSession.current = snapshot.serviceSession; revision.current = -1 }
+    if (snapshot.serviceSession && snapshot.serviceSession !== serviceSession.current) { serviceSession.current = snapshot.serviceSession; revision.current = -1; appliedRevision.current = -1 }
     if (snapshot.revision < revision.current) return false
     const includeData = revision.current === -1 || "filterResults" in snapshot
     revision.current = snapshot.revision
@@ -248,9 +251,12 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
       launchAtLoginError: snapshot.launchAtLoginError ?? "",
     }))
     if (!backgroundOpacityDraftDirty.current && document.activeElement?.id !== "background-opacity") setBackgroundOpacityDraft(String(snapshot.frostedBackgroundOpacity))
-    if (appliedJSON.current !== snapshot.filterConfigJSON) {
-      appliedJSON.current = snapshot.filterConfigJSON
-      setListFilters(parseFilterConfig(snapshot.filterConfigJSON))
+    if (snapshot.revision >= appliedRevision.current) {
+      appliedRevision.current = snapshot.revision
+      if (appliedJSON.current !== snapshot.filterConfigJSON) {
+        appliedJSON.current = snapshot.filterConfigJSON
+        setListFilters(parseFilterConfig(snapshot.filterConfigJSON))
+      }
     }
     setFilterCombinations(current => keepSnapshotValue(current, snapshot.marketFilterCombinations))
     setFilterCombinationId(snapshot.selectedMarketFilterCombinationID)
@@ -341,7 +347,13 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
   const listOrder = useMemo(() => visible.map(row => row.instId), [visible])
   const turnoverOrder = useMemo(() => [...matchedRows].sort(compareMarketTurnover).map(row => row.instId), [matchedRows])
   const saveFilters = async (filters: FilterConfigV2) => {
-    acceptSnapshot(await window.webkit.messageHandlers.radar.postMessage({ marketFiltersJSON: JSON.stringify(filters) }))
+    const snapshot = await window.webkit.messageHandlers.radar.postMessage({ marketFiltersJSON: JSON.stringify(filters) })
+    if (snapshot.serviceSession && snapshot.serviceSession !== serviceSession.current) { serviceSession.current = snapshot.serviceSession; revision.current = -1; appliedRevision.current = -1 }
+    // Saving changes settings only. Keep accepting coherent in-flight market
+    // previews without allowing their older settings to undo this acknowledgment.
+    appliedRevision.current = Math.max(appliedRevision.current, snapshot.revision)
+    appliedJSON.current = snapshot.filterConfigJSON
+    setListFilters(parseFilterConfig(snapshot.filterConfigJSON))
     setFilterDraft(null)
     setEditor(current => ({ ...current, source: null }))
   }

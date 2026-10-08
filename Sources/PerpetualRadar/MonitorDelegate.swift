@@ -69,7 +69,10 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notifications?.onOpenLong = { [weak self] id in self?.openInterface(instId: nil, strategyID: id) }
         notifications?.onStateChanged = { [weak self] in self?.renderMenu() }
         Task { await notifications?.refresh() }
-        if !MonitorRuntime.backgroundMonitoringEnabled, loginStatus == "enabled" || loginStatus == "requiresApproval" { try? setLogin(false) }
+        Task {
+            await refreshLoginStatus()
+            if !MonitorRuntime.backgroundMonitoringEnabled, loginStatus == "enabled" || loginStatus == "requiresApproval" { try? await setLogin(false) }
+        }
         reconcileMonitoring()
         let leaseTimer = Timer(timeInterval: 2, target: self, selector: #selector(checkForegroundLease), userInfo: nil, repeats: true)
         RunLoop.main.add(leaseTimer, forMode: .common); self.leaseTimer = leaseTimer
@@ -111,14 +114,14 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu; statusItem = item
     }
 
-    private var loginStatus: String {
-        guard Bundle.main.bundleURL.pathExtension == "app", fixture == nil else { return "unavailable" }
-        switch SMAppService.mainApp.status {
-        case .enabled: return "enabled"
-        case .requiresApproval: return "requiresApproval"
-        case .notRegistered: return "disabled"
-        default: return "unavailable"
-        }
+    private let loginItemStatus = LoginItemStatus()
+    private var loginStatusAvailable: Bool { Bundle.main.bundleURL.pathExtension == "app" && fixture == nil }
+    private var loginStatus: String { loginStatusAvailable ? loginItemStatus.value : "unavailable" }
+
+    private func refreshLoginStatus(force: Bool = false) async {
+        guard loginStatusAvailable else { return }
+        _ = await loginItemStatus.refresh(force: force)
+        renderMenu()
     }
 
     private func renderMenu() {
@@ -138,7 +141,10 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         automaticUpdatesItem.state = AppDelegate.automaticUpdatesEnabled(in: MonitorRuntime.defaults) ? .on : .off
     }
 
-    func menuWillOpen(_ menu: NSMenu) { renderMenu(); Task { await notifications?.refresh() } }
+    func menuWillOpen(_ menu: NSMenu) {
+        renderMenu()
+        Task { await refreshLoginStatus(force: true); await notifications?.refresh() }
+    }
 
     private func startMonitoring() {
         guard let radar, monitor == nil, collectionAllowed else { return }
@@ -165,21 +171,29 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderMenu()
     }
 
-    private func setLogin(_ enabled: Bool) throws {
+    private func setLogin(_ enabled: Bool) async throws {
         guard !enabled || MonitorRuntime.backgroundMonitoringEnabled else { throw FilterError("Enable Background Monitoring before enabling Start at Login.") }
+        guard loginStatusAvailable else { throw FilterError("Start at Login requires the packaged app.") }
+        let loginStatus = await loginItemStatus.refresh(force: true)
         guard loginStatus != "unavailable" else { throw FilterError("Start at Login requires the packaged app.") }
         do {
             if enabled {
                 if loginStatus == "requiresApproval" { SMAppService.openSystemSettingsLoginItems() }
                 else if loginStatus != "enabled" { try SMAppService.mainApp.register() }
-            } else if loginStatus != "disabled" { try SMAppService.mainApp.unregister() }
+            } else if loginStatus != "disabled" { try await SMAppService.mainApp.unregister() }
             loginError = ""
         } catch { loginError = error.localizedDescription; throw error }
-        renderMenu()
+        await refreshLoginStatus(force: true)
     }
 
     @objc private func toggleMonitoring() { do { try setPaused(radar?.monitoringPaused != true) } catch { showUpdateAlert("Cannot Save Monitoring", error.localizedDescription) } }
-    @objc private func toggleLogin() { do { try setLogin(loginStatus != "enabled") } catch { showUpdateAlert("Cannot Change Start at Login", error.localizedDescription) } }
+    @objc private func toggleLogin() {
+        Task {
+            await refreshLoginStatus(force: true)
+            do { try await setLogin(loginStatus != "enabled") }
+            catch { showUpdateAlert("Cannot Change Start at Login", error.localizedDescription) }
+        }
+    }
     @objc private func toggleNotifications() {
         guard let radar else { return }
         do { try radar.setNotificationsEnabled(!radar.notificationsEnabled); renderMenu(); Task { await notifications?.refresh(requestPermission: radar.notificationsEnabled) } }
@@ -201,6 +215,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderMenu()
     }
     @objc private func checkForegroundLease() {
+        Task { await refreshLoginStatus() }
         let alive = foregroundPID.map { kill($0, 0) == 0 || errno == EPERM } ?? false
         if !alive {
             foregroundPID = nil; researchBusy = false
@@ -254,7 +269,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let enabled = parameters["backgroundMonitoringEnabled"] as? Bool {
             MonitorRuntime.defaults.set(enabled, forKey: "BackgroundMonitoring")
-            if !enabled, loginStatus == "enabled" || loginStatus == "requiresApproval" { try setLogin(false) }
+            if !enabled, loginStatusAvailable { try await setLogin(false) }
             reconcileMonitoring()
         }
         if parameters["serviceInfo"] as? Bool == true {
@@ -295,7 +310,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let requested = parameters["launchAtLogin"] {
             guard let enabled = requested as? Bool else { throw FilterError("Invalid Start at Login setting.") }
-            try setLogin(enabled)
+            try await setLogin(enabled)
         }
         if let requested = parameters["notificationsEnabled"] {
             guard let enabled = requested as? Bool else { throw FilterError("Invalid notification setting.") }
@@ -338,6 +353,12 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let value = parameters["selectedMarketFilterCombinationID"] { guard let id = value as? String, try radar.setSelectedMarketFilterCombinationID(id) else { throw FilterError("The saved combination no longer exists.") } }
         if let value = parameters["deleteMarketFilterCombination"] { guard let id = value as? String, try radar.deleteMarketFilterCombination(id) else { throw FilterError("The saved combination no longer exists.") } }
+        if parameters["marketFiltersJSON"] != nil {
+            monitor?.wake()
+            if parameters.keys.allSatisfy({ ["marketFiltersJSON", "foregroundLease"].contains($0) }) {
+                return decorated(radar.appliedFilterSnapshot())
+            }
+        }
         return decorated(try await radar.asyncSnapshot(rocPeriod: parameters["rocPeriod"] as? Int ?? 9, marocPeriod: parameters["marocPeriod"] as? Int ?? 9, sinceRevision: parameters["sinceRevision"] as? Int))
     }
     @objc private func checkForUpdatesNow() {

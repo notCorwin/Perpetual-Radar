@@ -253,16 +253,29 @@ final class Radar {
     }
 
     func setMarketFiltersJSON(_ value: String) throws -> Bool {
-        guard validMarketFiltersJSON(value) else { return false }
-        let config = try FilterCompiler.compile(migratedFilter(value)).config
+        let config: FilterConfigV2
+        if (try? FilterConfigV2.decode(value)) != nil {
+            guard let compiled = try? compiledFilter(value) else { return false }
+            config = compiled.config
+        } else {
+            guard validMarketFiltersJSON(value) else { return false }
+            config = try FilterCompiler.compile(migratedFilter(value)).config
+        }
+        let configJSON = config.json
         try store.transaction {
             try store.setPreference(value, forKey: marketFiltersKey)
-            try store.setPreference(config.json, forKey: marketFiltersV2Key)
+            try store.setPreference(configJSON, forKey: marketFiltersV2Key)
         }
         marketFiltersJSON = value
-        marketFiltersV2JSON = config.json
+        marketFiltersV2JSON = configJSON
         touch()
         return true
+    }
+
+    // A successful write can be acknowledged while indicator/history workers
+    // are busy. The preview supplies market rows and decisions independently.
+    func appliedFilterSnapshot() -> [String: Any] {
+        ["filterConfigJSON": marketFiltersV2JSON, "revision": revision]
     }
 
     func setFrostedBackground(enabled: Bool? = nil, opacity: Double? = nil) throws -> Bool {
@@ -360,7 +373,10 @@ final class Radar {
             if let source = request["source"] as? String { compiled = try FilterCompiler.compile(source: source, previous: (request["previousJSON"] as? String).flatMap { try? FilterConfigV2.decode($0) }) }
             else if let json = request["filtersJSON"] as? String { compiled = try compiledFilter(json) }
             else { throw FilterError("Provide a formula or filter configuration.") }
-            return ["configJSON": compiled.config.json, "formula": compiled.formula, "diagnostics": [], "requiredHours": compiled.requiredHours,
+            let configJSON = compiled.config.json
+            if compiledFilters.count >= 8, compiledFilters[configJSON] == nil { compiledFilters.removeAll() }
+            compiledFilters[configJSON] = compiled
+            return ["configJSON": configJSON, "formula": compiled.formula, "diagnostics": [], "requiredHours": compiled.requiredHours,
                     "units": compiled.units, "expressions": compiled.editorExpressions.mapValues(\.snapshot)]
         } catch { return ["diagnostics": [String(describing: error)]] }
     }
