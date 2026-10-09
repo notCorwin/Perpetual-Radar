@@ -101,11 +101,12 @@ final class AppUpdater: @unchecked Sendable {
     private static let appName = "Perpetual Swap Suite"
     private static let bundleIdentifier = "com.perpetualradar.macos"
     private static let executableName = "PerpetualRadar"
+    private static let releaseURLPrefix = "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/"
     private static let canonicalAssetURL = URL(
-        string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar"
+        string: "\(releaseURLPrefix)autobuild/Perpetual.Swap.Suite.app.tar"
     )!
     private static let manifestURL = URL(
-        string: "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/update.json"
+        string: "\(releaseURLPrefix)autobuild/update.json"
     )!
     private static let retryAfterKey = "UpdateCheckRetryAfter"
     private static let maxAttempts = 3
@@ -619,9 +620,9 @@ final class AppUpdater: @unchecked Sendable {
     static func isExpectedAssetURL(_ url: URL, revision: String) -> Bool {
         if isCanonicalAssetURL(url) { return true }
         let value = url.absoluteString
-        let legacyPrefix = "https://github.com/notCorwin/Perpetual-Radar/releases/download/build-\(revision)-"
+        let legacyPrefix = "\(releaseURLPrefix)build-\(revision)-"
         let legacySuffix = "/Perpetual.Swap.Suite.app.tar"
-        let versionedPrefix = "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.\(revision)."
+        let versionedPrefix = "\(releaseURLPrefix)autobuild/Perpetual.Swap.Suite.app.\(revision)."
         let versionedSuffix = ".tar"
         let run: Substring
         if value.hasPrefix(legacyPrefix), value.hasSuffix(legacySuffix) {

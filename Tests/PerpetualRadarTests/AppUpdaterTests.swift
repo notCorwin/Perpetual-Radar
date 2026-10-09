@@ -16,7 +16,7 @@ final class AppUpdaterTests: XCTestCase {
         let digest = String(repeating: "b", count: 64)
         let data = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "digest": "sha256:\(digest)",
             "published_at": "2026-09-27T00:00:00Z",
         ])
@@ -25,7 +25,7 @@ final class AppUpdaterTests: XCTestCase {
             return XCTFail("Expected an available update")
         }
         XCTAssertEqual(available?.revision, revision)
-        XCTAssertEqual(available?.assetURL.absoluteString, "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar")
+        XCTAssertEqual(available?.assetURL.absoluteString, "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.tar")
         XCTAssertEqual(available?.expectedSHA256, digest)
         XCTAssertEqual(available?.publishedAt, Date(timeIntervalSince1970: 1_790_467_200))
         guard case .success(let latest) = AppUpdater.parse(data: data, currentRevision: revision) else {
@@ -35,7 +35,7 @@ final class AppUpdaterTests: XCTestCase {
 
         let missingDigest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
         ])
         guard case .failure(.invalidResponse) = AppUpdater.parse(data: missingDigest, currentRevision: nil) else {
             return XCTFail("Expected an unsigned release to be rejected")
@@ -49,10 +49,10 @@ final class AppUpdaterTests: XCTestCase {
             return XCTFail("Expected an unexpected download location to be rejected")
         }
 
-        let immutableURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/build-\(revision)-123-1/Perpetual.Swap.Suite.app.tar"
+        let immutableURL = "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/build-\(revision)-123-1/Perpetual.Swap.Suite.app.tar"
         let immutableManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "immutable_asset_url": immutableURL,
             "digest": "sha256:\(digest)",
         ])
@@ -61,10 +61,10 @@ final class AppUpdaterTests: XCTestCase {
         }
         XCTAssertEqual(immutableUpdate?.assetURL.absoluteString, immutableURL)
 
-        let versionedURL = "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.\(revision).123-1.tar"
+        let versionedURL = "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.\(revision).123-1.tar"
         let versionedManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "versioned_asset_url": versionedURL,
             "digest": "sha256:\(digest)",
         ])
@@ -75,7 +75,7 @@ final class AppUpdaterTests: XCTestCase {
 
         let invalidVersionedManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "versioned_asset_url": versionedURL.replacingOccurrences(of: revision, with: String(repeating: "c", count: 40)),
             "digest": "sha256:\(digest)",
         ])
@@ -86,7 +86,7 @@ final class AppUpdaterTests: XCTestCase {
         let wrongRevisionURL = immutableURL.replacingOccurrences(of: revision, with: String(repeating: "c", count: 40))
         let mismatchedManifest = try JSONSerialization.data(withJSONObject: [
             "revision": revision,
-            "asset_url": "https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
+            "asset_url": "https://github.com/notCorwin/Perpetual-Swap-Suite/releases/download/autobuild/Perpetual.Swap.Suite.app.tar",
             "immutable_asset_url": wrongRevisionURL,
             "digest": "sha256:\(digest)",
         ])

@@ -2,6 +2,8 @@
 
 Perpetual Swap Suite is a native macOS app for OKX's live, non-TradFi USDT perpetual swaps. Its AppKit window embeds a WebKit dashboard built with shadcn/ui and Tailwind CSS. Swift collects public OKX REST and WebSocket data, computes the one-hour indicators, and stores completed data in SQLite. The app does not run a local web server or need an OKX API key.
 
+[Download the latest macOS app](https://github.com/notCorwin/Perpetual-Swap-Suite/releases/tag/autobuild). Releases and update checks use the `notCorwin/Perpetual-Swap-Suite` repository. Install this release manually when upgrading from Perpetual Radar or a build using the previous repository name; those update clients validate the old package or repository URL.
+
 ## Features
 
 - **On-demand** is the default run mode. Closing the window or **Cmd+Q** checkpoints research and stops the collector and helper. Minimizing keeps tasks running. Reopening starts on Radar; paused studies resume only when requested. **Settings → Run mode → Background Monitoring** explicitly enables collection after closing or quitting, and enables optional **Start at Login** through macOS ServiceManagement. **Pause Monitoring** stops collection and alerts; resuming establishes a quiet baseline. **Quit Completely** stops both processes. The native helper owns the collector, notifications and updates, and stops after an unexpected on-demand interface exit. Research defers update installation; an explicit on-demand quit prevents update relaunch. The exchange universe refreshes every five minutes while monitoring. No SwiftUI is used.

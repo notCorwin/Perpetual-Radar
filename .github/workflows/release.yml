@@ -45,10 +45,12 @@ jobs:
           tar -tf Perpetual.Swap.Suite.app.tar | grep -qx 'Perpetual Swap Suite.app/Contents/MacOS/PerpetualRadar'
           sha256="$(shasum -a 256 Perpetual.Swap.Suite.app.tar | cut -d' ' -f1)"
           built_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          printf '{"revision":"%s","asset_url":"https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar","digest":"sha256:%s","published_at":"%s"}\n' \
-            "$GITHUB_SHA" "$sha256" "$built_at" > update.json
-          printf 'Latest automatic build from `main`. This release is replaced after each successful build.\n\n[Download Perpetual Swap Suite](https://github.com/notCorwin/Perpetual-Radar/releases/download/autobuild/Perpetual.Swap.Suite.app.tar)\n\nCommit: [%s](https://github.com/notCorwin/Perpetual-Radar/commit/%s)\n\nBuilt at: %s (UTC)\n' \
-            "$GITHUB_SHA" "$GITHUB_SHA" "$built_at" > release-notes.md
+          repository_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          asset_url="${repository_url}/releases/download/autobuild/Perpetual.Swap.Suite.app.tar"
+          printf '{"revision":"%s","asset_url":"%s","digest":"sha256:%s","published_at":"%s"}\n' \
+            "$GITHUB_SHA" "$asset_url" "$sha256" "$built_at" > update.json
+          printf 'Latest automatic build from `main`. This release is replaced after each successful build.\n\n[Download Perpetual Swap Suite](%s)\n\nCommit: [%s](%s/commit/%s)\n\nBuilt at: %s (UTC)\n' \
+            "$asset_url" "$GITHUB_SHA" "$repository_url" "$GITHUB_SHA" "$built_at" > release-notes.md
       - name: Publish autobuild release
         shell: bash
         env:
