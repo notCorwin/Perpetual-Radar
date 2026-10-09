@@ -61,8 +61,7 @@ test("preview responses must match the draft token and cannot replace a newer ma
   assert.equal(previewResponseIsCurrent({ filterToken: "draft-b", revision: 8 }, "draft-b", 9), false)
   assert.equal(previewResponseIsCurrent({ filterToken: "draft-b", revision: 9 }, "draft-b", 9), true)
   assert.equal(previewResponseIsCurrent({ filterToken: "draft-b", revision: 11 }, "draft-b", 9), true)
-  const editor = { ...initialEditorState(), source: "Close >", combinationName: { id: "x", value: "Unsaved" }, collapsed: { node: true } }
+  const editor = { ...initialEditorState(), source: "Close >", collapsed: { node: true } }
   assert.deepEqual({ ...editor, tab: "rules", open: false }.source, "Close >")
   assert.equal(editor.collapsed.node, true)
-  assert.equal(editor.combinationName.value, "Unsaved")
 })

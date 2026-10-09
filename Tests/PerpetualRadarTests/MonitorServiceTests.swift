@@ -43,7 +43,9 @@ final class MonitorServiceTests: XCTestCase {
         defaults.set(false, forKey: "BackgroundMonitoring"); defaults.set(false, forKey: "AutomaticallyInstallUpdates")
         do {
             let radar = try Radar(defaults: defaults, storeURL: radarURL)
-            XCTAssertTrue(try radar.setMarketFiltersJSON(config))
+            let store = try Store(url: radarURL), off = try FilterCompiler.compile(source: "1 > 2").config.json
+            let profile = try store.saveSuiteProfile(.init(name: "Recovery strategy", universeJSON: config, phaseRules: Dictionary(uniqueKeysWithValues: SuitePhase.allCases.map { ($0.rawValue, off) })))
+            _ = try store.manageSuite(["action": "select", "profileID": profile.id], mode: "radar")
             XCTAssertTrue(try radar.setFrostedBackground(enabled: true, opacity: 0.55))
             let research = try ResearchStore(directory: researchDirectory)
             try research.put("sentinel", kind: "test", ["value": "preserved"])
@@ -82,7 +84,7 @@ final class MonitorServiceTests: XCTestCase {
             try FileManager.default.removeItem(at: url)
             try FileManager.default.moveItem(at: url.appendingPathExtension("parked"), to: url)
         }
-        try await wait { (try await request(["monitor": [:]], interface: true))["filterConfigJSON"] as? String == config }
+        try await wait { ((try await request(["suite": ["mode": "radar", "action": "inventory"]], interface: true))["profiles"] as? [[String: Any]])?.first?["universeJSON"] as? String == config }
         try await wait { (try await request(["research": ["action": "inventory"]], interface: true))["studies"] != nil }
         let restored = try await request(["monitor": [:]], interface: true)
         XCTAssertEqual(restored["frostedBackgroundOpacity"] as? Double, 0.55)
@@ -162,15 +164,6 @@ final class MonitorServiceTests: XCTestCase {
         let info = try await request(["serviceInfo": true]); helperPID = try XCTUnwrap(info["pid"] as? Int32)
         helperPIDs.append(helperPID!)
         XCTAssertEqual(info["backgroundMonitoringEnabled"] as? Bool, false)
-        let appliedJSON = try FilterCompiler.compile(source: "Close > 0").config.json
-        let applyStart = ContinuousClock.now
-        let applied = try await request(["marketFiltersJSON": appliedJSON])
-        print("Packaged Apply filters persistence acknowledgment: \(applyStart.duration(to: .now))")
-        XCTAssertEqual(applied["filterConfigJSON"] as? String, appliedJSON)
-        XCTAssertNotNil(applied["revision"] as? Int); XCTAssertNotNil(applied["serviceSession"] as? String)
-        XCTAssertNil(applied["rows"], "Saving filters must not rebuild the market snapshot.")
-        XCTAssertNil(applied["filterMetricsCatalog"], "A save acknowledgment must not retransmit the full editor catalog.")
-        XCTAssertEqual(try Store(url: directory.appendingPathComponent("radar.sqlite3")).preference(forKey: "marketFiltersV2JSON"), appliedJSON)
         let longStrategy = LongStrategy(name: "Packaged Long",entryJSON: try FilterCompiler.compile(source: "Close > 0").config.json,exitJSON: try FilterCompiler.compile(source: "LongHeldHours >= 3").config.json)
         let longReply = try await request(["longDecision": ["action": "save", "strategy": try JSONSerialization.jsonObject(with: Data(try researchJSON(longStrategy).utf8))]])
         let savedLong = try XCTUnwrap(longReply["saved"] as? [String: Any])
@@ -179,7 +172,12 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertNotNil(liveLong["decisions"] as? [[String: Any]],"The packaged helper must serve the Long evaluation bridge.")
         let phaseProfile=StrategyProfile(name:"Packaged suite",universeJSON:FilterConfigV2().json,phaseRules:["bullishSetup":try FilterCompiler.compile(source:"Close > 105").config.json,"bullishExhaustion":try FilterCompiler.compile(source:"LongReturn > 5").config.json,"bearishReversal":try FilterCompiler.compile(source:"Close < 95").config.json,"bearishExhaustion":try FilterCompiler.compile(source:"ShortReturn > 5").config.json])
         let rawProfile=try JSONSerialization.jsonObject(with:Data(researchJSON(phaseProfile).utf8))
+        let applyStart = ContinuousClock.now
         let savedSuite=try await request(["suite":["mode":"radar","action":"save","profile":rawProfile]])
+        print("Packaged Strategy persistence acknowledgment: \(applyStart.duration(to: .now))")
+        XCTAssertNil(savedSuite["rows"], "Saving a strategy must not rebuild the market snapshot.")
+        XCTAssertNil(savedSuite["filterMetricsCatalog"], "Saving must not retransmit the editor catalog.")
+        XCTAssertEqual(try Store(url: directory.appendingPathComponent("radar.sqlite3")).suiteProfiles("radar").first?.universeJSON, phaseProfile.universeJSON)
         XCTAssertNotNil(savedSuite["saved"])
         let copiedSuite=try await request(["suite":["mode":"research","action":"copy","profile":rawProfile]],interface:true)
         XCTAssertEqual((copiedSuite["profiles"] as? [[String:Any]])?.count,2)
@@ -324,8 +322,12 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertEqual(info["appPath"] as? String, app.path)
         XCTAssertEqual(info["automaticUpdatesEnabled"] as? Bool, false, "The helper must read the interface's existing preferences.")
         let config = try FilterCompiler.compile(source: "Close > 105").config.json
-        let saved = try await request(["marketFiltersJSON": config, "frostedBackgroundOpacity": 0.55])
-        XCTAssertEqual(saved["filterConfigJSON"] as? String, config)
+        let off = try FilterCompiler.compile(source: "1 > 2").config.json
+        let profile = StrategyProfile(name: "Background strategy", universeJSON: FilterConfigV2().json, phaseRules: ["bullishSetup": config, "bullishExhaustion": off, "bearishReversal": off, "bearishExhaustion": off])
+        _ = try await request(["suite": ["mode": "radar", "action": "save", "profile": try JSONSerialization.jsonObject(with: Data(researchJSON(profile).utf8))]])
+        _ = try await request(["suite": ["mode": "radar", "action": "select", "profileID": profile.id]])
+        let saved = try await request(["frostedBackgroundOpacity": 0.55])
+        XCTAssertNil(saved["filterConfigJSON"])
         XCTAssertEqual(saved["frostedBackgroundOpacity"] as? Double, 0.55)
         let baseline = (try await request(["serviceInfo": true]))["samples"] as! Int
         try await wait("rule-samples") { (try await request(["serviceInfo": true]))["samples"] as? Int ?? 0 >= baseline + 2 }
@@ -348,7 +350,7 @@ final class MonitorServiceTests: XCTestCase {
         info = try await request(["serviceInfo": true])
         XCTAssertEqual(info["pid"] as? Int32, helperPID, "Reopening must reuse the existing collector.")
         let restored = try await request([:])
-        XCTAssertEqual(restored["filterConfigJSON"] as? String, config)
+        XCTAssertEqual(try Store(url: directory.appendingPathComponent("radar.sqlite3")).selectedSuiteProfile("radar")?.phaseRules["bullishSetup"], config)
         XCTAssertEqual(restored["frostedBackgroundOpacity"] as? Double, 0.55)
         _ = try await request(["monitoringPaused": true])
         let pausedSamples = (try await request(["serviceInfo": true]))["samples"] as! Int
@@ -375,7 +377,7 @@ final class MonitorServiceTests: XCTestCase {
         XCTAssertTrue(info["monitoringPaused"] as? Bool == true, "A restarted helper must preserve the pause setting.")
         XCTAssertEqual(info["samples"] as? Int, 0)
         let afterRestart = try await request([:])
-        XCTAssertEqual(afterRestart["filterConfigJSON"] as? String, config)
+        XCTAssertEqual(try Store(url: directory.appendingPathComponent("radar.sqlite3")).selectedSuiteProfile("radar")?.phaseRules["bullishSetup"], config)
         XCTAssertEqual(afterRestart["frostedBackgroundOpacity"] as? Double, 0.55)
         let stalledPID = monitorPID!
         defer { if monitorPID == stalledPID { kill(stalledPID, SIGCONT) } }
@@ -393,7 +395,7 @@ final class MonitorServiceTests: XCTestCase {
         monitorPID = try XCTUnwrap(recoveredPID, "A stalled helper must recover while the same interface remains open.")
         XCTAssertTrue(reopened.isRunning)
         let afterHang = try await request([:])
-        XCTAssertEqual(afterHang["filterConfigJSON"] as? String, config)
+        XCTAssertEqual(try Store(url: directory.appendingPathComponent("radar.sqlite3")).selectedSuiteProfile("radar")?.phaseRules["bullishSetup"], config)
         XCTAssertEqual(afterHang["frostedBackgroundOpacity"] as? Double, 0.55)
         XCTAssertEqual(afterHang["monitoringPaused"] as? Bool, true)
         let quittingPID = monitorPID!

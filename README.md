@@ -11,7 +11,7 @@ A native macOS app for screening OKX perpetual swaps, monitoring strategies, rec
 - **Live signal discovery:** simultaneous Bullish Setup and Bearish Reversal lanes, separate confirmed and provisional readings, visible conflicts, and direct chart/evidence access. All markets retains sortable indicators, search, and Long/Short Opportunity rankings with score explanations. Indicators include EMA200, Log Bollinger Bands, RSI, ROC/MAROC, open interest, taker volume, and high breakouts/low breakdowns.
 - **Visual and formula rules:** synchronized editors support AND/OR/NOT groups, calculations, hourly conditions, event sequences, reusable values, and BTC market context. Inspect actual operands and data gaps with rule previews and market explanations.
 - **Strategies and positions:** one shared Radar and Research library supports four-phase strategies, confirmed and provisional signals, and manually recorded Long/Short entries and exits.
-- **Reproducible research:** compare frozen strategy versions, study filter signals, calibrate Opportunity scores, or simulate independent per-contract capital. Review coverage, costs, funding, equity, drawdown, and trade evidence; pause, resume, and export CSVs.
+- **Reproducible research:** compare frozen strategy versions, study strategy signals, calibrate Opportunity scores, or simulate independent per-contract capital. Review coverage, costs, funding, equity, drawdown, and trade evidence; pause, resume, and export CSVs.
 - **Interactive charts:** review 96 hourly candles at a time with VWAP14, EMA200, Log BB, RSI, ROC/MAROC, OI, and taker volume. Load older history, navigate contracts by keyboard, and copy charts to the clipboard.
 - **Native macOS workflow:** optional background monitoring, menu bar controls, notifications, Start at Login, automatic updates, Light/Dark/System appearance, adjustable frosted backgrounds, and tabular numbers.
 
@@ -57,18 +57,18 @@ Select an **Active strategy** from the shared library to open **Signals**. Radar
 
 **All markets** exposes the full supported universe, including nonmatches and Unknown inputs. Search applies to either view. **Positions** opens actual records; exits continue outside Universe. **Test strategy** carries the exact saved version into Research.
 
-With **Market filters only**, Radar opens the original screening table. Its initial editable rules require at least **10M USDT 24-hour turnover**, at most **0.15% spread**, at least **six calendar months** since listing, and exclusion of `USDC-USDT-SWAP`. Clear the entire rule tree to include every contract in the supported exchange universe.
+With **No active strategy**, Radar displays every contract in the supported exchange universe and offers **Strategy Library…** to create or activate a strategy. Signals and confirmed alerts require an active Strategy. Turnover, spread, listing age and every other restriction belong to the Strategy Universe; no independent Filter configuration or saved combination is applied.
 
 Search narrows the visible list. Click column headings to sort; the default **Opportunity** ordering groups `Candidate`, `Watch`, `Overheated`, and `Incomplete` results. Open a score to inspect its components and missing inputs. Opportunity scores are heuristics; use Research to evaluate them against historical data.
 
-### Build and apply filters
+### Build and save strategy rules
 
-1. Open **Filters → Rules**, then **Add condition**. Search the condition library or choose a preset such as OI rising, Volume surge, or a BTC market context condition.
+1. In **Strategies & Positions**, choose a Strategy and its **Universe** or phase, then open **Rules**, then **Add condition**. Search the condition library or choose a preset such as OI rising, Volume surge, or a BTC market context condition.
 2. Edit conditions in sentence rows or **Guided cards**. Select **Live** for the forming hour or **Closed** for completed-hour evaluation; combine conditions with groups, calculations, or time requirements.
 3. Use **Check a contract** or **Explain markets** to inspect matching, unmatched, and Unknown results.
-4. Choose **Apply filters** to persist the valid configuration. Save a named combination to reuse it later.
+4. Choose **Save strategy** to save all five configurations together. In Radar’s **All markets → Universe rules** panel, **Save Universe** updates the active Strategy directly.
 
-Valid draft edits immediately preview list matches and chart navigation. Alerts use the **saved** configuration. Invalid drafts retain the last valid preview and cannot be applied. Missing inputs evaluate as **Unknown**, including under NOT; only True matches enter the filtered list.
+Valid draft edits immediately preview rule matches. The All markets table remains complete. Alerts use the **active saved Strategy**. Invalid drafts retain the last valid preview and cannot be applied. Missing inputs evaluate as **Unknown**, including under NOT; only True Universe and entry phase matches become signals.
 
 The optional **Formula** view edits the same rule tree. Try each example as a separate configuration:
 
@@ -106,8 +106,8 @@ After executing a trade yourself, use **Record entry…** or **Record exit…** 
 
 Click the **Perpetual Swap Radar / Perpetual Swap Research** title to switch modes. Each mode keeps its draft, page, and scroll position. Live monitoring continues while Research prepares or evaluates data.
 
-1. Choose a **Research question**: Multi-direction cycle, Long entry / exit, Filters, Opportunity, or Compare rules.
-2. Select complete rules or saved/frozen strategy versions, contracts, and a UTC date range. A blank start date requests the longest obtainable history. **Strategy Library** manages the shared strategies. Research initially selects the active Radar strategy and its execution policy. New saved revisions are surfaced explicitly; **Use latest saved revisions** updates the study configuration before preparing a new dataset.
+1. Choose a **Research question**: Multi-direction cycle, Long entry / exit, Strategy signals, Opportunity, or Compare strategies.
+2. Select saved/frozen Strategy versions, a phase where applicable, contracts, and a UTC date range. Signals and comparisons include the Strategy Universe; Opportunity uses its Universe. Long simulations use Universe plus Bullish Setup for entry and Bullish Exhaustion for exit. A blank start date requests the longest obtainable history. **Strategy Library** manages the shared strategies. Research initially selects the active Radar strategy and its execution policy. New saved revisions are surfaced explicitly; **Use latest saved revisions** updates the study configuration before preparing a new dataset.
 3. Set execution and capital parameters for cycle studies. Each contract has its own account, initially 10,000 USDT, 100% margin allocation, and 1× leverage. Enter maintenance margin and liquidation fees explicitly. Leave all three trading-cost fields blank for Gross results, or supply entry fee, exit fee, and per-side slippage in basis points, including explicit zero, for modeled Net results.
 4. Choose **Review data plan → Prepare Data → Run Study**. Review source coverage and gaps before downloading; inspect the frozen dataset once preparation finishes.
 5. Inspect reports, trades/events, and frozen charts. Use **Studies & cache** to reopen or resume experiments, and the export controls to save summary, event/trade, and equity CSVs as applicable.
@@ -131,7 +131,7 @@ Choose the run mode under **Settings → Run mode**:
 
 Minimizing keeps work running. **Pause Monitoring** stops collection and alerts; resuming establishes a quiet baseline.
 
-Enable **Settings → Filter notifications** and allow notifications for **Perpetual Swap Suite Monitor**. Alerts report entry/exit changes in saved filters and confirmed strategy events; drafts, search, and sort do not change their rules. Startup and rule changes establish quiet baselines, and Unknown readings preserve prior definite membership. Clicking a notification opens its contract or strategy. Notifications and Start at Login require the packaged `.app`.
+Enable **Settings → Strategy notifications** and allow notifications for **Perpetual Swap Suite Monitor**. Alerts report confirmed entry phases and position exits from the active saved Strategy; drafts, search, and sort do not change their rules. Startup and rule changes establish quiet baselines, and Unknown readings preserve prior definite membership. Clicking a notification opens its contract or strategy. Notifications and Start at Login require the packaged `.app`.
 
 Automatic update installation is enabled by default. Use **Perpetual Swap Suite → Automatically Install Updates** to change it, or **Check for Updates** for a manual check. The helper verifies the release digest and source revision before installation; updates are deferred while Research is busy.
 
@@ -141,11 +141,11 @@ Choose Light, Dark, or System in the native **Appearance** menu. **Settings** co
 
 | Location | Contents |
 | --- | --- |
-| `~/Library/Application Support/PerpetualRadar/radar.sqlite3` | Completed hourly candles/statistics, EMA state, saved filters and strategies, actual position records, and shared settings |
+| `~/Library/Application Support/PerpetualRadar/radar.sqlite3` | Completed hourly candles/statistics, EMA state, saved strategies, actual position records, and shared settings |
 | `~/Library/Application Support/PerpetualRadar/Research/research.sqlite3` | Normalized historical data, frozen experiments, results, and checkpoints |
 | `~/Library/Application Support/PerpetualRadar/Research/Raw/` | Downloaded research source files |
 
-Active quotes, live calculations, filter previews, and notification membership remain in memory. Research datasets and workers use their own database, reuse confirmed Radar history, and do not change live market history. Editable strategies are read and written through the same native monitoring service in both modes. SQLite uses write-ahead logging; native services retry transient database and monitor failures automatically.
+Active quotes, live calculations, strategy rule previews, and notification membership remain in memory. Research datasets and workers use their own database, reuse confirmed Radar history, and do not change live market history. Editable strategies are read and written through the same native monitoring service in both modes. SQLite uses write-ahead logging; native services retry transient database and monitor failures automatically.
 
 ## Development
 

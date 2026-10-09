@@ -24,9 +24,9 @@ import { useSuite } from '@/use-suite'
 import { defaultCapital, defaultExecution, sameStrategyVersion, suiteSpec, type StrategyProfile } from '@/suite-types'
 import { LongTradeResults } from '@/LongTradeResults'
 import { ResearchChart } from '@/ResearchChart'
-import { emptyFilterConfig, parseFilterConfig, type FilterTrace } from '@/rule-engine'
+import { parseFilterConfig, type FilterTrace } from '@/rule-engine'
 import { keepSnapshotValue } from '@/market-snapshot'
-import { requestResearch, researchDateRange, researchPercent, researchSize, researchTime, RESEARCH_HORIZONS, type DataManifest, type DataPlan, type ResearchEvent, type ResearchInputs, type ResearchJob, type ResearchResponse, type ResearchStudy, type ResearchSummary, type StudyReport, type StudySpec, type StudyRule } from '@/research-types'
+import { requestResearch, researchDateRange, researchPercent, researchSize, researchTime, RESEARCH_HORIZONS, type DataManifest, type DataPlan, type ResearchEvent, type ResearchInputs, type ResearchJob, type ResearchResponse, type ResearchStudy, type ResearchSummary, type StudyReport, type StudySpec } from '@/research-types'
 
 const integer = (n: number) => n.toLocaleString('en-US')
 const signed = (n?: number) => n == null ? '' : n > 0 ? 'text-positive' : n < 0 ? 'text-destructive' : ''
@@ -71,8 +71,7 @@ export function Research({ inputs, active, onSwitchMode, onRadar, switchingMode,
     seededCycle.current = true
     setCycleProfiles(spec.strategySnapshots ?? []); setCycleExecution(spec.execution ?? defaultExecution()); setCycleCapital(spec.capital ?? defaultCapital()); setKind('cycle'); setName(spec.name); setLibraryOpen(false); setTab('configure')
   }
-  const [frozenRules, setFrozenRules] = useState<(StudyRule & { id: string })[]>(() => initialSpec?.rules.map((r, i) => ({ ...r, id: 'seed:' + i })) ?? [])
-  const [ruleID, setRuleID] = useState(initialSpec ? 'seed:0' : 'current'), [compareID, setCompareID] = useState(initialSpec ? 'seed:1' : '')
+  const [strategyPhase, setStrategyPhase] = useState<NonNullable<StudySpec['strategyPhase']>>(initialSpec?.strategyPhase ?? 'bullishSetup')
   const [from, setFrom] = useState(initialSpec?.from == null ? '' : new Date(initialSpec.from).toISOString().slice(0, 10)), [through, setThrough] = useState(() => new Date(initialSpec?.through ?? Date.now()).toISOString().slice(0, 10))
   const [instrumentText, setInstrumentText] = useState(initialSpec?.instruments.join(', ') ?? '')
   const [direction, setDirection] = useState<StudySpec['direction']>(initialSpec?.direction ?? 'auto'), [sampling, setSampling] = useState<StudySpec['sampling']>(initialSpec?.sampling ?? 'entries')
@@ -89,9 +88,12 @@ export function Research({ inputs, active, onSwitchMode, onRadar, switchingMode,
   const [notice, setNotice] = useState('')
   const handledJob = useRef(''), selection = useRef(0), polling = useRef(false)
   const busy = pending || Boolean(job && ['planning', 'preparing', 'running'].includes(job.phase))
-  const options = useMemo(() => [{ id: 'current', name: 'Current applied rules', filtersJSON: JSON.stringify(inputs.filters) }, { id: 'all', name: 'All verified exchange markets', filtersJSON: JSON.stringify(emptyFilterConfig()) },
-    ...inputs.combinations.map(c => ({ id: c.id, name: c.name, filtersJSON: c.filterConfigJSON ?? c.filtersJSON })), ...studies.flatMap(s => s.spec.rules.map((r, index) => ({ ...r, id: s.id + ":" + index, name: s.spec.name + " · " + r.name }))), ...frozenRules], [inputs, studies, frozenRules])
-  const cycleOptions = useMemo(() => Array.from(new Map([...studies.flatMap(s => s.spec.strategySnapshots ?? []), ...cycleProfiles, ...researchSuite.snapshot.profiles].map(p => [p.id,p])).values()), [studies,cycleProfiles,researchSuite.snapshot.profiles])
+  // The picker and selected snapshot share the same revision-qualified ID.
+  // Changing an option's ID after selection can clear Radix's native form value.
+  const cycleOptions = useMemo(() => Array.from(new Map([...studies.flatMap(s => s.spec.strategySnapshots ?? []), ...cycleProfiles, ...researchSuite.snapshot.profiles].map(profile => {
+    const frozen = suiteSpec([profile]).strategySnapshots![0]
+    return [frozen.id, { profile: frozen, label: profile.id.includes('@r') ? 'Frozen: ' + profile.name : profile.name + ' · r' + profile.revision }]
+  })).values()), [studies,cycleProfiles,researchSuite.snapshot.profiles])
   const outdatedProfiles = cycleProfiles.filter(profile => {
     const latest = researchSuite.snapshot.profiles.find(saved => saved.id === profile.id.split('@r')[0])
     return latest && latest.revision !== profile.revision
@@ -149,19 +151,18 @@ export function Research({ inputs, active, onSwitchMode, onRadar, switchingMode,
     finally { setPending(false) }
   }
   const createPlan = (refresh = false) => perform(async () => {
-    const chosen = options.find(o => o.id === ruleID), comparison = options.find(o => o.id === compareID)
-    if (kind !== 'cycle' && (!chosen || kind === 'long' && !comparison)) throw new Error('Choose both the entry and exit filter snapshots.')
-    if (kind === 'comparison' && (!comparison || chosen?.id === comparison.id)) throw new Error('Choose two distinct complete rule snapshots to compare.')
+    if (!cycleProfiles.length) throw new Error('Choose a saved Strategy. Use Strategy Library to create one.')
+    if (kind === 'comparison' && cycleProfiles.length !== 2) throw new Error('Choose two strategy versions to compare.')
     const allEmpty = Object.values(fees).every(value => !value.trim())
     if (!allEmpty && Object.values(fees).some(value => !value.trim() || !Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) >= 10_000)) throw new Error('Enter all three costs in basis points, or leave all three blank for gross returns.')
-    const spec: StudySpec = { name: name.trim(), kind, rules: [chosen!, ...((kind === 'comparison' || kind === 'long') && comparison ? [comparison] : [])].filter(Boolean).map(o => ({ name: o.name, filtersJSON: o.filtersJSON })),
+    const frozen = suiteSpec(kind === 'cycle' || kind === 'comparison' ? cycleProfiles : cycleProfiles.slice(0, 1), cycleExecution, cycleCapital)
+    const spec: StudySpec = { name: name.trim(), kind, rules: kind === 'cycle' ? frozen.rules : [], strategySnapshots: frozen.strategySnapshots, strategyPhase,
       instruments: instrumentText.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean), ...researchDateRange(from, through),
       direction: kind === 'long' ? 'Long' : direction, sampling, costs: allEmpty ? null : { entryFeeBps: Number(fees.entry), exitFeeBps: Number(fees.exit), slippageBps: Number(fees.slip) } }
     if (kind === 'cycle') {
       if (!cycleProfiles.length) throw new Error('Choose a saved or frozen four-phase strategy. Use Strategy Library to create or copy one.')
       const settings = [cycleCapital.defaults,...Object.values(cycleCapital.overrides)]
       if (settings.some(s => s.initial == null || s.allocation == null || s.leverage == null || s.maintenanceRate == null || s.liquidationFeeBps == null || ![s.initial,s.allocation,s.leverage,s.maintenanceRate,s.liquidationFeeBps].every(Number.isFinite))) throw new Error('Fill all capital parameters, including explicit maintenance margin and liquidation fees.')
-      const frozen = suiteSpec(cycleProfiles,cycleExecution,cycleCapital)
       spec.rules = frozen.rules; spec.strategySnapshots = frozen.strategySnapshots; spec.execution = cycleExecution; spec.capital = cycleCapital
     }
     if (!spec.name) { document.getElementById('study-name')?.focus(); throw new Error('Give the study a name.') }
@@ -175,8 +176,7 @@ export function Research({ inputs, active, onSwitchMode, onRadar, switchingMode,
     setName(spec.name + ' copy'); setKind(spec.kind); setDirection(spec.direction); setSampling(spec.sampling)
     setFrom(spec.from ? new Date(spec.from).toISOString().slice(0, 10) : ''); setThrough(new Date(spec.through - 1).toISOString().slice(0, 10))
     setInstrumentText(spec.instruments.join(', ')); setFees({ entry: spec.costs ? String(spec.costs.entryFeeBps) : '', exit: spec.costs ? String(spec.costs.exitFeeBps) : '', slip: spec.costs ? String(spec.costs.slippageBps) : '' })
-    const snapshots = spec.rules.map((r, index) => ({ ...r, id: saved.id + ':copy:' + index }))
-    setFrozenRules(snapshots); setRuleID(snapshots[0].id); setCompareID(snapshots[1]?.id ?? '')
+    setStrategyPhase(spec.strategyPhase ?? 'bullishSetup')
     setTab('configure'); setPlan(null); setReport(null); setStudy(null); setManifest(null)
   }
   const navigateEvent = (step: number) => {
@@ -195,9 +195,9 @@ export function Research({ inputs, active, onSwitchMode, onRadar, switchingMode,
   const scoreRows = selectedRows.filter(s => s.group.startsWith('Score · ' + scoreView + ' ·') && (scoreView === 'Thresholds' ? true : !s.group.includes('≥')))
   const context = { metrics: inputs.metrics, expressions: {}, units: {}, templates: inputs.templates }
   const radarSpec = tab === 'configure'
-    ? kind === 'cycle' && cycleProfiles.length ? suiteSpec(cycleProfiles, cycleExecution, cycleCapital) : null
-    : ['data', 'results', 'scores'].includes(tab) && study?.spec.kind === 'cycle' ? study.spec
-      : tab === 'data' && plan?.spec.kind === 'cycle' ? plan.spec : null
+    ? cycleProfiles.length ? suiteSpec(cycleProfiles.slice(0, 1), cycleExecution, cycleCapital) : null
+    : ['data', 'results', 'scores'].includes(tab) && study?.spec.strategySnapshots?.length ? study.spec
+      : tab === 'data' && plan?.spec.strategySnapshots?.length ? plan.spec : null
   const activateVersionInRadar = () => perform(async () => {
     const frozen = radarSpec?.strategySnapshots?.[0]
     if (!frozen) throw new Error('Choose a complete strategy version first.')
@@ -231,15 +231,29 @@ export function Research({ inputs, active, onSwitchMode, onRadar, switchingMode,
       <TabsContent value="configure">
         <form onSubmit={e => { e.preventDefault(); void createPlan() }} className="flex flex-col gap-4">
           <FieldGroup className="grid grid-cols-2 items-start gap-6">
-            <FieldSet><FieldLegend>Study configuration</FieldLegend><FieldDescription>Research samples original rules at each completed hourly close.</FieldDescription><FieldGroup>
+            <FieldSet><FieldLegend>Study configuration</FieldLegend><FieldDescription>Research freezes a saved Strategy and evaluates its rules at each completed hourly close.</FieldDescription><FieldGroup>
               <Field><FieldLabel htmlFor="study-name">Study name</FieldLabel><Input id="study-name" name="studyName" autoComplete="off" value={name} onChange={e => setName(e.target.value)} disabled={busy} /></Field>
               <Field><FieldLabel>Research question</FieldLabel><ToggleGroup type="single" variant="outline" value={kind} disabled={busy} onValueChange={value => {
-                if (!value) return; setKind(value as StudySpec['kind']); if (value === 'score') { setRuleID('all'); setSampling('hourly') } if (value === 'long') { setDirection('Long'); setSampling('entries') }
-              }} aria-label="Research question"><ToggleGroupItem value="cycle">Multi-direction cycle</ToggleGroupItem><ToggleGroupItem value="long">Long entry / exit</ToggleGroupItem><ToggleGroupItem value="filter">Filters</ToggleGroupItem><ToggleGroupItem value="score">Opportunity</ToggleGroupItem><ToggleGroupItem value="comparison">Compare rules</ToggleGroupItem></ToggleGroup></Field>
-              {kind === 'cycle' ? <FieldSet><FieldLegend>Shared strategy versions</FieldLegend><FieldDescription>Radar and Research use the same saved rules. This study freezes the selected revisions and execution policy. Using an older version in Radar restores it as a separate shared strategy.</FieldDescription><FieldGroup><Field><FieldLabel>Primary strategy</FieldLabel><Select value={cycleProfiles[0]?.id ?? ''} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); if (p) { seededCycle.current = true; setCycleProfiles([suiteSpec([p]).strategySnapshots![0], ...cycleProfiles.slice(1).filter(other => other.id !== id)]); setCycleExecution(structuredClone(p.execution)) } }}><SelectTrigger aria-label="Primary cycle strategy"><SelectValue placeholder="Choose a shared strategy…" /></SelectTrigger><SelectContent><SelectGroup>{cycleOptions.map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Compare with</FieldLabel><Select value={cycleProfiles[1]?.id ?? 'none'} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); setCycleProfiles(current => current[0] ? p ? [current[0], suiteSpec([p]).strategySnapshots![0]] : [current[0]] : []) }}><SelectTrigger aria-label="Compare cycle strategy"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Single strategy</SelectItem>{cycleOptions.filter(p => p.id.split('@r')[0] !== cycleProfiles[0]?.id.split('@r')[0] || p.revision !== cycleProfiles[0]?.revision).map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>{outdatedProfiles.length > 0 && <Alert variant="warning"><AlertDescription>New saved revisions exist for {outdatedProfiles.map(p => p.name).join(', ')}. This study keeps its selected versions. <Button type="button" variant="link" disabled={busy} onClick={() => { const profiles = cycleProfiles.map(p => researchSuite.snapshot.profiles.find(saved => saved.id === p.id.split('@r')[0]) ?? p); setCycleProfiles(suiteSpec(profiles).strategySnapshots!); setCycleExecution(structuredClone(profiles[0].execution)) }}>Use latest saved revisions</Button></AlertDescription></Alert>}<Button type="button" variant="outline" onClick={() => setLibraryOpen(true)}>Strategy Library…</Button><SuiteExecutionFields value={cycleExecution} onChange={setCycleExecution} /></FieldGroup></FieldSet> : <>
-              <Field><FieldLabel htmlFor="study-rule">{kind === 'long' ? 'Entry filter snapshot' : kind === 'score' ? 'Base universe rules' : 'Complete rule snapshot'}</FieldLabel><Select value={ruleID} disabled={busy} onValueChange={setRuleID}><SelectTrigger id="study-rule"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{options.map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>All conditions and original scoring weights are retained. Missing readings remain Unknown.</FieldDescription></Field>
-              {(kind === 'comparison' || kind === 'long') && <Field><FieldLabel htmlFor="study-comparison">{kind === 'long' ? 'Exit filter snapshot' : 'Compare with'}</FieldLabel><Select value={compareID} disabled={busy} onValueChange={setCompareID}><SelectTrigger id="study-comparison"><SelectValue placeholder="Choose another saved combination…" /></SelectTrigger><SelectContent><SelectGroup>{options.filter(o => kind === 'long' || o.id !== ruleID).map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>{kind === 'long' ? 'Start flat. Entry applies while flat, exit while holding. Signals execute at the next hourly open; open trades stay open at the end.' : 'Both snapshots are recomputed on the same frozen data and common evaluable hours.'}</FieldDescription></Field>}
-              <Field><FieldLabel>Direction</FieldLabel><ToggleGroup type="single" variant="outline" value={direction} disabled={busy || kind === 'long'} onValueChange={value => { if (value) setDirection(value as StudySpec['direction']) }} aria-label="Study direction">{['auto', 'Long', 'Short'].map(value => <ToggleGroupItem key={value} value={value}>{value === 'auto' ? 'Original EMA direction' : value}</ToggleGroupItem>)}</ToggleGroup></Field>
+                if (!value) return; setKind(value as StudySpec['kind']); if (value === 'score') setSampling('hourly'); if (value === 'long') { setDirection('Long'); setSampling('entries') }
+              }} aria-label="Research question"><ToggleGroupItem value="cycle">Multi-direction cycle</ToggleGroupItem><ToggleGroupItem value="long">Long entry / exit</ToggleGroupItem><ToggleGroupItem value="filter">Strategy signals</ToggleGroupItem><ToggleGroupItem value="score">Opportunity</ToggleGroupItem><ToggleGroupItem value="comparison">Compare strategies</ToggleGroupItem></ToggleGroup></Field>
+              <FieldSet><FieldLegend>Shared strategy versions</FieldLegend><FieldDescription>Radar and Research use the same saved rules. This study freezes the selected revisions. Restoring an older version in Radar creates a separate shared strategy.</FieldDescription><FieldGroup>
+                <Field><FieldLabel>Primary strategy</FieldLabel><Select value={cycleProfiles[0]?.id ?? ''} disabled={busy} onValueChange={id => {
+                  const profile = cycleOptions.find(option => option.profile.id === id)?.profile
+                  if (profile) { seededCycle.current = true; setCycleProfiles(current => [profile, ...current.slice(1).filter(other => other.id.split('@r')[0] !== profile.id.split('@r')[0] || other.revision !== profile.revision)]); setCycleExecution(structuredClone(profile.execution)) }
+                }}><SelectTrigger aria-label={kind === 'cycle' ? 'Primary cycle strategy' : 'Study strategy'}><SelectValue placeholder="Choose a shared strategy…" /></SelectTrigger><SelectContent><SelectGroup>{cycleOptions.map(option => <SelectItem key={option.profile.id} value={option.profile.id}>{option.label}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
+                {(kind === 'cycle' || kind === 'comparison') && <Field><FieldLabel>Compare with</FieldLabel><Select value={cycleProfiles[1]?.id ?? 'none'} disabled={busy} onValueChange={id => {
+                  const profile = cycleOptions.find(option => option.profile.id === id)?.profile
+                  if (profile || id === 'none') setCycleProfiles(current => current[0] ? profile ? [current[0], profile] : [current[0]] : [])
+                }}><SelectTrigger aria-label={kind === 'cycle' ? 'Compare cycle strategy' : 'Compare strategy'}><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">{kind === 'comparison' ? 'Choose a comparison strategy…' : 'Single strategy'}</SelectItem>{cycleOptions.filter(({ profile }) => profile.id.split('@r')[0] !== cycleProfiles[0]?.id.split('@r')[0] || profile.revision !== cycleProfiles[0]?.revision).map(option => <SelectItem key={option.profile.id} value={option.profile.id}>{option.label}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}
+                {(kind === 'filter' || kind === 'comparison') && <Field><FieldLabel>Strategy phase</FieldLabel><Select value={strategyPhase} disabled={busy} onValueChange={value => setStrategyPhase(value as NonNullable<StudySpec['strategyPhase']>)}><SelectTrigger aria-label="Study strategy phase"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="universe">Universe</SelectItem><SelectItem value="bullishSetup">Bullish Setup</SelectItem><SelectItem value="bearishReversal">Bearish Reversal</SelectItem></SelectGroup></SelectContent></Select><FieldDescription>Entry phases include their Strategy Universe. Missing readings remain Unknown. Cycle simulations evaluate holding phases with actual modeled positions.</FieldDescription></Field>}
+                {kind === 'score' && <FieldDescription>Opportunity calibration uses the selected Strategy Universe and original scoring weights.</FieldDescription>}
+                {kind === 'long' && <FieldDescription>Entry uses Universe and Bullish Setup while flat. Exit uses Bullish Exhaustion while holding, including outside the Universe. Signals execute at the next hourly open.</FieldDescription>}
+                {outdatedProfiles.length > 0 && <Alert variant="warning"><AlertDescription>New saved revisions exist for {outdatedProfiles.map(p => p.name).join(', ')}. This study keeps its selected versions. <Button type="button" variant="link" disabled={busy} onClick={() => { const profiles = cycleProfiles.map(p => researchSuite.snapshot.profiles.find(saved => saved.id === p.id.split('@r')[0]) ?? p); setCycleProfiles(suiteSpec(profiles).strategySnapshots!); setCycleExecution(structuredClone(profiles[0].execution)) }}>Use latest saved revisions</Button></AlertDescription></Alert>}
+                <Button type="button" variant="outline" disabled={busy} onClick={() => setLibraryOpen(true)}>Strategy Library…</Button>
+                {kind === 'cycle' && <SuiteExecutionFields value={cycleExecution} onChange={setCycleExecution} />}
+              </FieldGroup></FieldSet>
+              {kind !== 'cycle' && <>
+              <Field><FieldLabel>Direction</FieldLabel><ToggleGroup type="single" variant="outline" value={direction} disabled={busy || kind === 'long'} onValueChange={value => { if (value) setDirection(value as StudySpec['direction']) }} aria-label="Study direction">{['auto', 'Long', 'Short'].map(value => <ToggleGroupItem key={value} value={value}>{value === 'auto' ? 'Automatic' : value}</ToggleGroupItem>)}</ToggleGroup><FieldDescription>Automatic follows the selected entry phase; Universe studies use EMA direction.</FieldDescription></Field>
               <Field><FieldLabel>Signal sampling</FieldLabel><ToggleGroup type="single" variant="outline" value={kind === 'score' ? 'hourly' : sampling} disabled={busy || kind === 'score' || kind === 'long'} onValueChange={value => { if (value) setSampling(value as StudySpec['sampling']) }} aria-label="Signal sampling"><ToggleGroupItem value="entries">First entry per episode</ToggleGroupItem><ToggleGroupItem value="hourly">Every matching hour</ToggleGroupItem></ToggleGroup></Field></>}
             </FieldGroup></FieldSet>
             {kind === 'cycle' && <SuiteCapitalFields value={cycleCapital} onChange={setCycleCapital} />}

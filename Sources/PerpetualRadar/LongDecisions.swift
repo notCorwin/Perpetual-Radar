@@ -10,9 +10,9 @@ struct LongStrategy: Codable, Sendable {
     func compiled() throws -> (CompiledFilter, CompiledFilter) {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 80 else { throw FilterError("Use a strategy name from 1 to 80 characters.") }
         let entry = try FilterCompiler.compile(FilterConfigV2.decode(entryJSON)), exit = try FilterCompiler.compile(FilterConfigV2.decode(exitJSON))
-        guard entry.metrics.isDisjoint(with: StrategyProfile.longMetrics.union(StrategyProfile.shortMetrics)) else { throw FilterError("Long position readings belong in the exit filter; no position exists before entry.") }
+        guard entry.metrics.isDisjoint(with: StrategyProfile.longMetrics.union(StrategyProfile.shortMetrics)) else { throw FilterError("Long position readings belong in exit rules; no position exists before entry.") }
         for (label, rule) in [("entry", entry), ("exit", exit)] {
-            guard !(["all", "any"].contains(rule.config.root.kind) && rule.config.root.children.isEmpty) else { throw FilterError("Add at least one \(label) condition. An empty market filter matches every contract.") }
+            guard !(["all", "any"].contains(rule.config.root.kind) && rule.config.root.children.isEmpty) else { throw FilterError("Add at least one \(label) condition. Empty rules match every contract.") }
         }
         return (entry, exit)
     }
@@ -49,12 +49,12 @@ enum LongDecision {
     static func action(entry: FilterTruth, exit: FilterTruth, holding: Bool, available: Bool = true) -> (String, String) {
         guard available else { return ("Unknown", "Monitoring is paused or the completed hourly price is unavailable. Tracking is retained.") }
         if holding {
-            if exit == .yes { return ("Exit Long", "The exit filter matches. Record your actual exit when you close the position.") }
-            if exit == .unknown { return ("Unknown", "The exit filter has missing inputs. The tracked Long remains open.") }
-            return ("Hold Long", "The exit filter does not match. Repeated entry matches do not open another position.")
+            if exit == .yes { return ("Exit Long", "The exit rules match. Record your actual exit when you close the position.") }
+            if exit == .unknown { return ("Unknown", "The exit rules have missing inputs. The tracked Long remains open.") }
+            return ("Hold Long", "The exit rules do not match. Repeated entry matches do not open another position.")
         }
         if entry == .unknown { return ("Unknown", "An entry input is missing. Unknown does not create a position.") }
-        return entry == .yes ? ("Enter Long", "The entry filter matches while flat. Exit rules become active after entry. Record your actual entry after trading.") : ("Wait", "The entry filter does not match.")
+        return entry == .yes ? ("Enter Long", "The entry rules match while flat. Exit rules become active after entry. Record your actual entry after trading.") : ("Wait", "The entry rules do not match.")
     }
     static func context(_ input: FilterMarketData, forming: Bool) -> FilterMarketData {
         if forming { return input }

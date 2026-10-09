@@ -63,14 +63,14 @@ final class MarketNotificationTests: XCTestCase {
         XCTAssertEqual(transport.requests.count, 2)
         XCTAssertEqual(Set(transport.requests.map(\.identifier)).count, 2)
         let entry = try XCTUnwrap(transport.requests.first), exit = try XCTUnwrap(transport.requests.last)
-        XCTAssertEqual(entry.content.title, "Contract entered filters")
-        XCTAssertEqual(exit.content.title, "Contract exited filters")
+        XCTAssertEqual(entry.content.title, "Strategy signal confirmed")
+        XCTAssertEqual(exit.content.title, "Strategy signal ended")
         for request in transport.requests {
             XCTAssertNil(request.trigger)
             XCTAssertNotNil(request.content.sound)
             XCTAssertEqual(request.content.subtitle, "BTC-USDT-SWAP")
             XCTAssertEqual(request.content.userInfo["instId"] as? String, "BTC-USDT-SWAP")
-            XCTAssertEqual(request.content.threadIdentifier, "saved-market-filters")
+            XCTAssertEqual(request.content.threadIdentifier, "saved-strategy-signals")
         }
         XCTAssertEqual(entry.content.userInfo["direction"] as? String, "entered")
         XCTAssertEqual(exit.content.userInfo["direction"] as? String, "exited")

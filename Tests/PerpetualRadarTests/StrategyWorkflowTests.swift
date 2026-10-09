@@ -1,0 +1,97 @@
+import XCTest
+@testable import PerpetualRadar
+
+final class StrategyWorkflowTests: XCTestCase {
+    private let hour = Int64(20_000) * hourMS
+    private func rule(_ source: String) throws -> String { try FilterCompiler.compile(source: source).config.json }
+    private func profile(universe: String = "Close > 0", setup: String = "Close > 100") throws -> StrategyProfile {
+        .init(name: "Strategy version", universeJSON: try rule(universe), phaseRules: [
+            "bullishSetup": try rule(setup), "bullishExhaustion": try rule("LongReturn > 0"),
+            "bearishReversal": try rule("Close < 100"), "bearishExhaustion": try rule("ShortReturn > 0")], revision: 3)
+    }
+    private func market(_ price: Double) -> FilterMarketData {
+        let bars = Dictionary(uniqueKeysWithValues: (0...3).map { age in
+            let time = hour - Int64(age) * hourMS
+            return (time, Candle(hour: time, high: price, low: price, close: price, quoteVolume: 100, baseVolume: 1, open: price))
+        })
+        return .init(id: "BTC-USDT-SWAP", hour: hour, now: hour + hourMS, listedAt: 1, candles: bars, stats: [:], quotes: [:], historicalClose: true)
+    }
+    private func truth(_ json: String, market: FilterMarketData) throws -> FilterTruth {
+        FilterEvaluator(market: market, filter: try FilterCompiler.compile(FilterConfigV2.decode(json))).evaluate().result
+    }
+
+    @MainActor
+    func testRadarHasNoStandaloneRulesAndIgnoresOldFilterPreferences() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("StrategyWorkflow-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try Store(url: directory.appendingPathComponent("radar.sqlite3"))
+        for key in ["marketFiltersJSON", "marketFiltersV2JSON", "selectedMarketFilterCombinationID"] {
+            try store.setPreference("invalid former filter", forKey: key)
+        }
+        try store.setPreference("false", forKey: "filterNotificationsEnabled")
+        let radar = try Radar(storeURL: store.url), snapshot = radar.snapshot(rocPeriod: 9, marocPeriod: 9)
+        XCTAssertNil(try radar.monitoringStrategy())
+        XCTAssertFalse(radar.notificationsEnabled, "Renaming notifications preserves the user's disabled setting.")
+        try radar.setNotificationsEnabled(true)
+        XCTAssertTrue(try Radar(storeURL: store.url).notificationsEnabled)
+        for key in ["marketFiltersJSON", "filterConfigJSON", "marketFilterCombinations", "selectedMarketFilterCombinationID", "minimum24hTurnoverUSDT", "spreadFilterEnabled", "contractAgeFilterEnabled"] {
+            XCTAssertNil(snapshot[key], key)
+        }
+        XCTAssertNotNil(snapshot["filterMetricsCatalog"], "Strategies retain the complete condition library.")
+    }
+
+    func testSignalStudiesGateUniverseAndIsolateReusableValuesWithTheSameNames() throws {
+        let profile = try profile(universe: "let level = 100; let gate = level + 0; closed(Close > gate)", setup: "let level = 200; let gate = level + 0; Close < gate")
+        var spec = StudySpec(name: "Strategy signals", rules: [], through: hour)
+        spec.strategySnapshots = [profile]; spec.strategyPhase = "bullishSetup"
+        let resolved = try spec.resolvingStrategyRules()
+        try resolved.validate()
+        XCTAssertEqual(resolved.strategySnapshots?.first?.revision, 3)
+        XCTAssertEqual(resolved.direction, "Long")
+        XCTAssertEqual(try truth(resolved.rules[0].filtersJSON, market: market(150)), .yes)
+        XCTAssertEqual(try truth(resolved.rules[0].filtersJSON, market: market(50)), .no)
+        XCTAssertEqual(try truth(resolved.rules[0].filtersJSON, market: market(250)), .no)
+        XCTAssertEqual(try spec.resolvingStrategyRules().rules[0].filtersJSON, resolved.rules[0].filtersJSON, "Projected conditions have stable identities for reproducible studies.")
+    }
+
+    func testLongSimulationKeepsExitsActiveOutsideUniverse() throws {
+        var spec = StudySpec(name: "Long simulation", kind: "long", rules: [], through: hour, direction: "Long")
+        spec.strategySnapshots = [try profile(universe: "Close > 200", setup: "Close > 100")]
+        let resolved = try spec.resolvingStrategyRules()
+        try resolved.validate()
+        let held = SuiteEvaluation.positionContext(market(150), direction: "Long", price: 100, time: hour - hourMS)
+        XCTAssertEqual(try truth(resolved.rules[0].filtersJSON, market: held), .no)
+        XCTAssertEqual(try truth(resolved.rules[1].filtersJSON, market: held), .yes)
+        XCTAssertTrue(resolved.rules[1].name.contains("Bullish Exhaustion"))
+    }
+
+    func testSignalStudiesAllowUnrestrictedUniverse() throws {
+        for kind in ["all", "any"] {
+            var profile = try profile()
+            profile.universeJSON = FilterConfigV2(root: FilterNode(kind: kind)).json
+            var spec = StudySpec(name: "Unrestricted strategy signals", rules: [], through: hour)
+            spec.strategySnapshots = [profile]; spec.strategyPhase = "bullishSetup"
+            let resolved = try spec.resolvingStrategyRules()
+            try resolved.validate()
+            XCTAssertEqual(try truth(resolved.rules[0].filtersJSON, market: market(150)), .yes)
+            XCTAssertEqual(try truth(resolved.rules[0].filtersJSON, market: market(50)), .no)
+        }
+    }
+
+    func testScoreAndComparisonRulesComeFromFrozenStrategies() throws {
+        let first = try profile(universe: "Close > 100"), second = try profile(universe: "Close > 200")
+        var spec = StudySpec(name: "Opportunity", kind: "score", rules: [], through: hour)
+        spec.strategySnapshots = [first]
+        XCTAssertEqual(try spec.resolvingStrategyRules().rules.first?.filtersJSON, first.universeJSON)
+        spec.kind = "comparison"; spec.strategySnapshots = [first, second]; spec.strategyPhase = "bullishSetup"
+        let comparison = try spec.resolvingStrategyRules()
+        try comparison.validate()
+        XCTAssertEqual(try truth(comparison.rules[0].filtersJSON, market: market(150)), .yes)
+        XCTAssertEqual(try truth(comparison.rules[1].filtersJSON, market: market(150)), .no)
+        spec.strategyPhase = "bearishReversal"
+        XCTAssertEqual(try spec.resolvingStrategyRules().direction, "Short")
+        spec.strategySnapshots = []; XCTAssertThrowsError(try spec.resolvingStrategyRules())
+        spec.strategySnapshots = [first, second]; spec.strategyPhase = "bullishExhaustion"
+        XCTAssertThrowsError(try spec.resolvingStrategyRules(), "Holding phases require a position simulation.")
+    }
+}

@@ -22,7 +22,6 @@ final class Store {
                 // A concurrent connection may have migrated while we waited.
                 guard try version() < Self.schemaVersion else { return }
                 try execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS market_filter_combinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE, filters_json TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS candles (inst_id TEXT, hour INTEGER, high REAL, low REAL, close REAL, volume REAL, base_volume REAL, open REAL, PRIMARY KEY(inst_id,hour))")
                 try execute("CREATE TABLE IF NOT EXISTS ema200 (inst_id TEXT PRIMARY KEY, hour INTEGER, value REAL)")
                 try execute("CREATE TABLE IF NOT EXISTS chart_stats (inst_id TEXT, hour INTEGER, oi REAL, sell REAL, buy REAL, PRIMARY KEY(inst_id,hour))")
@@ -31,7 +30,6 @@ final class Store {
                 // Existing Python caches may predate base_volume.
                 if try !columns("candles").contains("base_volume") { try execute("ALTER TABLE candles ADD COLUMN base_volume REAL") }
                 if try !columns("candles").contains("open") { try execute("ALTER TABLE candles ADD COLUMN open REAL") }
-                if try !columns("market_filter_combinations").contains("filters_v2_json") { try execute("ALTER TABLE market_filter_combinations ADD COLUMN filters_v2_json TEXT") }
                 try execute("CREATE TABLE IF NOT EXISTS hourly_quotes (inst_id TEXT, hour INTEGER, turnover REAL, spread REAL, quote_timestamp INTEGER NOT NULL, PRIMARY KEY(inst_id,hour))")
                 try execute("PRAGMA user_version=\(Self.schemaVersion)")
             } }
@@ -167,41 +165,6 @@ final class Store {
             try? execute("ROLLBACK")
             throw error
         }
-    }
-
-    func marketFilterCombinations() throws -> [MarketFilterCombination] {
-        let stmt = try statement("SELECT id,name,filters_json,filters_v2_json FROM market_filter_combinations ORDER BY name COLLATE NOCASE")
-        defer { sqlite3_finalize(stmt) }
-        var result: [MarketFilterCombination] = []
-        try readRows(stmt) {
-            result.append(MarketFilterCombination(id: String(cString: sqlite3_column_text(stmt, 0)),
-                                                 name: String(cString: sqlite3_column_text(stmt, 1)),
-                                                 filtersJSON: String(cString: sqlite3_column_text(stmt, 2)),
-                                                 filtersV2JSON: sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 3))))
-        }
-        return result
-    }
-
-    func saveMarketFilterCombination(name: String, filtersJSON: String, filtersV2JSON: String? = nil) throws -> MarketFilterCombination {
-        let stmt = try statement("INSERT INTO market_filter_combinations (id,name,name_key,filters_json,filters_v2_json) VALUES (?,?,?,?,?) ON CONFLICT(name_key) DO UPDATE SET name=excluded.name,filters_json=excluded.filters_json,filters_v2_json=excluded.filters_v2_json RETURNING id,name,filters_json")
-        defer { sqlite3_finalize(stmt) }
-        bind([UUID().uuidString, name, name.lowercased(), filtersJSON, filtersV2JSON], to: stmt)
-        guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }
-        let result = MarketFilterCombination(id: String(cString: sqlite3_column_text(stmt, 0)),
-                                             name: String(cString: sqlite3_column_text(stmt, 1)),
-                                             filtersJSON: String(cString: sqlite3_column_text(stmt, 2)), filtersV2JSON: filtersV2JSON)
-        // Finish the statement so the write commits before acknowledging the save.
-        guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
-        return result
-    }
-
-    func deleteMarketFilterCombination(_ id: String) throws -> Bool {
-        try execute("DELETE FROM market_filter_combinations WHERE id=?", [id])
-        return sqlite3_changes(db) > 0
-    }
-
-    func saveCombinationV2(_ id: String, json: String) throws {
-        try execute("UPDATE market_filter_combinations SET filters_v2_json=? WHERE id=?", [json, id])
     }
 
     func saveHourlyQuote(_ id: String, hour: Int64, quote: FilterQuote) throws {

@@ -195,6 +195,7 @@ final class ResearchController {
         onBusyChanged?(false)
     }
     func plan(_ spec: StudySpec, refresh: Bool = false, resumeID: String? = nil) throws -> String {
+        let spec = try spec.resolvingStrategyRules()
         try spec.validate()
         let study = try resumeID.flatMap { try store.get($0, as: ResearchStudy.self) } ?? ResearchStudy(spec: spec, planID: UUID().uuidString)
         let id = try begin("planning", studyID: study.id)

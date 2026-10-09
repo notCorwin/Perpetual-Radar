@@ -46,6 +46,7 @@ struct StudySpec: Codable, Sendable {
     var sampling: String = "entries"
     var costs: ResearchCosts?
     var strategySnapshots: [StrategyProfile]?
+    var strategyPhase: String?
     var execution: SuiteExecution?
     var capital: SuiteCapital?
     var allRules: [StudyRule] { kind == "cycle" ? (strategySnapshots ?? []).flatMap(\.studyRules) : rules }
@@ -59,7 +60,7 @@ struct StudySpec: Codable, Sendable {
         }
         for rule in rules { _ = try FilterCompiler.compile(FilterConfigV2.decode(rule.filtersJSON)) }
         if kind == "long" {
-            guard direction == "Long", rules.count == 2 else { throw FilterError("A Long strategy needs exactly one entry filter and one exit filter.") }
+            guard direction == "Long", rules.count == 2 else { throw FilterError("A Long simulation needs exactly one entry rule configuration and one exit rule configuration.") }
             _ = try LongStrategy(name: String(name.prefix(80)), entryJSON: rules[0].filtersJSON, exitJSON: rules[1].filtersJSON).compiled()
         }
         try costs?.validate()

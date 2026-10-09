@@ -139,22 +139,11 @@ final class IndicatorsTests: XCTestCase {
         XCTAssertNil(usdtTurnover24h(["volCcy24h": "1000000", "last": "0"]))
     }
 
-    func testSupported24hTurnoverThresholds() {
-        XCTAssertTrue(supportedTurnoverThreshold(10_000_000))
-        XCTAssertTrue(supportedTurnoverThreshold(30_000_000))
-        XCTAssertTrue(supportedTurnoverThreshold(100_000_000))
-        XCTAssertFalse(supportedTurnoverThreshold(0))
-        XCTAssertFalse(supportedTurnoverThreshold(29_999_999))
-    }
-
-    func testSpreadFilter() {
+    func testSpreadPercentageUsesMidpointAndRejectsInvalidQuotes() {
         let tight = spreadPercent(["bidPx": "99.925", "askPx": "100.075"])
         let wide = spreadPercent(["bidPx": "99.9", "askPx": "100.1"])
         XCTAssertEqual(tight!, 0.15, accuracy: 0.000001)
-        XCTAssertTrue(passesSpreadFilter(tight, enabled: true, maximum: 0.15))
-        XCTAssertFalse(passesSpreadFilter(wide, enabled: true, maximum: 0.15))
-        XCTAssertFalse(passesSpreadFilter(nil, enabled: true, maximum: 0.15))
-        XCTAssertTrue(passesSpreadFilter(nil, enabled: false, maximum: 0.15))
+        XCTAssertEqual(wide!, 0.2, accuracy: 0.000001)
         XCTAssertNil(spreadPercent(["bidPx": "0", "askPx": "100"]))
         XCTAssertNil(spreadPercent(["bidPx": "101", "askPx": "100"]))
     }

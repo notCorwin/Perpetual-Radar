@@ -1,16 +1,16 @@
 import type { StrategyProfile, SuiteExecution, SuiteCapital, SuiteStudyReport, SuiteTrade, SuiteCurvePoint } from '@/suite-types'
 import type { ChartResponse } from '@/MarketChart'
-import type { FilterCombination, FilterConfigV2, FilterMetric } from '@/rule-engine'
+import type { FilterMetric } from '@/rule-engine'
 import type { ExpressionTemplate } from '@/filter-expression'
 
 export const RESEARCH_HORIZONS = [1, 3, 6, 12, 24, 48] as const
 export const RESEARCH_HOUR = 3_600_000
-export type ResearchInputs = { filters: FilterConfigV2; combinations: FilterCombination[]; metrics: FilterMetric[]; templates: ExpressionTemplate[]; functions?: string[] }
+export type ResearchInputs = { metrics: FilterMetric[]; templates: ExpressionTemplate[]; functions?: string[] }
 export type StudyRule = { name: string; filtersJSON: string }
 export type StudySpec = {
   name: string; kind: 'filter' | 'score' | 'comparison' | 'long' | 'cycle'; rules: StudyRule[]; instruments: string[]
   from: number | null; through: number; direction: 'auto' | 'Long' | 'Short'; sampling: 'entries' | 'hourly'
-  strategySnapshots?: StrategyProfile[]; execution?: SuiteExecution; capital?: SuiteCapital
+  strategySnapshots?: StrategyProfile[]; strategyPhase?: 'universe' | 'bullishSetup' | 'bearishReversal'; execution?: SuiteExecution; capital?: SuiteCapital
   costs: { entryFeeBps: number; exitFeeBps: number; slippageBps: number } | null
 }
 export type ResearchInstrument = { id: string; listedAt?: number; delistedAt?: number; verified: boolean; contractValue?: number; source: string; observedAt: number }

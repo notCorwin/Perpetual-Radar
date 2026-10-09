@@ -62,7 +62,7 @@ struct FilterConfigV2: Codable, Equatable, Sendable {
     }
     static func decode(_ json: String) throws -> Self {
         let config = try JSONDecoder().decode(Self.self, from: Data(json.utf8))
-        guard config.version == 2 else { throw FilterError("Unsupported filter configuration version.") }
+        guard config.version == 2 else { throw FilterError("Unsupported strategy rule configuration version.") }
         return config
     }
     static func migrate(_ json: String, turnover: Int, spread: Double?, ageMonths: Int?, excludeStablecoin: Bool = true) throws -> Self {

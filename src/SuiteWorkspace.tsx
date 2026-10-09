@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { SuitePhaseExplanation } from '@/SuitePhaseExplanation'
-import { LongStrategyEditor } from '@/LongStrategyEditor'
+import { StrategyPhaseEditor } from '@/StrategyPhaseEditor'
 import { useStrategyFilter } from '@/use-strategy-filter'
 import { useSuite } from '@/use-suite'
 import { MarketListViewport } from '@/MarketListViewport'
@@ -36,20 +36,20 @@ export function SuiteWorkspace({ mode, inputs, active, initialTab = 'rules', rou
   const [chart, setChart] = useState<string | null>(null), [detail, setDetail] = useState<SuiteReading | null>(null)
   const [record, setRecord] = useState<{ kind: 'open' | 'close'; profileID: string; instrument: string; direction: string; price: string; time: string; reference?: number } | null>(null)
   const [confirm, setConfirm] = useState<{ kind: 'load' | 'delete' | 'remove'; profile?: StrategyProfile; position?: SuitePosition } | null>(null)
-  const universe = useStrategyFilter(JSON.stringify(inputs.filters), 'universe'), setup = useStrategyFilter(JSON.stringify(emptyFilterConfig()), 'bullishSetup')
+  const universe = useStrategyFilter(JSON.stringify(emptyFilterConfig()), 'universe'), setup = useStrategyFilter(JSON.stringify(emptyFilterConfig()), 'bullishSetup')
   const exhaustion = useStrategyFilter(JSON.stringify(emptyFilterConfig()), 'bullishExhaustion'), reversal = useStrategyFilter(JSON.stringify(emptyFilterConfig()), 'bearishReversal'), bearish = useStrategyFilter(JSON.stringify(emptyFilterConfig()), 'bearishExhaustion')
   const models = [universe, setup, exhaustion, reversal, bearish]
   const initialized = useRef(false)
   const resetUniverse = universe.reset, resetSetup = setup.reset, resetExhaustion = exhaustion.reset, resetReversal = reversal.reset, resetBearish = bearish.reset
   const load = useCallback((profile: StrategyProfile | null) => {
     setLoaded(profile); setName(profile?.name ?? 'My strategy'); setExecution(profile?.execution ?? defaultExecution())
-    resetUniverse(profile?.universeJSON ?? JSON.stringify(inputs.filters))
+    resetUniverse(profile?.universeJSON ?? JSON.stringify(emptyFilterConfig()))
     resetSetup(profile?.phaseRules.bullishSetup ?? JSON.stringify(emptyFilterConfig()))
     resetExhaustion(profile?.phaseRules.bullishExhaustion ?? JSON.stringify(emptyFilterConfig()))
     resetReversal(profile?.phaseRules.bearishReversal ?? JSON.stringify(emptyFilterConfig()))
     resetBearish(profile?.phaseRules.bearishExhaustion ?? JSON.stringify(emptyFilterConfig()))
     setError(''); setNotice(''); setTab('rules')
-  }, [inputs.filters, resetUniverse, resetSetup, resetExhaustion, resetReversal, resetBearish])
+  }, [resetUniverse, resetSetup, resetExhaustion, resetReversal, resetBearish])
   const original = loaded ? [loaded.universeJSON, ...SUITE_PHASES.map(p => loaded.phaseRules[p.key])] : []
   const dirty = name !== (loaded?.name ?? 'My strategy') || JSON.stringify(execution) !== JSON.stringify(loaded?.execution ?? defaultExecution()) || models.some((m, i) => m.dirty || loaded && m.canonical !== null && m.canonical !== original[i])
   const draftJSON = JSON.stringify({profile:loaded,name,execution,rules:models.map(m=>({json:JSON.stringify(m.draft??m.filters),source:m.editor.source,nameDrafts:m.editor.nameDrafts,expressionDrafts:m.editor.expressionDrafts,lastValid:m.lastValid}))} satisfies SuiteDraft)
@@ -131,14 +131,14 @@ export function SuiteWorkspace({ mode, inputs, active, initialTab = 'rules', rou
     <div className="flex items-center gap-3"><Field className="w-80"><FieldLabel>Saved strategies</FieldLabel><Select value={loaded?.id ?? 'new'} onValueChange={id => choose(snapshot.profiles.find(p => p.id === id) ?? null)}><SelectTrigger aria-label="Saved phase strategies"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="new">New strategy…</SelectItem>{snapshot.profiles.map(p => <SelectItem key={p.id} value={p.id}>{p.name} · r{p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
       <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void copy()}><Copy data-icon="inline-start" aria-hidden="true" />Duplicate saved strategy</Button>
       <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void perform(async () => { await suite.perform({ action: 'select', profileID: loaded!.id }); setNotice('Saved revision activated in Radar. Confirmation monitoring starts with a quiet baseline.') })}>{mode === 'radar' ? 'Activate saved strategy' : 'Use saved strategy in Radar'}</Button>
-      {activeProfile && <Button variant="ghost" onClick={() => void perform(async () => { await suite.perform({ action: 'select', profileID: '' }); setNotice('Phase strategy deactivated. Existing market filters remain available.') })}>Deactivate</Button>}
+      {activeProfile && <Button variant="ghost" onClick={() => void perform(async () => { await suite.perform({ action: 'select', profileID: '' }); setNotice('Strategy deactivated. Radar displays all markets; confirmed alerts resume after activation.') })}>Deactivate</Button>}
       <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void perform(async () => { if (loaded) { await requestSuite({mode,action:'draft',draft:JSON.parse(draftJSON) as SuiteDraft});onResearch(suiteSpec([loaded])) } })}>Backtest saved strategy</Button>
       <Button variant="ghost" disabled={!loaded || suite.pending} onClick={() => setConfirm({ kind: 'delete', profile: loaded ?? undefined })}><Trash2 data-icon="inline-start" aria-hidden="true" />Delete…</Button>
     </div>
     <Tabs value={tab} onValueChange={setTab}><TabsList><TabsTrigger value="rules">Strategy rules</TabsTrigger>{mode === 'radar' && <><TabsTrigger value="signals">Confirmed phases</TabsTrigger><TabsTrigger value="positions">Positions</TabsTrigger></>}</TabsList>
       <TabsContent value="rules" className="flex flex-col gap-4"><form onSubmit={e => { e.preventDefault(); void save() }} className="flex flex-col gap-4"><FieldGroup><Field><FieldLabel htmlFor="suite-strategy-name">Strategy name</FieldLabel><Input id="suite-strategy-name" name="strategyName" autoComplete="off" value={name} onChange={e => setName(e.target.value)} /><FieldDescription>All five configurations are saved atomically. Drafts and previews never change confirmed alerts.</FieldDescription></Field><SuiteExecutionFields value={execution} onChange={setExecution} /></FieldGroup><div className="flex gap-3"><Button type="submit" disabled={suite.pending || models.some(m => !m.valid)}>{suite.pending ? <Spinner data-icon="inline-start" /> : <Save data-icon="inline-start" aria-hidden="true" />}Save strategy</Button>{dirty && <Badge variant="outline">Unsaved draft</Badge>}</div></form>
         <ToggleGroup type="single" variant="outline" value={phase} onValueChange={value => { if (value) setPhase(value) }} aria-label="Phase rule editor"><ToggleGroupItem value="universe">Universe</ToggleGroupItem>{SUITE_PHASES.map(p => <ToggleGroupItem key={p.key} value={p.key}>{p.label}</ToggleGroupItem>)}</ToggleGroup>
-        {[{ key: 'universe', label: 'Universe', description: 'Restricts candidates and entries. Open-position exits remain active outside this filter.' }, ...SUITE_PHASES].map((p,i) => <div key={p.key} hidden={phase !== p.key}><LongStrategyEditor label={p.label} description={p.description} model={models[i]} inputs={inputs} preferences={preferences} onPreferences={savePreferences} active={active && tab === 'rules' && phase === p.key} strategyID={mode === 'radar' ? loaded?.id ?? '' : ''} /></div>)}
+        {[{ key: 'universe', label: 'Universe', description: 'Restricts candidates and entries. Open-position exits remain active outside the Universe.' }, ...SUITE_PHASES].map((p,i) => <div key={p.key} hidden={phase !== p.key}><StrategyPhaseEditor label={p.label} description={p.description} model={models[i]} inputs={inputs} preferences={preferences} onPreferences={savePreferences} active={active && tab === 'rules' && phase === p.key} strategyID={mode === 'radar' ? loaded?.id ?? '' : ''} /></div>)}
       </TabsContent>
       <TabsContent value="signals" className="flex flex-col gap-3"><Field><FieldLabel htmlFor="phase-search">Search contracts</FieldLabel><Input id="phase-search" name="phaseSearch" value={search} onChange={e => { setSearch(e.target.value); setPage(0) }} placeholder="BTC, ETH…" /></Field>
         <Table aria-label="Confirmed phase readings"><TableHeader><TableRow>{['Contract', 'Phases', 'Confirmed close', 'Decision', 'Details / actual fills'].map(label => <TableHead key={label}>{label}</TableHead>)}</TableRow></TableHeader><TableBody>{readings.slice(page*50,page*50+50).map(r => <TableRow key={r.instrument}><TableCell><Button variant="link" onClick={() => setChart(r.instrument)}>{r.instrument}</Button></TableCell><TableCell><SuitePhaseBadges confirmed={r} provisional={snapshot.provisional?.find(p => p.instrument === r.instrument)} /></TableCell><TableCell>{researchTime(r.hour+3_600_000)}</TableCell><TableCell title={r.reason}>{r.action}</TableCell><TableCell><div className="flex gap-2"><Button variant="ghost" onClick={() => void inspect(r)}>Explain</Button>{r.position ? <Button variant="outline" onClick={() => beginRecord('close',r.instrument,r.price,r.position)}>Record exit…</Button> : <Button variant="outline" onClick={() => beginRecord('open',r.instrument,r.price,undefined,r.action.includes('Short') ? 'Short' : 'Long')}>Record entry…</Button>}</div></TableCell></TableRow>)}</TableBody></Table>

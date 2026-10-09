@@ -12,6 +12,20 @@ enum SuitePhase: String, CaseIterable, Codable, Sendable {
     }
 }
 
+func strategyObservation(profile: StrategyProfile, readings: [SuiteReading]) throws -> FilterObservation {
+    var results: [String: FilterTruth] = [:]
+    for reading in readings {
+        for phase in [SuitePhase.bullishSetup, .bearishReversal] {
+            let truth = FilterTruth(rawValue: reading.phases[phase.rawValue]?.result ?? "unknown") ?? .unknown
+            results[reading.instrument + "|" + phase.label] = truth == .no || reading.universe == "false" ? .no : truth == .yes && reading.universe == "true" ? .yes : .unknown
+        }
+        if let position = reading.position {
+            results[reading.instrument + "|Exit " + position.direction + "|" + position.id] = reading.action.hasPrefix("Exit") ? .yes : reading.action == "Unknown" ? .unknown : .no
+        }
+    }
+    return .init(configuration: try researchJSON(profile), universe: Set(results.keys), results: results)
+}
+
 struct SuiteExecution: Codable, Equatable, Sendable {
     var opposite = "exitThenWait"
     var entry = "newPhaseEntry"

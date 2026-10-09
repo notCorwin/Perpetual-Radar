@@ -16,7 +16,7 @@ export function useStrategyFilter(initial: string, suitePhase?: string) {
         if (stopped) return
         setCompilation({ ...result, key, pending: false })
         if (result.configJSON && !result.diagnostics.length) { setLastValid(result.configJSON); if (editor.source !== null) setDraft(parseFilterConfig(result.configJSON)) }
-      } catch (cause) { if (!stopped) setCompilation({ key, pending: false, diagnostics: [cause instanceof Error ? cause.message : 'Cannot compile this filter.'] }) }
+      } catch (cause) { if (!stopped) setCompilation({ key, pending: false, diagnostics: [cause instanceof Error ? cause.message : 'Cannot compile these strategy rules.'] }) }
     }, 150)
     return () => { stopped = true; window.clearTimeout(timer) }
     // The Formula source remains the input when its compiled tree replaces the

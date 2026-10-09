@@ -23,7 +23,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let status = NSMenuItem(title: "Starting monitoring…", action: nil, keyEquivalent: "")
     private let permission = NSMenuItem(title: "Notifications: Permission needed", action: nil, keyEquivalent: "")
     private lazy var pauseItem = NSMenuItem(title: "Pause Monitoring", action: #selector(toggleMonitoring), keyEquivalent: "")
-    private lazy var notificationsItem = NSMenuItem(title: "Filter Notifications", action: #selector(toggleNotifications), keyEquivalent: "")
+    private lazy var notificationsItem = NSMenuItem(title: "Strategy Notifications", action: #selector(toggleNotifications), keyEquivalent: "")
     private lazy var testItem = NSMenuItem(title: "Send Test Notification", action: #selector(sendTest), keyEquivalent: "")
     private lazy var loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private lazy var updater = AppUpdater(currentAppURL: MonitorRuntime.appURL)
@@ -126,7 +126,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func renderMenu() {
         let paused = radar?.monitoringPaused == true || !collectionAllowed
-        status.title = paused ? "Monitoring paused" : (!startupError.isEmpty || !monitoringError.isEmpty ? "Monitoring unavailable; retrying" : "Monitoring saved filters · 1h")
+        status.title = paused ? "Monitoring paused" : (!startupError.isEmpty || !monitoringError.isEmpty ? "Monitoring unavailable; retrying" : ((try? radar?.monitoringStrategy()) != nil ? "Monitoring active strategy · 1h" : "No active strategy · 1h"))
         pauseItem.title = paused ? "Resume Monitoring" : "Pause Monitoring"; pauseItem.isEnabled = radar != nil
         let state = notifications?.authorization ?? .unavailable
         let labels: [MarketNotificationAuthorization: String] = [.notDetermined: "Permission needed", .denied: "Blocked in System Settings", .authorized: "Allowed", .quiet: "Banners disabled in System Settings", .unavailable: "Launch the packaged app"]
@@ -149,11 +149,11 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startMonitoring() {
         guard let radar, monitor == nil, collectionAllowed else { return }
         if fixture == nil { radar.start() }
-        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Monitor OKX contracts and deliver saved-filter notifications after the interface quits")
+        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Monitor OKX contracts and deliver strategy notifications after the interface quits")
         monitor = FilterMonitor(interval: fixture == nil ? .seconds(2) : .milliseconds(100), longTracker: longExitTracker, sample: { [weak self] in
             guard let self, let radar = self.radar else { return nil }
-            if let fixture { return try await fixture.observe(configuration: radar.marketFiltersV2JSON) }
-            return try await radar.observeSavedFilters()
+            if let fixture { return try await fixture.observe(profile: radar.monitoringStrategy()) }
+            return try await radar.observeSavedStrategy()
         }, onChanges: { [weak self] changes in await self?.notifications?.send(changes) }, onLongExits: { [weak self] changes in await self?.notifications?.sendLongExits(changes) }, onError: { [weak self] error in self?.monitoringError = error; self?.renderMenu() })
         radar.onBTCUpdate = { [weak self] in self?.monitor?.wake() }
         monitor?.start()
@@ -341,25 +341,7 @@ final class MonitorDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard parameters["frostedBackgroundEnabled"] == nil || enabled != nil, parameters["frostedBackgroundOpacity"] == nil || opacity != nil,
                   try radar.setFrostedBackground(enabled: enabled, opacity: opacity) else { throw FilterError("Invalid frosted background setting. Opacity must be between 0 and 1.") }
         }
-        if let value = parameters["minimum24hTurnoverUSDT"] { guard let threshold = value as? Int, radar.setMinimum24hTurnoverUSDT(threshold) else { throw FilterError("Invalid 24h turnover threshold.") } }
-        if let value = parameters["spreadFilterEnabled"] { guard let enabled = value as? Bool else { throw FilterError("Invalid spread filter setting.") }; radar.setSpreadFilterEnabled(enabled) }
-        if let value = parameters["maximumSpreadPercent"] { guard let maximum = value as? Double, radar.setMaximumSpreadPercent(maximum) else { throw FilterError("Maximum spread must be between 0 and 100%.") } }
-        if let value = parameters["contractAgeFilterEnabled"] { guard let enabled = value as? Bool else { throw FilterError("Invalid contract age filter setting.") }; radar.setContractAgeFilterEnabled(enabled) }
-        if let value = parameters["minimumContractAgeMonths"] { guard let minimum = value as? Int, radar.setMinimumContractAgeMonths(minimum) else { throw FilterError("Minimum contract age must be a whole number from 1 to 1200 months.") } }
         if let value = parameters["filterLibraryPreferencesJSON"] { guard let json = value as? String else { throw FilterError("Invalid condition library preferences.") }; try radar.setFilterLibraryPreferences(json) }
-        if let value = parameters["marketFiltersJSON"] { guard let json = value as? String, try radar.setMarketFiltersJSON(json) else { throw FilterError("Invalid market filter configuration.") } }
-        if let value = parameters["saveMarketFilterCombination"] {
-            guard let request = value as? [String: Any], let name = request["name"] as? String, let json = request["filtersJSON"] as? String,
-                  try radar.saveMarketFilterCombination(name: name, filtersJSON: json) else { throw FilterError("Use a name from 1 to 80 characters and valid filter conditions.") }
-        }
-        if let value = parameters["selectedMarketFilterCombinationID"] { guard let id = value as? String, try radar.setSelectedMarketFilterCombinationID(id) else { throw FilterError("The saved combination no longer exists.") } }
-        if let value = parameters["deleteMarketFilterCombination"] { guard let id = value as? String, try radar.deleteMarketFilterCombination(id) else { throw FilterError("The saved combination no longer exists.") } }
-        if parameters["marketFiltersJSON"] != nil {
-            monitor?.wake()
-            if parameters.keys.allSatisfy({ ["marketFiltersJSON", "foregroundLease"].contains($0) }) {
-                return decorated(radar.appliedFilterSnapshot())
-            }
-        }
         return decorated(try await radar.asyncSnapshot(rocPeriod: parameters["rocPeriod"] as? Int ?? 9, marocPeriod: parameters["marocPeriod"] as? Int ?? 9, sinceRevision: parameters["sinceRevision"] as? Int))
     }
     @objc private func checkForUpdatesNow() {
@@ -485,19 +467,22 @@ private final class MonitorFixture: MarketNotificationTransport {
     var price = 100.0
     var samples = 0
     var delivered: [[String: String]] = []
-    let worker = FilterEvaluationWorker()
+    let worker = SuiteEvaluationWorker()
     func authorization() async -> MarketNotificationAuthorization { .authorized }
     func requestAuthorization() async throws {}
     func add(_ request: UNNotificationRequest) async throws {
         delivered.append(["title": request.content.title, "instId": request.content.userInfo["instId"] as? String ?? "", "direction": request.content.userInfo["direction"] as? String ?? ""])
     }
-    func observe(configuration: String) async throws -> FilterObservation {
-        let hour = Int64(Date().timeIntervalSince1970 * 1000) / hourMS * hourMS
-        let bar = Candle(hour: hour, high: price, low: price, close: price, quoteVolume: 100, baseVolume: 1, open: price, confirmed: false)
-        let market = FilterMarketData(id: "BTC-USDT-SWAP", hour: hour, now: hour + hourMS / 2, listedAt: 1, candles: [hour: bar], stats: [:], quotes: [:])
-        let filter = try FilterCompiler.compile(FilterConfigV2.decode(configuration))
-        let results = await worker.evaluate([market], filter: filter)
+    func observe(profile: StrategyProfile?) async throws -> FilterObservation {
         samples += 1
-        return FilterObservation(configuration: configuration, universe: [market.id], results: results)
+        guard let profile else { return FilterObservation(configuration: "no-active-strategy", universe: [], results: [:]) }
+        let hour = Int64(Date().timeIntervalSince1970 * 1000) / hourMS * hourMS
+        let bars = Dictionary(uniqueKeysWithValues: (0...1).map { age in
+            let timestamp = hour - Int64(age) * hourMS
+            return (timestamp, Candle(hour: timestamp, high: price, low: price, close: price, quoteVolume: 100, baseVolume: 1, open: price, confirmed: age > 0))
+        })
+        let market = FilterMarketData(id: "BTC-USDT-SWAP", hour: hour, now: hour + hourMS / 2, listedAt: 1, candles: bars, stats: [:], quotes: [:])
+        let readings = try await worker.evaluate([market], profile: profile, positions: [], forming: false, available: true)
+        return try strategyObservation(profile: profile, readings: readings)
     }
 }
