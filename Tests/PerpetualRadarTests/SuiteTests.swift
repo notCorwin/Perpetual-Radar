@@ -220,6 +220,22 @@ final class SuiteTests: XCTestCase {
         XCTAssertTrue(s.step(trace(.no,.no,.yes,universe: .no),holding: "Long",execution: execution).exit)
         XCTAssertNil(s.step(trace(.yes,.no,universe: .no),holding: nil,execution: execution).enter)
     }
+    func testUniverseGatesReversalEntriesWithoutSuppressingHeldExitsInBothModes() {
+        let execution = SuiteExecution(opposite: "reverse")
+        for direction in ["Long", "Short"] {
+            let opposite = direction == "Long" ? "Short" : "Long"
+            for universe in [FilterTruth.yes, .no, .unknown] {
+                let traces: [FilterTrace] = [universe, direction == "Long" ? .no : .yes, .no, direction == "Long" ? .yes : .no, .no]
+                    .enumerated().map { .init(id: "\($0.offset)", label: "phase", result: $0.element, hour: hour, readings: [:], children: [], eventHours: []) }
+                let action = SuiteEvaluation.decision(traces, direction: direction, execution: execution).0
+                XCTAssertEqual(action, universe == .yes ? "Exit \(direction); then Enter \(opposite)" : "Exit \(direction)")
+                var research = SuiteSignals()
+                let intent = research.step(traces, holding: direction, execution: execution)
+                XCTAssertTrue(intent.exit)
+                XCTAssertEqual(intent.enter, universe == .yes ? opposite : nil)
+            }
+        }
+    }
     func testCompleteCycleIndependentCompoundingHourlyCloseAndOpenEndEquity() throws {
         let data = try dataset(), (trades,report) = try run(data), account = try XCTUnwrap(report.suite?.accounts.first)
         XCTAssertEqual(data.2.engine,SuiteStudyEngine.version); XCTAssertEqual(trades.map(\.direction),["Long","Short","Long"])

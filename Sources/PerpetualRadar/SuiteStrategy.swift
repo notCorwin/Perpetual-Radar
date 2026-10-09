@@ -128,7 +128,7 @@ enum SuiteEvaluation {
             let opposite = direction == "Long" ? reversal : setup
             let useOpposite = direction == "Short" || execution.opposite != "dedicatedOnly"
             if exhaustion == .yes || useOpposite && opposite == .yes {
-                let suffix = !conflict && opposite == .yes && execution.opposite == "reverse" ? "; then Enter \(direction == "Long" ? "Short" : "Long")" : ""
+                let suffix = traces[0].result == .yes && !conflict && opposite == .yes && execution.opposite == "reverse" ? "; then Enter \(direction == "Long" ? "Short" : "Long")" : ""
                 return ("Exit \(direction)" + suffix, "A saved exit phase matches. Record actual fills to update your position.")
             }
             if exhaustion == .unknown || useOpposite && opposite == .unknown { return ("Unknown", "An exit reading is missing. The actual position is retained.") }
