@@ -1,228 +1,190 @@
 # Perpetual Swap Suite
 
-Perpetual Swap Suite is a native macOS app for OKX's live, non-TradFi USDT perpetual swaps. Its AppKit window embeds a WebKit dashboard built with shadcn/ui and Tailwind CSS. Swift collects public OKX REST and WebSocket data, computes the one-hour indicators, and stores completed data in SQLite. The app does not run a local web server or need an OKX API key.
+[![Publish macOS Release](https://github.com/notCorwin/Perpetual-Swap-Suite/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/notCorwin/Perpetual-Swap-Suite/actions/workflows/release.yml)
 
-[Download the latest macOS app](https://github.com/notCorwin/Perpetual-Swap-Suite/releases/tag/autobuild). Releases and update checks use the `notCorwin/Perpetual-Swap-Suite` repository. Install this release manually when upgrading from Perpetual Radar or a build using the previous repository name; those update clients validate the old package or repository URL.
+A native macOS app for screening OKX perpetual swaps, monitoring strategies, recording actual positions, and researching historical results. It covers live, non-TradFi USDT perpetual contracts and uses one-hour data throughout.
+
+**Radar** follows live markets. **Research** evaluates frozen rules and datasets. Swift handles market data, calculations, storage, and native services; an AppKit window hosts the React dashboard in WKWebView. The interface is English-only. No OKX API key or local web server is required.
 
 ## Features
 
-- **On-demand** is the default run mode. Closing the window or **Cmd+Q** checkpoints research and stops the collector and helper. Minimizing keeps tasks running. Reopening starts on Radar; paused studies resume only when requested. **Settings → Run mode → Background Monitoring** explicitly enables collection after closing or quitting, and enables optional **Start at Login** through macOS ServiceManagement. **Pause Monitoring** stops collection and alerts; resuming establishes a quiet baseline. **Quit Completely** stops both processes. The native helper owns the collector, notifications and updates, and stops after an unexpected on-demand interface exit. Research defers update installation; an explicit on-demand quit prevents update relaunch. The exchange universe refreshes every five minutes while monitoring. No SwiftUI is used.
-- Native macOS notifications report each contract entering or exiting the **saved** 1h filters, while monitoring is running, including after Cmd+Q when Background Monitoring is enabled. Startup and saved-rule changes establish a quiet baseline; Unknown or missing readings preserve the previous definite membership until data recovers. New listings can notify on their first match. Draft previews, sorting and search do not change notification rules. Click a notification to reopen its contract chart through the app's native URL route. **Settings → Filter notifications** and the menu bar provide an on/off switch, permission status, a test notification and a shortcut to macOS Notification Settings. The switch persists in SQLite; membership stays in memory. Allow notifications for **Perpetual Swap Suite Monitor** when macOS prompts. Focus and macOS notification preferences control banner and sound presentation. Notifications require the packaged `.app`.
-- A native frosted window background is enabled by default with **0.3 background opacity** and **Dark appearance**. Dark glass uses Ghostty's neutral `#282c34` tint with opaque white text, preserving the desktop colors instead of washing them out with a white fill. It uses the same untinted WindowServer blur and radius of 20 as Ghostty's `background-blur = true`, with one native tint layer spanning the titlebar and content, rather than an additional AppKit material tint. WebKit resolves the shared background design token into sRGB and leaves its page clear, so titlebar and content never stack different tints. The native titlebar has no separator; window buttons and dragging remain native. WebKit follows AppKit’s content layout guide below the titlebar, including during resizing and fullscreen changes. Under **Settings**, turn **Frosted background** on or off and set **Background opacity** from 0 to 1. Lower values reveal more of the blurred desktop; 1 uses a solid theme background and removes the blur. The native **Appearance** menu retains Light, Dark, and System choices, and existing choices are preserved. Light appearance intentionally uses a light tint. Text and chart lines stay opaque. Both background settings persist in SQLite and restore on restart; disabling the effect retains the chosen opacity. Blur restores when the window becomes active, after wake, and across fullscreen transitions. AppKit provides fallback blur if WindowServer blur is unavailable.
-- Components retain their own background colors and default opacity tokens in `src/index.css`, using the shared `control`, `panel`, `floating`, or `inherited` surface contract. **Background opacity** is a global weight `p`: each component's final background alpha is its own default alpha multiplied by `p`. Controls default to `0.80`, panels to `0.60`, and floating menus/dialogs to `1.00`; at `p = 0.3` their alphas are `0.24`, `0.18`, and `0.30`. Floating surfaces have the strongest tint to separate overlapping content, while panels retain more glass. Saturated primary buttons/badges have their own `0.40` default (`0.12` at `p = 0.3`) to keep foreground text readable in both appearances. A weight of 0 clears component backgrounds; a weight of 1 preserves each default, including fully opaque components whose default is 1. Hover, selection, warning, table-header, and modal-overlay paints also keep their own weighted defaults. This changes existing paints without adding a background layer or fading text and chart lines. Controls, panels, and floating surfaces use blur radii of `12`, `16`, and `24` multiplied by `(1 - p)`. Nested panels, grouped inputs, segmented controls, and table/menu state overlays reuse their parent material; the long market table reuses the native window blur. Ghost/Link controls remain clear at rest. Turning glass off or choosing opacity 1 removes filters; disabling glass uses weight 1 while retaining each component's default opacity. Controls keep shared heights, radii, system typography, focus treatment, and tabular numbers. System Reduce Motion applies to controls, menus, and loading indicators. Chart clipboard images use the separate opaque `--chart-snapshot-background` token.
-- Covers every live, non-TradFi USDT perpetual swap. Turnover, spread, listing age and the `USDC-USDT-SWAP` exclusion are visible, editable rules within each combination. First-launch defaults are turnover ≥ 10M USDT, spread ≤ 0.15%, listing age ≥ 6 Gregorian calendar months, and the symbol exclusion. Clearing the entire tree shows every contract in the exchange universe, including markets with incomplete readings. Quotes refresh every 30 seconds.
-- **Filters** offers synchronized **Rules** and optional **Formula** views. Read sentence rows and edit the selected rule beside them, or choose Guided cards. A searchable condition library includes ready-to-use conditions, every native indicator, calculation blocks, comparisons and temporal rules, with help, units, favorites and recent choices. Nest AND/OR/NOT groups, drag, duplicate or reorder branches, undo/redo edits, and select Live or Closed individually or in bulk. Valid edits immediately preview the same native matches used by the list and every chart navigation direction. Invalid drafts retain the last valid preview and cannot be applied or saved. Draft source, unfinished calculation blocks, names and collapsed nodes survive view changes and chart navigation. Library favorites, recent choices and layout persist in SQLite.
-- **Explain markets** includes matching, unmatched and Unknown contracts. Each explanation shows actual operands, thresholds, hourly event times, captured levels and data gaps. Swift performs parsing, validation, calculations, Opportunity scoring and three-state evaluation; WebKit edits and displays its results. Only True enters the list. Missing data stays Unknown under NOT; Available/Unavailable rules explicitly query it.
-- **Radar** saves independent four-phase strategies, monitors confirmed and provisional candidates, and records actual Long and Short fills under **Strategies & Positions**. **Research** has its own strategy library, frozen version comparisons, independent capital simulation, and the existing filter/Opportunity tools. Explicit copying creates independent rules. Trade automation is a future feature.
-- Click the **Perpetual Swap Radar / Perpetual Swap Research** title to switch modes. The native window title follows the active mode. Switching preserves each mode's draft, current page and scroll position; research jobs and native collection continue independently.
-- Ranks Long and Short markets together by **Opportunity** by default, identifying early `Startup` and trend `Pullback` setups from existing live one-hour indicators. With no search or indicator conditions, keeps every eligible market visible, ordered `Candidate`, `Watch`, `Overheated`, then `Incomplete`. The Opportunity column, immediately after Turnover, shows direction, score, setup and status. Open its score with the mouse, Enter or Space to inspect the scoring breakdown and reasons; Escape closes the details and restores focus. Search and filters do not change scores. All indicator headings remain sortable, and sorting stays in memory, resetting to Opportunity on restart.
-- All change rates use `D = (b − a) / |a|`, where `a` is the previous value and `b` is the current value, and display `D × 100%` with two decimal places. Doubling OI gives `+100.00%`, halving gives `−50.00%`, and unchanged OI gives `0.00%`. If `a = 0`, the reading is `0.00%` when `b = 0`, `+∞%` when `b > 0`, and `−∞%` when `b < 0`. Negative previous values also use their absolute magnitude as the denominator. Missing or invalid input readings display as `—`; infinities sort above or below all finite values, with missing readings last.
-- Uses EMA200 to determine the direction shown in Opportunity. The live one-hour candle's body (open to close) entirely above the current EMA200 gives `Long`; entirely below gives `Short`; crossing or touching the line gives `Unsure`. Wicks do not affect the signal. The EMA includes the live close, matching the chart, and the signal updates as the candle changes. `Unsure` yields a directionless `Watch` score of 0 when required metrics are complete; missing live candles or insufficient EMA history yield `Incomplete`. Signals remain in memory, and EMA200 remains visible on the chart.
-- Displays price and its change from the previous completed hour using the same formula. A move from 100 to 80 shows `−20.00%`, and the reverse move shows `+25.00%`. ROC uses the same formula over nine hours; MAROC averages nine hourly ROC readings. Both indicators and their hourly changes display as percentages in the list, and chart ROC/MAROC legends and scales use percentage units. Also displays the latest 48-hour high breakout and low breakdown, taker metrics, RSI (6/12/24), and a two-line Log BB summary. `Live > Upper`, `Live > Middle`, or `Live > Lower` shows only the highest 20-hour log-price band strictly below the live price; `Live ≤ Lower` means none is below it. `Expansion 3h` counts consecutive hourly increases in Band Width (`(Upper − Lower) / Middle × 100%`), including the current live candle; a flat or shrinking width resets to `0h`. The current hour can change before it closes. Both readings are sortable, with missing values last; `≥` marks a known minimum when older history cannot establish the run's start, and `—` means insufficient data. These live summaries stay in memory. Other indicators appear as soon as their own periods have enough data.
-- Searches high breakouts and low breakdowns independently across the current hourly candle and the previous 47 candles. A candle's High must strictly exceed the highest High of its preceding 48 completed candles, or its Low must strictly fall below their lowest Low. Equal prices do not count. `↑ 3h ago · 37h old` means the latest high breakout happened in the candle starting three hours ago, and the previous high was 37 hours old at that break. Tied prior extremes use their most recent occurrence. Current-hour wicks count immediately and show `Live`; a later price retreat does not undo the break. Hover for the event's hourly interval, previous extreme price, and its formation hour, in local time. Sort each direction by break time (newest first on the first click) or prior extreme age (longest first); missing values always sort last.
-- Shows `—` when there is no break in the search window or fewer than 48 completed listing candles, with distinct hover explanations. Incomplete history shows `Loading` until the latest break can be established. A partial first listing hour counts as one completed candle after it closes; the comparison window is never shortened for new contracts. Break results are computed in Swift and kept in memory.
-- Click a symbol for an in-app chart showing 96 one-hour candles at a time, VWAP14, EMA200, Log BB, RSI, ROC/MAROC, open interest, and taker buy/sell volume. Price uses a logarithmic vertical axis and open interest uses a zero-inclusive logarithmic axis; RSI, ROC/MAROC, and taker volume use linear axes. Hold the primary mouse button to inspect a candle's OHLC and indicators, drag while holding to inspect others, and release to return to the window's latest candle. Hovering leaves the readings unchanged. Scroll the chart to review older OKX history; returning to the newest candle resumes automatic following when the next candle appears. Older candles are cached in SQLite as needed, and unavailable open-interest or taker data appears as a gap. Up/Down cycles through charts in the current visible market list order, wrapping between the first and last. Left jumps to the first market in the current sorted search results and Right jumps to the highest 24-hour turnover market satisfying the current valid rule preview, regardless of search. Nearby charts load and render in the background.
-- Uses nine one-hour periods for ROC and MAROC.
-- Permanently stores completed one-hour candles, hourly open-interest values, taker volumes, EMA200 state, and chart statistics in SQLite under Application Support for future backtesting. The live calculations load only their recent window into memory.
-- Checks a small GitHub release manifest every 15 seconds without using the GitHub API. Automatic installation is enabled by default: a verified update downloads, installs, and relaunches the app. Turn it off with **Perpetual Swap Suite → Automatically Install Updates**; **Check for Updates** remains available for a manual check. If GitHub limits requests, checks pause until its retry time.
+- **Live market screening:** sortable indicators, search, and Long/Short Opportunity rankings with score explanations. Indicators include EMA200, Log Bollinger Bands, RSI, ROC/MAROC, open interest, taker volume, and high breakouts/low breakdowns.
+- **Visual and formula rules:** synchronized editors support AND/OR/NOT groups, calculations, hourly conditions, event sequences, reusable values, and BTC market context. Inspect actual operands and data gaps with rule previews and market explanations.
+- **Strategies and positions:** independent Radar and Research libraries support four-phase strategies, confirmed and provisional signals, and manually recorded Long/Short entries and exits.
+- **Reproducible research:** compare frozen strategy versions, study filter signals, calibrate Opportunity scores, or simulate independent per-contract capital. Review coverage, costs, funding, equity, drawdown, and trade evidence; pause, resume, and export CSVs.
+- **Interactive charts:** review 96 hourly candles at a time with VWAP14, EMA200, Log BB, RSI, ROC/MAROC, OI, and taker volume. Load older history, navigate contracts by keyboard, and copy charts to the clipboard.
+- **Native macOS workflow:** optional background monitoring, menu bar controls, notifications, Start at Login, automatic updates, Light/Dark/System appearance, adjustable frosted backgrounds, and tabular numbers.
 
-The list shows all matching contracts together. New markets and indicators appear as OKX history loads. Missing values display as `—`. The collector reconnects WebSocket subscriptions and retries failed history requests.
+## Quick start
 
-## List filters
+### Install the app
 
+Running the app requires **macOS 14 or newer** and network access to OKX and GitHub.
 
-Open **Filters → Rules**. Sentence rows summarize the whole tree; selecting a row opens its controls and contract readings on the right. **Guided cards** puts controls directly into the tree. **Add condition** or Ctrl+Space opens the complete library: search labels, descriptions, aliases or metric keys, or browse Ready-to-use, Indicators, Value blocks and Logic. Favorite a condition to find it again; recent additions are also available. The library comes from Swift's indicator and function catalogs, so the visual controls and native compiler share their supported parameters.
+The current `autobuild` package targets Apple Silicon (`arm64`). For Intel Macs, build from source.
 
-Quick conditions add editable rules without opening Formula:
+1. Open the [latest `autobuild` release](https://github.com/notCorwin/Perpetual-Swap-Suite/releases/tag/autobuild).
+2. Download and extract `Perpetual.Swap.Suite.app.tar`.
+3. Move `Perpetual Swap Suite.app` to Applications and launch it.
 
-- **OI rising** selects **OI Trend → Equals → Rising**. Live compares the current hourly OI with the preceding hour; Closed compares the last two completed hours.
-- **Body above EMA** compares both Open and Close strictly above EMA200 for every one of the last 48 completed hours. Edit the period, direction, window or evaluation hour in the inspector.
-- **Volume surge** uses live quote volume and the full mean of the preceding 20 completed candles, excluding the live hour. Its source, offset, window, multiplier and comparison are editable value blocks.
-- **Three closed RSI hours** evaluates RSI14 > 50 at each of the latest three completed hours.
-- **Break & retest** provides breakout, retest and reclaim stages within six hours, capturing the prior 48-hour high at the breakout. Later stages use that frozen level. Edit stage conditions, maximum gaps, total window and captures in the timeline.
-- **Long or short alignment** provides separate AND groups inside an OR group.
+The release contains an ad hoc signed app bundle. Each successful release build replaces the `autobuild` package.
 
-Both operands have a visual value picker. **Add calculation step…** wraps a value in arithmetic, an aggregate, historical offset or another supported function; nested parameters remain editable. **Mean of previous closed hours** inserts the offset and mean together. **Reusable values** is a collapsed panel for naming a calculation and selecting it in other rules. Renaming a reusable value, stage or captured value updates its references. Category fields offer labels such as Rising and Falling; contract symbols have a text value control. Every numeric control shows its unit: turnover uses M USDT, OI uses M USD, price and quote volume use USDT, change rates use percent, and RSI uses 0–100.
+On first launch, the collector loads hourly history across the exchange universe. Markets and indicators appear as their data becomes available; missing readings display as `—`.
 
-**Time requirement** chooses every hour, recently or occurrence count. **Structure & name → Wrap in…** also offers NOT, AND and OR groups; **Remove wrapper** retains the enclosed rule and its hourly data selection. Wrapping a sequence stage preserves its Closed anchor, identifier, gap and captures. Crossing rules expose two operands and their equality boundary; range endpoints appear only for range comparisons. Select branches to set Live/Closed, duplicate or remove them in bulk. Undo/redo buttons restore rule edits; outside text inputs, Cmd+Z/Shift+Cmd+Z and Cmd+D provide undo, redo and duplication.
+### Build from source
 
-**Check a contract** includes unmatched and Unknown markets, displays actual readings, units and data gaps for the selected rule, and expands hourly checks. **Explain markets** displays the whole decision tree with event paths and captured values. Formula editing remains optional; the code button and Formula tab use the same rule tree. Completion inserts concrete defaults. Indicator defaults retain EMA200, RSI6/12/24, ROC9, MAROC9/9, Log BB20/2, VWAP14, break reference48/96 and event search48.
+Use a macOS version supported by your Xcode installation, with:
 
-```text
-// Long or short alignment
-(emaTrend == "rising" AND ROC(9) > 0)
-OR (emaTrend == "falling" AND ROC(9) < 0)
-
-// Live volume exceeds twice the mean of the previous 20 closed candles
-let relativeVolume = Volume / mean(lag(Volume, 1), 20);
-relativeVolume > 2
-
-// Each of the latest three completed RSI hours meets the threshold
-closed(every(RSI(14) > 50, 3))
-
-// Break, retest and reclaim a captured reference within six hours
-sequence(6,
-  stage("break", High > PriorHigh(48), 6, capture("level", PriorHigh(48))),
-  stage("retest", Low <= break.level, 6),
-  stage("reclaim", crossUp(Close, break.level), 6)
-)
-```
-
-Each example is a separate configuration. Prefix reusable definitions with `let name = expression;`. Scalar functions include arithmetic, `abs`, `mean`, `sum`, `highest`, `lowest`, `stddev` (population), `lag` and `change`. Names and comparison types are checked by Swift, including definition cycles and event capture scope. `named("label", rule)` retains a visual rule name in formula form. Indicator parameters and temporal windows are positive whole hours; Log BB deviations may be any positive number. `lag(x, 0)` is allowed. Nested groups retain their order and identities when switching views.
-
-Live reads the current hourly slot; Closed shifts its rule one hour back. Each additional Closed wrapper adds an offset. `every`/`recent`/`count` include their anchor and preceding slots; gaps are not skipped. Count syntax is `count(rule, hours, "gte", minimum)` or `count(rule, hours, "between", minimum, maximum)`. Unknown slots represent possible matches, so a count is True or False only when every possible count agrees. `crossUp(a,b)` requires previous `a ≤ b` and current `a > b`; `crossDown` uses previous `a ≥ b` and current `a < b`.
-
-Sequence stages occur in strictly different hourly slots. A stage's gap applies from the preceding stage, the total span bounds first-to-last elapsed hours, and the final stage anchors the sequence (the previous completed hour if that stage is Closed). Earlier paths remain eligible when a newer possible start cannot complete. Captures are numeric event-hour values accessible to later stages as `stageName.captureName`. Use `recent(sequence(...), hours)` to search for earlier completed sequences. Captures, traces and matches stay in memory.
-
-The loader derives history demand from periods, offsets and windows, reads SQLite first and pages missing OKX history in the background. Identical indicators share calculation caches, and overlapping history requests share stored pages. There is no 250-hour rule window ceiling. Existing RSI/EMA warm-up conventions remain intact; insufficient listing history and unavailable exchange history remain Unknown. Closed turnover and spread snapshots accumulate from observed ticker quotes after this upgrade; earlier hours remain Unknown. Observations are never filled with zeros or copied into another hour.
-
-**Apply filters** saves the valid configuration to SQLite. **Reset draft** previews an empty tree; **Discard changes** restores the applied configuration. Saved combinations retain name, identity, node order, formulas and selected state; saving an existing case-insensitive name updates that entry. Reload a selected combination to recover its saved tree, or delete it while retaining the draft. The applied v1 configuration and every saved combination migrate transactionally to v2, with the old AND/OR tree inside an outer AND containing the former base gates. The former spread gate’s 1e-10 rounding tolerance is preserved as an editable `threshold + 1e-10` expression. A failed migration or save rolls back the configuration and selection for retry. Runtime previews and live readings are never persisted.
-
-Unapplied filter edits show an **Unsaved changes** badge and an amber callout with **Apply filters**, even when the editor is collapsed. The warning remains during saving and after a failed save, with errors visible beside the collapsed editor; it clears after a successful apply or **Discard changes**. Saving a named combination retains the warning until the draft is applied.
-
-## BTC market context
-
-The condition library's **BTC Market Context** group provides **BTC Crash**, **BTC Ranging**, **BTC Entry Gate** and **BTC Exit Signal**. Nothing is enabled until you add and apply a preset. Entry Gate joins the existing rules with AND and excludes both risks; Exit Signal joins them with OR. The complete combination remains visible in the Rules tree, with editable periods, thresholds, confirmation hours and clocks.
-
-Crash initially means live BTC `ROC(1) <= -2` OR `ROC(3) <= -4`. Ranging initially means `Efficiency(24) <= 0.30` for three consecutive completed BTC hours. These are editable example parameters, without strategy backtest validation. `Efficiency(n)` is the absolute net close change divided by the sum of absolute hourly close changes across n intervals; it captures narrow flat markets and wide directionless swings. A completely flat window has efficiency 0; gaps remain Unknown.
-
-`BTC(expression, "aligned")` reads `BTC-USDT-SWAP` at the rule's evaluation hour; omitting the clock uses aligned. `"live"` selects the forming BTC hour and `"closed"` selects its latest completed hour, in general filter previews. Four-phase Confirmed results always project BTC to its completed hourly snapshot, including rules configured with a live clock; Provisional results retain the forming clock. Explicit `lag`, aggregates and time wrappers then apply their offsets once. ROC compares the chosen price with the close n hours earlier, using the latest forming price for a live reading. Preview and Explain show the reference contract, actual UTC hour, Live/Closed, values and thresholds. Hiding BTC in the list does not change reference data.
-
-Both risk presets expose `cooldown(rule, hours)`, initially **0h (disabled)**. A positive whole-hour value triggers immediately and retains the risk for that many hours after its last match. Pure BTC cooldowns share the risk observation across contracts, including when a preceding entry condition fails. Live snapshots, risk observations and notification deduplication remain in memory; configured rules persist in SQLite. With 0h, a recovered crash clears immediately. Missing, disconnected or more than 30-second-old live BTC data is Unknown; a separately satisfied exit still wins an OR group.
-
-The active Radar strategy monitors its recorded Long and Short positions. BTC pushes wake native evaluation, with a two-second fallback. A forming BTC exit is shown as a **Provisional** position hint; Confirmed phases and notifications use completed hourly snapshots. Provisional hits do not record a confirmed cooldown or generate a close alert. Inactive strategies retain their records with **Inactive Strategy** status. Notifications preserve membership through Unknown and use a quiet baseline after startup, activation or resume. Existing strategy URLs open that strategy's **Positions**; fills change only after an explicit actual record. Collection after closing the interface follows **Background Monitoring** and notifications follow **Filter notifications**.
-
-Research automatically downloads and freezes BTC dependencies alongside the selected instruments, recording reference coverage, provenance and revisions in the digest. BTC reference data adds no research sample unless BTC was itself selected. Reports label live BTC rules **Hourly approximation of live BTC rules**: evaluate at the completed hourly close, execute at the next hourly open, and reconstruct neither intrahour first triggers nor intrahour cooldown observations.
-
-## Four-phase strategies and positions
-
-Open **Strategies & Positions** in Radar or **Strategy Library** in Research. Configure **Universe**, **Bullish Setup**, **Bullish Exhaustion**, **Bearish Reversal** and **Bearish Exhaustion** with the full Rules/Formula editor, temporal conditions, calculations and sequences. Phases are independent and may overlap or skip stages. All four phase rules must be nonempty and valid before saving, activation or a full cycle study. Thresholds are supplied by the user. Incomplete drafts and their last valid preview persist separately in SQLite, without changing saved strategies or alerts.
-
-Radar activates one saved strategy at a time. Its default candidate view shows Bullish Setup and Bearish Reversal, with filters for each phase and **All markets**. The table distinguishes **Provisional** live matches from **Confirmed** completed-hour matches. Phase explanations show all outcomes, operands and Unknown reasons. Two entry phases matching together show **Conflict** and suppress directional entry prompts. Universe gates candidates and entries; actual holding exits still evaluate outside Universe and regardless of search or sort. Clearing Universe includes every Crypto USDT swap allowed by the exchange catalog (`instCategory=1`). Confirmed readings use completed candles (`confirm=1`). Notifications are deduplicated by contract, saved revision and phase, with quiet baselines on startup, revision changes and resume. Unknown preserves membership. Retracted provisional signals never generate confirmation alerts.
-
-After trading manually, use **Positions → Record entry…** or **Record exit…**, supplying direction, actual price and UTC time. These records alone change actual holdings. Entry rules and Universe cannot use position readings. Long exhaustion supports `LongEntryPrice`, `LongReturn` and `LongHeldHours`; Short exhaustion supports the corresponding `Short*` fields. Return is directional Signed Relative Change, without modeled costs or leverage. Records retain their entry strategy snapshot; inactive owners show **Inactive Strategy**. Existing Long records are imported into Positions with unchanged prices, timestamps and entry snapshots; their Short phases are explicit false rules until configured. Open records remain available through pauses, missing data and delisting.
-
-**Copy to Radar / Copy to Research** creates a new independent strategy and revision. Edits never synchronize or change an already frozen experiment. A saved active Radar revision change starts a new quiet confirmation baseline. Research's library, worker, SQLite connection and request pacing are separate; live collection and alerts continue while Research is open, downloading or computing.
-
-## Multi-direction cycle research
-
-**Backtest saved strategy** or choose **Multi-direction cycle** in Research. Select a saved or frozen version, optionally another version for comparison, UTC range, execution policy and independent capital parameters. Each version freezes Universe and all four phases, costs, execution and capital settings alongside the dataset digest. Historical dependency requirements use the union of all versions. Full rules never borrow future candles or live EMA state.
-
-Signals are calculated at hourly close and executed at the next hourly open inside the selected range. Flat accounts enter Long on Bullish Setup or Short on Bearish Reversal. Long exits on Bullish Exhaustion; Short exits on Bearish Exhaustion or Bullish Setup. **Exit then wait** (default) closes on the opposite signal and requires its confirmation at the following close before entering. False, Unknown and Conflict cancel that wait. **Reverse at next open** closes and opens separately, charging each execution. **Dedicated exits only** ignores Bearish Reversal while Long; Bullish Setup still exits Short. **New phase entry** (default) requires a new episode, with initial matches as baselines and Unknown preserving episodes. **Match while flat** can enter a persistent match. No contract adds to a position or holds two simulated directions.
-
-Each contract has its own account, defaulting to **10,000 USDT**, **100% margin allocation**, **1× leverage**, with per-contract overrides. Entry margin is current equity × allocation, and base quantity is margin × leverage ÷ fill price. Explicit maintenance margin and liquidation fees are required. Gross and optional Net run separate wallets: Gross excludes costs; Net uses supplied entry/exit fees, directional slippage, actual funding settlements and settlement marks. Positive funding debits Long and credits Short. Settlements exactly at entry precede the new position; a position held at settlement before an exit pays funding. Missing OHLC, required open, funding coverage, rates or marks stops the affected model as **Incomplete**, without zeros, forward fills or continued compounding.
-
-Simplified isolated liquidation uses traded hourly OHLC. Collateral plus directional unrealized P&L is compared against current notional × (maintenance rate + liquidation fee rate). An intrahour touch fills at the threshold; an opening gap fills at the open. Liquidation precedes signal execution, clears pending reversal, caps isolated losses at allocated margin and labels the trigger hour interval. Hourly OHLC cannot reconstruct minute-level ordering or OKX's historical margin tiers. Intrahour-liquidation MFE is Unknown and excluded from mean MFE; MAE stops at the liquidation fill, without attributing later extremes to the closed position. Funding debit can itself trigger liquidation at its settlement mark. Curves value each completed close before following-open orders, including open unrealized equity. The final close does not force a sale or execute an order outside the experiment.
-
-Results show versions, directions, contracts and 60%/20%/20% time splits. Win rate is profitable closed trades ÷ eligible closed trades; payoff ratio is mean winning margin return ÷ absolute mean losing margin return; Profit Factor is total monetary gains ÷ absolute total monetary losses. MFE/MAE, holding hours (bounded ranges for intrahour liquidations), liquidation counts, separate account equity/drawdown curves and all trade traces are retained. Open, Incomplete, Uncertain, Purged and cross-split trades have separate counts and are excluded from primary statistics. The shared 48-hour boundary purge and deterministic UTC-week confidence intervals remain in use. Pause/resume checkpoints retain positions, cash, episodes and pending actions. Summary, trade and equity CSV exports include frozen rules, parameters, data digest and source provenance; CSV ratios remain decimal while the interface formats percentages.
-
-The earlier **Long entry / exit**, **Filters**, **Opportunity**, and **Compare rules** signal tools remain available for manual research and score calibration. Their fixed-notional horizons are distinct from the independent capital accounts above.
-
-## On-demand signal research
-
-Open **Research** from Radar, choose a question, a complete rule snapshot and UTC dates, then **Review data plan → Prepare Data → Run Study**. A blank start date requests the longest obtainable history. Filters use first entry per instrument/direction episode by default; Opportunity calibration samples every matching hour. You can select every matching hour, a fixed Long/Short direction, and multiple saved or frozen experiment rule snapshots for comparison. Opening Research preserves the native collector and alerts in both run modes; WebKit suspends hidden Radar rendering and polling. Minimizing continues work, while on-demand close or quit checkpoints research and stops both processes.
-
-Each experiment freezes its specification, engine version, verified instrument metadata, input revisions and SHA-256 data manifest. **Studies & cache** stores ready, paused, cancelled and completed experiments. Copying a configuration retains the original rules even after Radar combinations change. Updates to cached data create new input revisions, so existing experiments continue to read their own frozen dataset. Downloaded raw files, normalized hours, indicator calculations and checkpoints persist without automatic expiry. **Clear unreferenced cache** removes only inputs with no experiment reference; delete experiments first to release their inputs.
-
-Research has its own `Application Support/PerpetualRadar/Research/research.sqlite3` database and `Raw` files. It first imports confirmed local Radar data without writing to the live database. Sources are selected from compiled rule dependencies. Recent hourly candles use public REST; older published minute archives are aggregated only when all 60 confirmed minutes exist. Trade archives supply hourly taker volume, and order book archives are downloaded only for historical Spread. Original Turnover is reconstructed as 24 complete hours of base volume multiplied by that hour's closing price. OI remains actual observed history. Funding uses actual historical settlements and corresponding mark-price opens. Local coverage and missing intervals are listed before preparing data. Raw originals and completed REST pages are reused on resume or parser changes, with ZIP/Gzip CRC and TAR header checks, SHA-256 verification and coverage reports. Manual **Refresh source data plan** creates a new source revision. Unavailable prices, OI, spreads and other inputs remain Unknown.
-
-The plan lists source intervals, cache hits, missing ranges and known archive sizes before downloading. The frozen coverage view lists actual available hours and gaps. The historical instrument registry retains verified exchange snapshots and delisted symbols; archive-only symbols with unknown classification or listing dates are reported and excluded. Public catalogs do not provide a complete retired-contract metadata history. **Import verified instrument catalog** accepts a JSON array of `ResearchInstrument` records to add documented retired contracts with official OKX evidence URLs, verified crypto USDT-swap eligibility, listing timestamps, optional delisting timestamps, contract base value and observation timestamp. Example:
-
-```json
-[{
-  "id": "BTC-USDT-SWAP",
-  "listedAt": 1546272000000,
-  "verified": true,
-  "contractValue": 0.01,
-  "source": "https://www.okx.com/docs-v5/en/#public-data-rest-api-get-instruments",
-  "observedAt": 1791417600000
-}]
-```
-
-Replace example metadata with verified historical evidence. All internal times and reports are UTC. Archive catalog dates use OKX's documented UTC+8 convention for candles/trades/funding and UTC+0 for books. Sources follow the [official historical market data API](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-historical-market-data), including delayed publication and variable public retention limits.
-
-Research evaluates at hourly close: Live reads the hour just completed, Closed retains the preceding-hour offset, and indicators never read future candles or the current live EMA seed. Hits already present at the study start establish a baseline. Unknown does not end an episode; an entry after a missing interval is labelled uncertain and excluded from primary statistics. Reference entry is the next hourly open. Gross returns, sample counts, means, medians, win rates, MFE and MAE use a fixed 1 USDT starting notional and exits at the open after 1, 3, 6, 12, 24 or 48 hours. Each horizon excludes incomplete holds, missing hours and missing exit prices separately.
-
-Gross returns always appear. Enter both fees and per-side slippage in basis points, including explicit zero, to request modeled net returns. Slippage changes directional entry/exit prices; fees are charged on each actual turnover. Funding includes settlements strictly after entry through and including exit, with the historical rate and mark price at each settlement. Missing funding coverage or settlement marks disables that horizon's net return while retaining gross returns.
-
-Score calibration retains the native score, weights and missing-input behavior. Full-input samples form the primary report; partial inputs have their own bins. Reports split scores at 0/40/60/65/70/75/80/100, and show direction, Startup/Pullback, status, UTC month and Candidate thresholds. Filter controls are evaluable nonmatching hours within the same instrument, direction and UTC month; score studies compare against complete Watch hours. Rule comparisons use a common evaluable instrument-hour pool within one frozen dataset. Time splits are 60% observation, 20% validation and 20% holdout, with the 48 hours before each boundary purged from signals. Mean-return intervals use 2,000 deterministic UTC-week block bootstrap replicates (seed 20261007); fewer than 30 returns or 8 weeks produces descriptive statistics only.
-
-Inspect an event for its frozen rule operands, score contributions, missing reasons, raw-source provenance, six outcome horizons and chart. Chart review, copying and navigation reuse the native chart renderer without live polling. **Export summary CSV** and **Export events CSV** use native save panels and include frozen data identifiers and audit details. Work uses native background priority, at most two connections and one parsing/calculation worker, bounded streaming extraction, short SQLite transactions, a 128 MiB working budget and recoverable checkpoints for cancellation, critical resource pressure and disk shortage.
-
-## Opportunity ranking
-
-The score uses the current live snapshot and updates whenever its indicators change. EMA200 `Long` or `Short` supplies the direction. For Short, RSI becomes `100 − RSI`, and ROC, MAROC, hourly price change and taker imbalance change sign. OI change keeps its sign and measures participation, not direction. Log BB `below/lower/middle/upper` maps to `B = 0/1/2/3` for Long and the reverse for Short; existing band boundary definitions are preserved. All thresholds below use those directional values.
-
-| Setup | Required readings |
-| --- | --- |
-| Startup | RSI24 > 50; ROC ≥ MAROC > 0; 50 ≤ RSI6 < 75; 50 ≤ RSI12 < 70; RSI6 > RSI12; B ≥ 2; a complete expansion run of 1–3h; positive price change or positive taker imbalance. |
-| Pullback | RSI24 > 50; MAROC > 0; 40 ≤ RSI6 ≤ 60; 45 ≤ RSI12 ≤ 65; RSI6 ≤ RSI12; B is 1 or 2; both price change and taker imbalance are positive. |
-
-Pullback identifies cooling inside the bands with live recovery using the current readings. It does not measure a specific support price or distance from a moving average. An `Unsure` EMA200 with complete core data is a zero-point Watch with no direction or setup.
-
-| Score group | Points |
-| --- | --- |
-| Trend, up to 30 | Clear EMA200 direction: 15. Positive ROC, positive MAROC and RSI24 > 50: 5 each. |
-| Entry, up to 30 | Matching either setup: 20. Both price and taker confirmation: 10; only one: 5. |
-| Participation, up to 20 | Positive directional taker imbalance increases linearly from 0 to 10 points between 0% and 20%. Positive OI change increases linearly from 0 to 10 points between 0% and 5%. Larger readings are capped; zero or negative readings earn no bonus. |
-| Timing, up to 20 | Same-direction breakout/breakdown 0–3h ago: 10; 4–12h ago: 5. For Startup or no setup, complete expansion 1–3h: 10; 4–6h: 5. For Pullback, complete expansion 0–2h: 10; 3–5h: 5. |
-| Heat penalty, up to 40 | Deduct 10 each for RSI6 ≥ 70, RSI12 ≥ 65, B = 3 and expansion ≥ 4h. |
-
-Clamp the total to 0–100, then round to the nearest integer. A matching setup with at least 65 points is a Candidate unless an overheating combination is present. Otherwise, a valid directional result is Watch. Any of these combinations makes it Overheated regardless of score:
-
-- RSI6 ≥ 80 together with RSI12 ≥ 70.
-- B = 3 together with RSI6 ≥ 75.
-- B = 3, expansion ≥ 6h and RSI12 ≥ 65 together.
-
-An outer-band reading alone contributes a penalty without classifying the market as Overheated. Missing, loading or old breaks earn no timing bonus. An expansion lower bound (`≥`) earns no expansion timing bonus and cannot establish a Startup, but a sufficiently long lower bound still contributes heat deductions and overheating checks.
-
-Missing or invalid EMA200, price change, ROC, MAROC, RSI6/12/24, Log BB position or expansion produces an unscored Incomplete result. Non-finite core readings are treated as unavailable. Missing or non-finite OI/taker readings earn zero participation points without redistributing weights; details explain the missing inputs. Original indicator columns retain their infinity display and numeric sorting.
-
-Opportunity ordering compares status first, score second, then descending turnover and instrument ID. Reverse sorting reverses valid statuses and scores while keeping Incomplete results last. Scores are computed before search and indicator filters, held only in memory and require no new OKX requests or database changes. These balanced weights and thresholds are initial heuristics and have not been calibrated through backtesting.
-
-## Requirements
-
-- macOS 14 or newer, Xcode 26.3 or newer, Node.js 22.12 or newer, and npm
-- Network access to OKX public REST and WebSocket endpoints
-
-## Build and run
+- **Full Xcode and Swift 6.2+**, with Xcode selected as the active developer directory. Command Line Tools alone do not provide the asset compiler used to build the app.
+- **Node.js 22.18+ within the 22.x line, or Node.js 24.11+**, and npm. These minimums follow the current dependency lockfile.
+- Network access for npm/Swift dependencies, OKX public REST and WebSocket endpoints, and GitHub releases.
 
 ```sh
+git clone https://github.com/notCorwin/Perpetual-Swap-Suite.git
+cd Perpetual-Swap-Suite
 npm ci
 npm run app
 open ".build/app/Perpetual Swap Suite.app"
 ```
 
-`npm run app` compiles the dashboard and Swift executable, then creates an ad hoc signed `.app` bundle. The first launch loads one-hour history across the exchange universe, so some indicators take time to appear. Click a symbol to open its chart in the app. The app stores its SQLite cache and applied Filter configuration at `~/Library/Application Support/PerpetualRadar/radar.sqlite3`.
+`npm run app` builds the TypeScript renderer and release Swift executable, packages the dashboard and monitor helper, compiles the app icon, and ad hoc signs both bundles. It builds without opening the app; the final command launches it.
 
-SQLite uses write-ahead logging so collection, filter previews, and background monitoring can read while another connection writes. Opening an initialized cache or restoring already migrated settings does not acquire a write lock. Each writer waits up to five seconds for short write conflicts, and schema upgrades run once in one transaction. Database read failures are reported instead of being treated as empty history. If either the live or research cache is temporarily unavailable at startup, the same app automatically retries opening it, with a shared retry schedule capped at 30 seconds, and clears the error after recovery. Saved settings, strategies, tracking records, research checkpoints and cache files are retained.
+## Using Radar
 
-The interface coalesces monitor startup and recovery requests, reconnects after crashes, and replaces its own helper after repeated failed health checks. Interrupted reads resume automatically. Within the same monitor session, request IDs and acknowledged replies prevent a retried save from executing twice. If a helper exits after accepting a write, the app reconnects and asks you to check its current state before repeating that action. Long and Research connection warnings disappear when polling succeeds; operation errors remain visible. Waking the Mac reconnects collection without reloading the interface or discarding drafts.
+### Screen markets
 
-The market list fills the window width, using a minimum design width of 1600 points and enough room for the widest loaded row. In narrower windows, the toolbar and table scale together after layout, preserving columns and formula rendering. Portaled rule explanation dialogs reuse the measured scale and design bounds, keeping their nested decision labels readable. The chart toolbar keeps its title and description on one line, with full text available on hover, so smaller windows retain room for the plot. Data refreshes preserve the window size you choose.
+Radar opens with the market list. Its initial editable rules require at least **10M USDT 24-hour turnover**, at most **0.15% spread**, at least **six calendar months** since listing, and exclusion of `USDC-USDT-SWAP`. Clear the entire rule tree to include every contract in the supported exchange universe.
 
-Run `npm run ci:local` before pushing to complete CI locally: Swift and TypeScript tests, lint, a full macOS app build, native WKWebView interaction checks with 500 simulated markets, and isolated background-process lifecycle checks (quit, entry/exit alerts, reopen, pause, restart and complete shutdown). GitHub Actions handles CD: pushes to `main` build the release package and replace the single GitHub `autobuild` release and tag. Actions does not run the test or lint suites. The release contains only the latest `Perpetual.Swap.Suite.app.tar` and `update.json`; previous build assets are removed after the new package is verified and its manifest is published. The release notes show the latest build time, commit, and download link. The updater uses the manifest's SHA-256 digest and the bundle's commit revision to verify the package.
+Search narrows the visible list. Click column headings to sort; the default **Opportunity** ordering groups `Candidate`, `Watch`, `Overheated`, and `Incomplete` results. Open a score to inspect its components and missing inputs. Opportunity scores are heuristics; use Research to evaluate them against historical data.
 
-## Test
+### Build and apply filters
+
+1. Open **Filters → Rules**, then **Add condition**. Search the condition library or choose a preset such as OI rising, Volume surge, or a BTC market context condition.
+2. Edit conditions in sentence rows or **Guided cards**. Select **Live** for the forming hour or **Closed** for completed-hour evaluation; combine conditions with groups, calculations, or time requirements.
+3. Use **Check a contract** or **Explain markets** to inspect matching, unmatched, and Unknown results.
+4. Choose **Apply filters** to persist the valid configuration. Save a named combination to reuse it later.
+
+Valid draft edits immediately preview list matches and chart navigation. Alerts use the **saved** configuration. Invalid drafts retain the last valid preview and cannot be applied. Missing inputs evaluate as **Unknown**, including under NOT; only True matches enter the filtered list.
+
+The optional **Formula** view edits the same rule tree. Try each example as a separate configuration:
+
+```text
+// Live quote volume exceeds twice the mean of the previous 20 closed hours
+let relativeVolume = Volume / mean(lag(Volume, 1), 20);
+relativeVolume > 2
+```
+
+```text
+// RSI14 exceeds 50 in each of the latest three completed hours
+closed(every(RSI(14) > 50, 3))
+```
+
+### Review charts
+
+Click a symbol to open its chart. Hold the primary mouse button to inspect a candle, drag while holding to inspect others, and release to return to the displayed window's latest candle. Scroll to load older history; returning to the newest candle resumes automatic following.
+
+| Control | Action |
+| --- | --- |
+| Up / Down | Previous / next contract in visible list order, wrapping at either end |
+| Left | First contract in the current sorted search results |
+| Right | Highest-turnover contract matching the valid rule preview, regardless of search |
+| Copy chart | Copy an image with an opaque theme background |
+
+### Monitor strategies and record positions
+
+Open **Strategies & Positions** and configure **Universe** plus four independent phases: **Bullish Setup**, **Bullish Exhaustion**, **Bearish Reversal**, and **Bearish Exhaustion**. Every phase must contain valid, nonempty rules before saving or activation. Radar monitors one activated saved strategy at a time.
+
+**Confirmed** results use completed hourly snapshots; **Provisional** results use the forming hour and may retract. Conflicting entry phases suppress directional entry prompts. Universe gates entries, while holding exits still evaluate for recorded positions outside Universe.
+
+After executing a trade yourself, use **Record entry…** or **Record exit…** with its direction, actual price, and UTC time. These records alone change actual holdings. The app currently supports analysis and manual tracking; it does not submit exchange orders.
+
+## Using Research
+
+Click the **Perpetual Swap Radar / Perpetual Swap Research** title to switch modes. Each mode keeps its draft, page, and scroll position. Live monitoring continues while Research prepares or evaluates data.
+
+1. Choose a **Research question**: Multi-direction cycle, Long entry / exit, Filters, Opportunity, or Compare rules.
+2. Select complete rules or saved/frozen strategy versions, contracts, and a UTC date range. A blank start date requests the longest obtainable history. **Strategy Library** manages Research strategies; **Copy to Radar / Copy to Research** creates independent copies.
+3. Set execution and capital parameters for cycle studies. Each contract has its own account, initially 10,000 USDT, 100% margin allocation, and 1× leverage. Enter maintenance margin and liquidation fees explicitly. Leave all three trading-cost fields blank for Gross results, or supply entry fee, exit fee, and per-side slippage in basis points, including explicit zero, for modeled Net results.
+4. Choose **Review data plan → Prepare Data → Run Study**. Review source coverage and gaps before downloading; inspect the frozen dataset once preparation finishes.
+5. Inspect reports, trades/events, and frozen charts. Use **Studies & cache** to reopen or resume experiments, and the export controls to save summary, event/trade, and equity CSVs as applicable.
+
+Research freezes rules, engine versions, input revisions, and a SHA-256 data manifest. Updating Radar rules or refreshing cached sources does not change an existing experiment. Historical evaluation runs at hourly close, with execution at the next hourly open; it does not use future candles or live EMA state.
+
+Missing prices, funding, or other required inputs remain Unknown or make affected results Incomplete. The data plan exposes public-history limits and gaps. Cycle liquidation is a simplified isolated model using hourly traded OHLC; live BTC rules use an hourly approximation. Fixed-horizon signal studies and cycle capital simulations are separate research models.
+
+Downloaded inputs and checkpoints persist without automatic expiry. **Clear unreferenced cache** removes only inputs no longer referenced by experiments.
+
+## Monitoring, notifications, and updates
+
+Choose the run mode under **Settings → Run mode**:
+
+| Mode | Closing the window or Cmd+Q |
+| --- | --- |
+| On-demand, the default | Checkpoints Research and stops collection and the helper. Reopen the app and explicitly resume paused studies. |
+| Background Monitoring | Keeps native collection and alerts running. Enables optional Start at Login. Use the menu bar's Quit Completely to stop both processes. |
+
+Minimizing keeps work running. **Pause Monitoring** stops collection and alerts; resuming establishes a quiet baseline.
+
+Enable **Settings → Filter notifications** and allow notifications for **Perpetual Swap Suite Monitor**. Alerts report entry/exit changes in saved filters and confirmed strategy events; drafts, search, and sort do not change their rules. Startup and rule changes establish quiet baselines, and Unknown readings preserve prior definite membership. Clicking a notification opens its contract or strategy. Notifications and Start at Login require the packaged `.app`.
+
+Automatic update installation is enabled by default. Use **Perpetual Swap Suite → Automatically Install Updates** to change it, or **Check for Updates** for a manual check. The helper verifies the release digest and source revision before installation; updates are deferred while Research is busy.
+
+Choose Light, Dark, or System in the native **Appearance** menu. **Settings** controls the frosted background and opacity; the initial appearance is Dark with opacity 0.3. Text and chart lines remain clear as background opacity changes.
+
+## Local data
+
+| Location | Contents |
+| --- | --- |
+| `~/Library/Application Support/PerpetualRadar/radar.sqlite3` | Completed hourly candles/statistics, EMA state, saved filters and strategies, actual position records, and shared settings |
+| `~/Library/Application Support/PerpetualRadar/Research/research.sqlite3` | Research libraries, normalized historical data, frozen experiments, results, and checkpoints |
+| `~/Library/Application Support/PerpetualRadar/Research/Raw/` | Downloaded research source files |
+
+Active quotes, live calculations, filter previews, and notification membership remain in memory. Research uses its own database and workers, reuses confirmed Radar history, and does not write to the live database. SQLite uses write-ahead logging; native services retry transient database and monitor failures automatically.
+
+## Development
+
+### Project layout
+
+| Path | Responsibility |
+| --- | --- |
+| [Sources/PerpetualRadar](Sources/PerpetualRadar) | AppKit/WebKit host, native monitor and IPC, OKX networking, indicators, rules, SQLite, Research, notifications, and updater |
+| [src](src) | React/TypeScript dashboard, rule editors, charts, and Research views |
+| [src/components/ui](src/components/ui) | Shared shadcn/ui primitives |
+| [src/index.css](src/index.css) | Design tokens and component material contract; Tailwind CSS supplies layout and styling |
+| [Tests/PerpetualRadarTests](Tests/PerpetualRadarTests) and `src/*.test.ts` | Native and TypeScript test suites |
+| [scripts](scripts) | App packaging, isolated native test runner, and surface checks |
+| [macos](macos) | Bundle metadata and icon assets |
+| [.github/workflows/release.yml](.github/workflows/release.yml) | Release build, packaging, and publication |
+
+Swift dependencies are declared in [Package.swift](Package.swift) and resolved in [Package.resolved](Package.resolved). Web dependencies and commands are in [package.json](package.json), with exact versions in [package-lock.json](package-lock.json).
+
+`npm run build` produces only the renderer in `dist/`. The dashboard requires the native WKWebView bridge; use `npm run app` to build the complete application.
+
+### Checks and release workflow
+
+Run the complete local CI before pushing:
 
 ```sh
 npm run ci:local
 ```
 
-To run the test and lint suites separately:
+This runs Swift and TypeScript tests, lint and surface-contract checks, a full macOS app build, real WKWebView interaction/material checks, and isolated monitor lifecycle tests. Routine test windows run in the background without taking focus or occupying visible displays.
 
-```sh
-npm test
-npm run lint
-npm run test:ui
-```
+| Command | Purpose |
+| --- | --- |
+| `npm test` | Swift tests in isolated preference/cache domains, then TypeScript tests |
+| `npm run lint` | Oxlint and the shared component surface-contract check |
+| `npm run test:ui` | Build the renderer and run native WKWebView checks in background windows |
+| `npm run test:ui:visual` | Opt-in foreground pixel acceptance for materials and chart capture; use an awake, unlocked display |
 
-The Swift code is in [`Sources/PerpetualRadar`](Sources/PerpetualRadar). The WebKit dashboard is in [`src`](src). `scripts/test-native.sh` runs Swift tests in a separate preference and cache domain, and covers the rule compiler/evaluator, sequences, history paging, migration/rollback, indicator behavior and SQLite persistence. Compatibility fixtures verify all legacy fields and native Opportunity against 172 frozen Web results. TypeScript tests cover editor operations, response ordering, legacy reference behavior, chart geometry and the shared material contract. `npm run lint` also checks that component backgrounds declare their surface role, use the correct theme tokens and preserve base component ownership. New components must follow the material rules in [`AGENTS.md`](AGENTS.md).
+UI review snapshots are saved under `.build/ui-qa`. Functional material and interaction checks remain part of local CI; foreground pixel captures are a separate opt-in step.
 
-Research fixtures verify hourly no-lookahead evaluation, episode and Unknown semantics, all six long/short outcomes, explicit costs and missing funding, frozen revisions, archive integrity, permanent cache reuse, interrupted preparation, deterministic resumes, CSV exports and calibration. Packaged process tests cover on-demand minimize/close/quit/crash and manual recovery, explicit background monitoring, both a separate preferences suite and the interface's own bundle domain, checking startup and shared settings through monitor crashes, stalled-helper recovery and complete shutdown. Recovery fixtures also exercise temporarily unavailable databases without restarting either process, concurrent startup, reply acknowledgement and uncertain writes. Native WebKit checks verify that transient Long and Research warnings clear after reconnection while drafts and tracking remain intact.
+GitHub Actions handles **CD only**. Every push to `main` builds and packages the app, publishes `Perpetual.Swap.Suite.app.tar` and `update.json`, and moves the single `autobuild` release/tag to that commit. The workflow does not run the test or lint suites.
 
-Long decision fixtures additionally verify saved strategy revisions and persistent manual records, confirmed/forming clocks, position-dependent reading isolation, paired variable-duration trades, exit priority, missing exit/price handling, split boundaries, hand-calculated costs and funding, deterministic resume with an open position, and frozen trade CSVs. A background native WKWebView exercises both Filter editors, draft validation, live entry/holding/exit prompts, actual tracking records, cached preparation, backtest reports, frozen entry/exit charts, chart copying and native CSV export.
+## Help and contributing
 
-`npm run test:ui` builds the renderer and exercises the actual radar:// WKWebView bridge, saving review snapshots in `.build/ui-qa`. The material checks cover both appearances, opacity 0 / 0.3 / 0.65 / 1, the disabled effect, reload restoration, normal and narrow windows, nested controls and opaque chart capture. Local CI runs all functional UI checks in background windows outside the visible displays, without activating the app or interrupting other work. WebKit's inactive scheduling policy keeps these checks running normally.
+Maintained by [notCorwin](https://github.com/notCorwin). Report bugs or request features through [GitHub Issues](https://github.com/notCorwin/Perpetual-Swap-Suite/issues); include your macOS version, build revision, reproduction steps, and the relevant error message or data gap.
 
-For foreground visual acceptance, explicitly run `npm run test:ui:visual` with the display awake and unlocked. This opens visible test windows and captures the material families in both appearances and window widths. On macOS 14.4 and newer, current-process ScreenCaptureKit window captures verify actual backdrop blur pixels behind Settings and the rule library; WKWebView's snapshot API omits backdrop filters. Locked or sleeping displays skip foreground acceptance instead of hanging on system capture. These foreground pixel captures are opt-in; all functional material and interaction checks remain in local CI. GitHub Actions remains release-only.
+The in-app condition library, **Check a contract**, and **Explain markets** describe supported rules and their readings. Developers can inspect the [native indicator/function catalog](Sources/PerpetualRadar/FilterCatalog.swift), [rule compiler](Sources/PerpetualRadar/FilterCompiler.swift), and [tests](Tests/PerpetualRadarTests) for executable examples.
+
+Before contributing, read [AGENTS.md](AGENTS.md). Keep system services in Swift/native APIs, reuse shadcn/ui components, and follow the shared design tokens and `data-surface` material contract. Use current stable toolchains, run `npm run ci:local` before pushing, and keep GitHub Actions focused on release delivery. Submit focused pull requests with a description of the resulting behavior and local validation.
