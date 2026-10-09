@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, Database, Download, FlaskConical, Pause, Play, Trash2, X } from 'lucide-react'
+import { ArrowRight, Database, Download, Pause, Play, Trash2, X } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,7 @@ import { TraceNode } from '@/FilterExplanation'
 import { MarketOpportunity } from '@/MarketOpportunity'
 import { MarketListViewport } from '@/MarketListViewport'
 import { SuiteWorkspace } from '@/SuiteWorkspace'
+import { ModeTitle } from '@/ModeTitle'
 import { SuiteStudyResults } from '@/SuiteStudyResults'
 import { SuiteCapitalFields, SuiteExecutionFields } from '@/SuiteStudyConfiguration'
 import { useSuite } from '@/use-suite'
@@ -46,9 +47,9 @@ function SummaryTable({ rows, report }: { rows: ResearchSummary[]; report: Study
   </Table>
 }
 
-export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: { inputs: ResearchInputs; onBack: () => void; initialSpec?: StudySpec | null; backLabel?: string }) {
+export function Research({ inputs, active, onSwitchMode, switchingMode, initialSpec }: { inputs: ResearchInputs; active: boolean; onSwitchMode: () => void; switchingMode: boolean; initialSpec?: StudySpec | null }) {
   const [kind, setKind] = useState<StudySpec['kind']>(initialSpec?.kind ?? 'cycle'), [name, setName] = useState(initialSpec?.name ?? 'Cycle study')
-  const researchSuite = useSuite('research', true)
+  const researchSuite = useSuite('research', active)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [cycleProfiles, setCycleProfiles] = useState<StrategyProfile[]>(initialSpec?.strategySnapshots ?? [])
   const [cycleExecution, setCycleExecution] = useState(initialSpec?.execution ?? defaultExecution())
@@ -92,6 +93,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
     else { setEvents([]); setOffset(0); setEventCount(0) }
   }, [pageEvents])
   useEffect(() => {
+    if (!active) return
     let stopped = false, timer: number
     const refresh = async () => {
       if (polling.current) { timer = window.setTimeout(refresh, 1000); return }
@@ -121,7 +123,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
     }
     void refresh()
     return () => { stopped = true; window.clearTimeout(timer) }
-  }, [selectStudy])
+  }, [active,selectStudy])
   const perform = async (action: () => Promise<ResearchResponse | void>) => {
     setPending(true); setError(''); setNotice('')
     try { const result = await action(); if (result?.jobID) setJob({ id: result.jobID, phase: 'running', completed: 0, total: 0, message: 'Starting…', error: '' }) }
@@ -173,11 +175,10 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
   const resultRows = selectedRows.filter(s => !s.group.startsWith('Score ·'))
   const scoreRows = selectedRows.filter(s => s.group.startsWith('Score · ' + scoreView + ' ·') && (scoreView === 'Thresholds' ? true : !s.group.includes('≥')))
   const context = { metrics: inputs.metrics, expressions: {}, units: {}, templates: inputs.templates }
-  if (libraryOpen) return <SuiteWorkspace mode="research" active inputs={inputs} onBack={() => setLibraryOpen(false)} onResearch={chooseCycleSpec} />
+  if (libraryOpen) return <SuiteWorkspace mode="research" active={active} inputs={inputs} switchingMode={switchingMode} onSwitchMode={onSwitchMode} onBack={() => setLibraryOpen(false)} onResearch={chooseCycleSpec} />
   return <MarketListViewport><main className="flex min-h-[inherit] flex-col gap-4 p-4 tabular-nums" data-research>
     <header className="flex items-center gap-3 border-b pb-3">
-      <Button variant="ghost" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />{backLabel}</Button>
-      <FlaskConical className="size-5" aria-hidden="true" /><h1 className="text-base font-semibold">Research</h1>
+      <ModeTitle mode="research" pending={switchingMode} onSwitch={onSwitchMode} />
       <span className="flex-1 text-xs text-muted-foreground">OKX · Hourly close · Fixed local data</span>
       <Badge variant="outline"><Database data-icon="inline-start" aria-hidden="true" />{integer(cache.rows)} cached rows</Badge>
     </header>
@@ -245,7 +246,7 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
           {report.warnings.filter(warning => warning.startsWith("Hourly approximation of live BTC rules")).map(warning => <Alert key={warning} variant="warning"><AlertDescription>{warning}</AlertDescription></Alert>)}
           {!report.suite && <SummaryTable report={report} rows={view === 'results' ? resultRows : scoreView === 'Thresholds' ? selectedRows.filter(s => s.group.startsWith('Score · Full · ≥')) : scoreRows} />}
           <p hidden={Boolean(report.suite)} className="text-xs text-muted-foreground">{report.suite ? 'Independent account returns use the frozen capital and execution parameters. ' : ''}Returns use 1 USDT initial notional and next-hour opens. Unknown, uncertain entry and purged boundary samples are excluded from main statistics. Net N includes only complete funding and settlement marks. Confidence intervals require 30 samples and 8 UTC weeks.</p>
-          {report.suite ? <SuiteStudyResults report={report} inputs={inputs} manifest={manifest} /> : report.long ? <LongTradeResults report={report} inputs={inputs} manifest={manifest} /> : <>
+          {report.suite ? <SuiteStudyResults report={report} inputs={inputs} manifest={manifest} active={active} /> : report.long ? <LongTradeResults report={report} inputs={inputs} manifest={manifest} active={active} /> : <>
           <h3 className="font-semibold">Signal events</h3>
           <Table aria-label="Signal events"><TableHeader><TableRow>{['Instrument', 'Signal close', 'Rules', 'Direction', 'Entry', 'Score inputs', 'Status', 'Split', 'Gross', 'Net', 'Inspect'].map(label => <TableHead key={label}>{label}</TableHead>)}</TableRow></TableHeader><TableBody>{events.map(e => {
             const outcome = e.outcomes.find(o => o.hours === Number(horizon))
@@ -262,12 +263,12 @@ export function Research({ inputs, onBack, initialSpec, backLabel = 'Radar' }: {
         {!studies.length && <Empty><EmptyHeader><EmptyTitle>No saved studies yet</EmptyTitle><EmptyDescription>Prepared datasets, checkpoints and completed experiments will appear here.</EmptyDescription></EmptyHeader></Empty>}
       </TabsContent>
     </Tabs>
-    <Dialog open={Boolean(confirm)} onOpenChange={open => { if (!open) setConfirm(null) }}><DialogContent><DialogHeader><DialogTitle>{confirm?.action === 'delete' ? 'Delete this experiment?' : 'Clear unreferenced cache?'}</DialogTitle><DialogDescription>{confirm?.action === 'delete' ? 'Remove this study, its report and checkpoint. Downloaded data remains cached.' : 'Remove data that no saved experiment references. Pinned experiment inputs and results are retained.'}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setConfirm(null)}>Keep</Button><Button variant="destructive" disabled={pending} onClick={() => void perform(async () => {
+    <Dialog open={active && Boolean(confirm)} onOpenChange={open => { if (!open) setConfirm(null) }}><DialogContent><DialogHeader><DialogTitle>{confirm?.action === 'delete' ? 'Delete this experiment?' : 'Clear unreferenced cache?'}</DialogTitle><DialogDescription>{confirm?.action === 'delete' ? 'Remove this study, its report and checkpoint. Downloaded data remains cached.' : 'Remove data that no saved experiment references. Pinned experiment inputs and results are retained.'}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setConfirm(null)}>Keep</Button><Button variant="destructive" disabled={pending} onClick={() => void perform(async () => {
       if (!confirm) return
       const result = await requestResearch(confirm); if (confirm.action === 'delete' && study?.id === confirm.studyID) { setStudy(null); setReport(null); setManifest(null) }
       setNotice(confirm.action === 'cleanCache' ? researchSize(result.bytesRemoved ?? 0) + ' cleared. Pinned inputs were retained.' : 'Experiment deleted. Cached data was retained.'); setConfirm(null)
     })}>Remove</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={Boolean(event)} onOpenChange={open => { if (!open) setEvent(null) }}><DialogContent className="flex h-[min(calc(var(--market-list-layout-height)*0.94),80rem)] w-[min(calc(var(--market-list-layout-width)*0.94),100rem)] max-w-none scale-(--market-list-scale) flex-col sm:max-w-none">
+    <Dialog open={active && Boolean(event)} onOpenChange={open => { if (!open) setEvent(null) }}><DialogContent className="flex h-[min(calc(var(--market-list-layout-height)*0.94),80rem)] w-[min(calc(var(--market-list-layout-width)*0.94),100rem)] max-w-none scale-(--market-list-scale) flex-col sm:max-w-none">
       <DialogHeader><DialogTitle>{event?.instrument} · Signal evidence</DialogTitle><DialogDescription>{event && researchTime(event.timestamp)} · {event?.direction} · {event?.entry} · {event?.split}</DialogDescription></DialogHeader>
       {event && report && <div className="flex min-h-0 flex-col gap-4 overflow-y-auto">
         <ResearchChart key={event.id} event={event} onNavigate={navigateEvent} />

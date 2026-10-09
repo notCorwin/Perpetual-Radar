@@ -187,7 +187,11 @@ final class MonitorServiceTests: XCTestCase {
         _ = try await request(["suite":["mode":"radar","action":"open","profileID":phaseProfile.id,"instrument":"BTC-USDT-SWAP","direction":"Short","price":100.0,"timestamp":ResearchFixture.hour]])
         let heldSuite=try await request(["suite":["mode":"radar","action":"inventory"]])
         XCTAssertEqual((heldSuite["positions"] as? [[String:Any]])?.first?["direction"] as? String,"Short")
-        _ = try await request(["workspace": "research"], interface: true)
+        let researchWindow = try await request(["workspace": "research"], interface: true)
+        XCTAssertEqual(researchWindow["windowTitle"] as? String,"Perpetual Swap Research")
+        let radarWindow = try await request(["workspace":"radar"],interface:true)
+        XCTAssertEqual(radarWindow["windowTitle"] as? String,"Perpetual Swap Radar")
+        _ = try await request(["workspace":"research"],interface:true)
         let samples = (try await request(["serviceInfo": true]))["samples"] as! Int
         try await Task.sleep(for: .milliseconds(350))
         let researchInfo = try await request(["serviceInfo": true])

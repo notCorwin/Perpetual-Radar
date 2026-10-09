@@ -95,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
-        window.title = "Perpetual Swap Suite"
+        window.title = "Perpetual Swap Radar"
         window.isReleasedWhenClosed = false
         applyAppearance(Self.preferredAppearance())
         window.minSize = NSSize(width: 400, height: 300)
@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     var value: [String: Any] = ["ok": true]
                     if let workspace = body["workspace"] as? String {
                         monitorClient.workspace = workspace; _ = try await monitorClient.request(["serviceInfo": true])
+                        window.title = workspace == "research" ? "Perpetual Swap Research" : "Perpetual Swap Radar"
                     }
                     if let request = body["suite"] as? [String: Any], request["mode"] as? String == "research" { value = try await researchCache.get().handle(["action":"suite", "request":request]) }
                     if let request = body["research"] as? [String: Any] { value = try await researchCache.get().handle(request) }
@@ -131,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                         window.orderBack(nil); window.miniaturize(nil)
                     }
                     value["minimized"] = window.isMiniaturized
+                    value["windowTitle"] = window.title
                     if body["close"] as? Bool == true { Task { try? await Task.sleep(for: .milliseconds(50)); self.window.performClose(nil) } }
                     return try JSONSerialization.data(withJSONObject: ["value": value])
                 } catch { return (try? JSONSerialization.data(withJSONObject: ["error": error.localizedDescription])) ?? Data("{}".utf8) }
@@ -335,10 +337,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let parameters = message.body as? [String: Any] else { replyHandler(nil, "Invalid request"); return }
         if let workspace = parameters["foregroundWorkspace"] as? String {
-            monitorClient.workspace = workspace == "research" ? "research" : "radar"
+            let previous = monitorClient.workspace
+            let mode = workspace == "research" ? "research" : "radar"
+            monitorClient.workspace = mode
             Task {
-                do { _ = try await monitorClient.request(["serviceInfo": true]); replyHandler(["ok": true], nil) }
-                catch { replyHandler(nil, error.localizedDescription) }
+                do {
+                    _ = try await monitorClient.request(["serviceInfo": true])
+                    window.title = mode == "research" ? "Perpetual Swap Research" : "Perpetual Swap Radar"
+                    replyHandler(["ok": true], nil)
+                } catch { monitorClient.workspace = previous; replyHandler(nil, error.localizedDescription) }
             }
             return
         }

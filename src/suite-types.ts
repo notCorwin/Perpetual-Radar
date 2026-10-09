@@ -9,6 +9,7 @@ export const SUITE_PHASES = [
 ] as const
 export type SuitePhase = typeof SUITE_PHASES[number]['key']
 export type SuiteMode = 'radar' | 'research'
+export const modeTitle = (mode: SuiteMode) => mode === 'radar' ? 'Perpetual Swap Radar' : 'Perpetual Swap Research'
 export type SuiteExecution = { opposite: 'exitThenWait' | 'reverse' | 'dedicatedOnly'; entry: 'newPhaseEntry' | 'matchWhileFlat' }
 export const defaultExecution = (): SuiteExecution => ({ opposite: 'exitThenWait', entry: 'newPhaseEntry' })
 export type StrategyProfile = { id: string; mode: SuiteMode; name: string; universeJSON: string; phaseRules: Record<SuitePhase, string>; revision: number; updatedAt: number; execution: SuiteExecution }
@@ -32,4 +33,4 @@ export type SuiteAccount = { profileID: string; profileName: string; instrument:
 export type SuiteSummary = { profileID: string; profileName: string; model: string; instrument?: string; direction?: string; split?: string; count: number; excluded: number; open: number; incomplete: number; uncertain: number; crossSplit: number; purged: number; liquidations: number; winRate?: number; mean?: number; payoffRatio?: number; payoffInfinite: boolean; profitFactor?: number; profitFactorInfinite: boolean; profit?: number; averageHours?: number; averageHoursLow?: number; mfe?: number; mae?: number; intervalLow?: number; intervalHigh?: number }
 export type SuiteStudyReport = { summaries: SuiteSummary[]; accounts: SuiteAccount[] }
 export type SuiteCurvePoint = { timestamp: number; equity: number; drawdown: number; direction?: string; uncertain: boolean }
-export type SuiteWorkspaceProps = { mode: SuiteMode; inputs: ResearchInputs; active: boolean; onBack: () => void; onResearch: (spec: StudySpec) => void }
+export type SuiteWorkspaceProps = { mode: SuiteMode; inputs: ResearchInputs; active: boolean; onBack: () => void; onResearch: (spec: StudySpec) => void; onSwitchMode: () => void; switchingMode: boolean }

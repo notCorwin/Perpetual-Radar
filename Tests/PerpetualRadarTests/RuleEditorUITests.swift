@@ -42,6 +42,8 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     var notificationError = ""
     var backgroundMonitoringEnabled = true
     var foregroundWorkspace = "radar"
+    var workspaceDelay: UInt64 = 0
+    var workspaceError: String?
     var radarRequests = 0
     var longEvaluationRequests = 0
     var longEvaluationDelay: UInt64 = 0
@@ -87,7 +89,15 @@ private final class RuleUIBridge: NSObject, WKScriptMessageHandlerWithReply, WKU
     }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let request = message.body as! [String: Any]
-        if let workspace = request["foregroundWorkspace"] as? String { foregroundWorkspace = workspace; replyHandler(["ok": true], nil); return }
+        if let workspace = request["foregroundWorkspace"] as? String {
+            Task {
+                if workspaceDelay > 0 { try? await Task.sleep(nanoseconds:workspaceDelay) }
+                if let workspaceError { replyHandler(nil,workspaceError); return }
+                foregroundWorkspace = workspace
+                windowBackground?.window?.title = workspace == "research" ? "Perpetual Swap Research" : "Perpetual Swap Radar"
+                replyHandler(["ok":true],nil)
+            }; return
+        }
         if let parameters = request["suite"] as? [String: Any] {
             Task {
                 do {
@@ -442,7 +452,7 @@ final class RuleEditorUITests: XCTestCase {
             let csv = try String(contentsOf: file,encoding: .utf8); XCTAssertTrue(csv.contains("data_digest")); XCTAssertTrue(csv.contains("spec_json"))
             if kind == "events" { XCTAssertTrue(csv.contains("exit_trace_json")) }
         }
-        try await click(view,"Strategies & Positions"); try await click(view,"Positions")
+        try await click(view,"Perpetual Swap Research"); try await click(view,"Positions")
         try await wait(view,"document.querySelector('table[aria-label=\"Actual Long and Short positions\"] tbody')?.innerText.includes('MKT000-USDT-SWAP')")
         XCTAssertEqual(bridge.foregroundWorkspace,"radar")
     }
@@ -463,15 +473,44 @@ final class RuleEditorUITests: XCTestCase {
         defer { view.stopLoading(); window.orderOut(nil); configuration.userContentController.removeScriptMessageHandler(forName: "radar", contentWorld: .page); bridge.cleanUp() }
         view.load(URLRequest(url: URL(string: "radar://app/index.html")!))
         try await wait(view, "Number(document.querySelector('table[data-market-count]')?.dataset.marketCount) === 375")
-        try await click(view, "Research")
+        bridge.workspaceError = "Mode switch temporarily unavailable"
+        try await click(view, "Perpetual Swap Radar")
+        try await wait(view,"document.querySelector('[role=alert]')?.textContent.includes('Mode switch temporarily unavailable')")
+        let failedTitle = try await js(view,"document.title") as? String
+        XCTAssertEqual(failedTitle,"Perpetual Swap Radar"); XCTAssertEqual(bridge.foregroundWorkspace,"radar")
+        bridge.workspaceError = nil; bridge.workspaceDelay = 300_000_000
+        _ = try await js(view,"document.querySelector('[data-mode-switch=radar]').focus(); true")
+        let enter = try XCTUnwrap(NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:window.windowNumber,context:nil,characters:"\r",charactersIgnoringModifiers:"\r",isARepeat:false,keyCode:36))
+        view.keyDown(with:enter)
+        try await wait(view,"document.querySelector('[data-mode-switch=radar]').disabled")
         try await wait(view, "document.querySelector('[data-research]') !== null")
+        bridge.workspaceDelay = 0
         XCTAssertEqual(bridge.foregroundWorkspace, "research")
+        XCTAssertEqual(window.title,"Perpetual Swap Research")
+        try await wait(view,"document.activeElement.dataset.modeSwitch === 'research'")
         try await Task.sleep(for: .milliseconds(300))
-        let radarRequests = bridge.radarRequests
+        var radarRequests = bridge.radarRequests
         try await Task.sleep(for: .milliseconds(2300))
         XCTAssertEqual(bridge.radarRequests, radarRequests, "Radar polling and live chart loads must stop while researching.")
         try await click(view, "Filters")
         try await input(view, "#study-name", "WKWebView experiment")
+        try await click(view,"Perpetual Swap Research")
+        try await wait(view,"document.title === 'Perpetual Swap Radar'")
+        try await click(view,"Perpetual Swap Radar")
+        try await wait(view,"document.title === 'Perpetual Swap Research' && document.querySelector('#study-name').value === 'WKWebView experiment'")
+        try await click(view,"Multi-direction cycle")
+        try await click(view,"Strategy Library…")
+        try await wait(view,"document.querySelector('[data-suite-workspace=research] #suite-strategy-name') !== null")
+        try await input(view,"[data-suite-workspace=research] #suite-strategy-name","Retained Research draft")
+        try await click(view,"Perpetual Swap Research")
+        try await wait(view,"document.title === 'Perpetual Swap Radar'")
+        try await click(view,"Perpetual Swap Radar")
+        try await wait(view,"document.title === 'Perpetual Swap Research' && document.querySelector('[data-suite-workspace=research] #suite-strategy-name').value === 'Retained Research draft'")
+        try await click(view,"Research")
+        try await wait(view,"document.querySelector('#study-name').getBoundingClientRect().height > 0")
+        try await click(view,"Filters")
+        try await Task.sleep(for:.milliseconds(300))
+        radarRequests = bridge.radarRequests
         bridge.researchReadError = "Research cache temporarily locked"
         try await wait(view,"document.querySelector('[data-research] [role=alert]')?.innerText.includes('Research cache temporarily locked')")
         bridge.researchReadError = nil
@@ -526,9 +565,10 @@ final class RuleEditorUITests: XCTestCase {
         try await click(view, "Prepare Data"); try await wait(view, "Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Run Study')")
         try await click(view, "Run Study")
         try await wait(view, "document.querySelector('table[aria-label=\"Signal events\"]') !== null", seconds: 30)
-        try await click(view, "Radar")
-        try await wait(view, "document.querySelector('[data-research]') === null")
+        try await click(view, "Perpetual Swap Research")
+        try await wait(view, "document.title === 'Perpetual Swap Radar' && document.querySelector('[data-research]').getBoundingClientRect().height === 0")
         XCTAssertEqual(bridge.foregroundWorkspace, "radar")
+        XCTAssertEqual(window.title,"Perpetual Swap Radar")
         try await Task.sleep(for: .milliseconds(2300))
         XCTAssertGreaterThan(bridge.radarRequests, radarRequests)
     }

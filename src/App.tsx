@@ -10,6 +10,8 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { SuiteWorkspace } from "@/SuiteWorkspace"
+import { ModeTitle } from "@/ModeTitle"
+import { modeTitle } from "@/suite-types"
 import { useSuite } from "@/use-suite"
 import { SuitePhaseBadges } from "@/SuitePhaseBadges"
 import type { StrategyProfile, SuiteReading, SuiteRequest, SuiteResponse } from "@/suite-types"
@@ -147,7 +149,7 @@ const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain, confirm
   return <MarketRowsViewport ids={rows.map(row => row.instId)}>{index => <MarketRowView row={rows[index]} index={index} onSelect={onSelect} onExplain={onExplain} confirmed={confirmed[rows[index].instId]} provisional={provisional[rows[index].instId]} />}</MarketRowsViewport>
 })
 
-function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onResearch: (inputs: ResearchInputs) => void; onDecisions: (inputs: ResearchInputs) => void }) {
+function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: boolean; onResearch: (inputs: ResearchInputs) => void; onDecisions: (inputs: ResearchInputs) => void; switchingMode: boolean }) {
   const revision = useRef(-1)
   const serviceSession = useRef<string | undefined>(undefined)
   const backgroundOpacityDraftDirty = useRef(false)
@@ -464,9 +466,8 @@ function RadarApp({ active, onResearch, onDecisions }: { active: boolean; onRese
     <MarketListViewport>
     <main className="flex min-h-[inherit] flex-col">
       <header className="flex items-center gap-3 border-b px-4 py-3 whitespace-nowrap">
-        <h1 className="text-base font-semibold tracking-tight">Perpetual Swap Suite</h1>
+        <ModeTitle mode="radar" pending={switchingMode} onSwitch={() => onResearch({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })} />
         <Button variant="outline" onClick={() => onDecisions({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })}>Strategies &amp; Positions</Button>
-        <Button variant="outline" onClick={() => onResearch({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions })}>Research</Button>
         <span className="text-xs text-muted-foreground">OKX · USDT swaps · 1h</span>
         <span className="text-xs tabular-nums text-muted-foreground">{visible.length} / {rows.length} markets</span>
         <Popover onOpenChange={open => { if (!open && backgroundOpacityDraftDirty.current) saveBackgroundOpacity(); if (open) void updateNotifications({ notificationAction: "refresh" }) }}>
@@ -596,22 +597,46 @@ function App() {
   const [inputs, setInputs] = useState<ResearchInputs | null>(null)
   const [workspaceError, setWorkspaceError] = useState("")
   const [decisionsMounted, setDecisionsMounted] = useState(false)
+  const [researchMounted, setResearchMounted] = useState(false)
+  const [switchingMode, setSwitchingMode] = useState(false), switching = useRef(false)
+  const scrollPositions = useRef<Record<string, number>>({})
+  const previousMode = useRef("radar")
   const [researchSpec, setResearchSpec] = useState<StudySpec | null>(null)
+  const [researchSeed, setResearchSeed] = useState(0)
   const [researchReturn, setResearchReturn] = useState<"radar" | "decisions">("radar")
-  const changeWorkspace = async (value: "radar" | "research" | "decisions", nextInputs?: ResearchInputs) => {
-    setWorkspaceError("")
+  const changeWorkspace = async (value: "radar" | "research" | "decisions", nextInputs?: ResearchInputs, spec?: StudySpec) => {
+    if (switching.current) return
+    switching.current = true; setSwitchingMode(true); setWorkspaceError("")
     try {
       await window.webkit.messageHandlers.radar.postMessage({ foregroundWorkspace: value === "research" ? "research" : "radar" })
+      scrollPositions.current[workspace] = window.scrollY
       if (nextInputs) setInputs(nextInputs)
       if (value === "decisions") setDecisionsMounted(true)
+      if (value === "research") {
+        setResearchMounted(true)
+        if (workspace !== "research") setResearchReturn(workspace)
+        if (spec) { setResearchSpec(spec); setResearchSeed(current => current+1) }
+      }
       setWorkspace(value)
     } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "Cannot switch workspace.") }
+    finally { switching.current = false; setSwitchingMode(false) }
   }
+  useLayoutEffect(() => {
+    const mode = workspace === "research" ? "research" : "radar"
+    const switched = previousMode.current !== mode
+    previousMode.current = mode
+    document.title = modeTitle(mode)
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollPositions.current[workspace] ?? 0, behavior: 'instant' })
+      if (switched) Array.from(document.querySelectorAll<HTMLButtonElement>('[data-mode-switch]')).find(button => button.getBoundingClientRect().height > 0)?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  },[workspace])
   return <Fragment>
     {workspaceError && <p role="alert" className="p-3 text-destructive">{workspaceError}</p>}
-    <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} onResearch={value => { setResearchSpec(null); setResearchReturn("radar"); void changeWorkspace("research", value) }} onDecisions={value => void changeWorkspace("decisions", value)} /></div>
-    {inputs && decisionsMounted && <div hidden={workspace !== "decisions"}><SuiteWorkspace mode="radar" active={workspace === "decisions"} inputs={inputs} onBack={() => void changeWorkspace("radar")} onResearch={spec => { setResearchSpec(spec); setResearchReturn("decisions"); void changeWorkspace("research") }} /></div>}
-    {workspace === "research" && inputs && <Research inputs={inputs} initialSpec={researchSpec} backLabel={researchReturn === "decisions" ? "Strategies & Positions" : "Radar"} onBack={() => void changeWorkspace(researchReturn)} />}
+    <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} switchingMode={switchingMode} onResearch={value => void changeWorkspace("research",value)} onDecisions={value => void changeWorkspace("decisions", value)} /></div>
+    {inputs && decisionsMounted && <div hidden={workspace !== "decisions"}><SuiteWorkspace mode="radar" active={workspace === "decisions"} inputs={inputs} switchingMode={switchingMode} onSwitchMode={() => void changeWorkspace("research")} onBack={() => void changeWorkspace("radar")} onResearch={spec => void changeWorkspace("research",undefined,spec)} /></div>}
+    {inputs && researchMounted && <div hidden={workspace !== "research"}><Research key={researchSeed} active={workspace === "research"} switchingMode={switchingMode} inputs={inputs} initialSpec={researchSpec} onSwitchMode={() => void changeWorkspace(researchReturn)} /></div>}
   </Fragment>
 }
 
