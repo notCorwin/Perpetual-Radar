@@ -1486,6 +1486,25 @@ final class RuleEditorUITests: XCTestCase {
         try await wait(view, "Number(document.querySelector('[data-strategy-match-count]')?.dataset.strategyMatchCount) === 375")
         try await click(view, "Universe rules"); try await click(view, "Reset draft"); try await click(view, "Add condition")
         try await validDraft(view)
+        // New numeric rules exclude equality; inclusive comparisons remain explicit choices.
+        try await wait(view, "document.querySelector('[aria-label=\"Comparison\"]')?.textContent.includes('Greater than >')")
+        _ = try await metric(view, "Close")
+        try await input(view, "[aria-label=\"Right expression\"]", "110")
+        try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('[data-strategy-match-count]')?.dataset.strategyMatchCount) === 0")
+        _ = try await openMenu(view, selector: "[aria-label=\"Comparison\"]")
+        let comparisons = try await js(view, "Array.from(document.querySelectorAll('[data-slot=\"select-item\"]')).map(item=>item.textContent.trim())") as? [String]
+        XCTAssertEqual(Array(try XCTUnwrap(comparisons).prefix(2)), ["Greater than >", "Less than <"])
+        try await option(view, "At least ≥"); try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('[data-strategy-match-count]')?.dataset.strategyMatchCount) === 500")
+        _ = try await openMenu(view, selector: "[aria-label=\"Comparison\"]")
+        try await option(view, "Less than <"); try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('[data-strategy-match-count]')?.dataset.strategyMatchCount) === 0")
+        try await input(view, "[aria-label=\"Right expression\"]", "111"); try await validDraft(view)
+        try await wait(view, "Number(document.querySelector('[data-strategy-match-count]')?.dataset.strategyMatchCount) === 500")
+        _ = try await openMenu(view, selector: "[aria-label=\"Comparison\"]")
+        try await option(view, "Greater than >")
+        try await input(view, "[aria-label=\"Right expression\"]", "0"); try await validDraft(view)
         // Every native metric, scalar function and arithmetic operation has a visual entry.
         _ = try await openMenu(view, selector: "[aria-label=\"Choose Left expression\"]", popover: true)
         let entryValues = try await js(view, "Array.from(document.querySelectorAll('[cmdk-item]')).map(x => x.dataset.value)") as? [String]

@@ -7,17 +7,17 @@ const branch = (kind: RuleKind, children: RuleNode[], hours = 3): RuleNode => ({
 export function makeVisualBranch(kind: RuleKind): RuleNode {
   if (kind === 'sequence') {
     const first = { ...condition('High', 'gt', 'PriorHigh(48)'), name: 'break', captures: [{ id: newRuleID(), name: 'level', expression: 'PriorHigh(48)' }] }
-    return branch('sequence', [first, { ...condition('Low', 'lte', 'break.level'), name: 'retest' }, { ...condition('Close', 'gt', 'break.level'), kind: 'crossup', name: 'reclaim' }], 6)
+    return branch('sequence', [first, { ...condition('Low', 'lt', 'break.level'), name: 'retest' }, { ...condition('Close', 'gt', 'break.level'), kind: 'crossup', name: 'reclaim' }], 6)
   }
   if (['all', 'any'].includes(kind)) return branch(kind, [])
   if (['not', 'every', 'recent', 'count', 'cooldown'].includes(kind)) return branch(kind, [condition('RSI(14)', 'gt', '50')], kind === 'cooldown' ? 0 : 3)
   return makeRule(kind)
 }
-const btcCrash = () => ({ ...branch('cooldown', [branch('any', [condition('BTC(ROC(1), "live")', 'lte', '-2'), condition('BTC(ROC(3), "live")', 'lte', '-4')])], 0), name: 'BTC Crash' })
-const btcRanging = () => ({ ...branch('cooldown', [branch('every', [condition('BTC(Efficiency(24), "closed")', 'lte', '0.30')], 3)], 0), name: 'BTC Ranging' })
+const btcCrash = () => ({ ...branch('cooldown', [branch('any', [condition('BTC(ROC(1), "live")', 'lt', '-2'), condition('BTC(ROC(3), "live")', 'lt', '-4')])], 0), name: 'BTC Crash' })
+const btcRanging = () => ({ ...branch('cooldown', [branch('every', [condition('BTC(Efficiency(24), "closed")', 'lt', '0.30')], 3)], 0), name: 'BTC Ranging' })
 export const visualPresets = [
-  { id: 'preset:btc-crash', label: 'BTC Crash', description: 'Live BTC 1h change ≤ −2% OR 3h change ≤ −4%. Optional cooldown defaults to 0h. Editable example thresholds; not validated by backtest.', keywords: ['BTC Bitcoin crash market context 暴跌 大盘 冷却'], create: btcCrash },
-  { id: 'preset:btc-ranging', label: 'BTC Ranging', description: 'BTC 24h direction efficiency ≤ 0.30 for three completed hours. Includes narrow and wide directionless movement. Editable example parameters.', keywords: ['BTC Bitcoin ranging sideways efficiency 震荡 横盘'], create: btcRanging },
+  { id: 'preset:btc-crash', label: 'BTC Crash', description: 'Live BTC 1h change < −2% OR 3h change < −4%. Optional cooldown defaults to 0h. Editable example thresholds; not validated by backtest.', keywords: ['BTC Bitcoin crash market context 暴跌 大盘 冷却'], create: btcCrash },
+  { id: 'preset:btc-ranging', label: 'BTC Ranging', description: 'BTC 24h direction efficiency < 0.30 for three completed hours. Includes narrow and wide directionless movement. Editable example parameters.', keywords: ['BTC Bitcoin ranging sideways efficiency 震荡 横盘'], create: btcRanging },
   { id: 'preset:btc-entry', label: 'BTC Entry Gate', description: 'Combines with all existing entry rules using AND: neither BTC Crash nor BTC Ranging. Every restriction is visible and editable.', keywords: ['BTC Bitcoin entry gate 入场'], create: () => ({ ...branch('not', [branch('any', [btcCrash(), btcRanging()])]), name: 'BTC Entry Gate' }) },
   { id: 'preset:btc-exit', label: 'BTC Exit Signal', description: 'Combines with all existing exit rules using OR: BTC Crash or BTC Ranging. Live BTC exits can precede the next contract close.', keywords: ['BTC Bitcoin exit signal 出场'], create: () => ({ ...branch('any', [btcCrash(), btcRanging()]), name: 'BTC Exit Signal' }) },
   { id: 'preset:oi', label: 'OI rising', description: 'OI Trend is Rising. Live or closed readings, with an editable time requirement.', keywords: ['open interest trend', '持仓上涨', '持仓趋势'], create: () => condition('oiTrend', 'eq', '"rising"') },
@@ -31,7 +31,7 @@ export function conditionLibrary(metrics: FilterMetric[], templates: ExpressionT
   return [
     ...visualPresets.map(p => ({ ...p, group: p.id.startsWith('preset:btc-') ? 'BTC Market Context' : 'Ready to use' })),
     ...metrics.map(metric => ({ id: `metric:${metric.key}`, label: metric.label, group: metric.group, description: metric.description, keywords: [metric.key, ...(metric.aliases ?? [])], unit: metric.unit, metric,
-      create: () => condition(metric.key, metric.numeric ? 'gte' : 'eq', metric.numeric ? metric.unit === '0–100' ? '50' : '0' : JSON.stringify(metric.choices[0]?.value ?? '')) })),
+      create: () => condition(metric.key, metric.numeric ? 'gt' : 'eq', metric.numeric ? metric.unit === '0–100' ? '50' : '0' : JSON.stringify(metric.choices[0]?.value ?? '')) })),
     ...templates.map(template => ({ id: `function:${template.name}`, label: template.label, group: template.group === 'Expression functions' ? 'Value blocks' : template.group, description: template.description, keywords: [template.name], unit: template.unit, template,
       create: () => condition(templateExpression(template).source, 'gt', template.unit === '0–100' ? '50' : '0') })),
     ...ruleKinds.filter(k => k.value !== 'condition').map(k => ({ id: `rule:${k.value}`, label: k.label, group: 'Logic & time', description: ruleHelp(k.value), keywords: [k.value], create: () => makeVisualBranch(k.value) })),

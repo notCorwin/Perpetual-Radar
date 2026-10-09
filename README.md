@@ -70,6 +70,8 @@ Search narrows the visible list. Click column headings to sort; the default **Op
 
 Valid draft edits immediately preview rule matches. The All markets table remains complete. Alerts use the **active saved Strategy**. Invalid drafts retain the last valid preview and cannot be applied. Missing inputs evaluate as **Unknown**, including under NOT; only True Universe and entry phase matches become signals.
 
+New numeric conditions default to **Greater than >**. Numeric presets use strict **> / <** comparisons, with these choices first in the comparison menu. Inclusive comparisons remain available when selected explicitly.
+
 The optional **Formula** view edits the same rule tree. Try each example as a separate configuration:
 
 ```text

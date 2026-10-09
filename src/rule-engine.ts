@@ -35,7 +35,7 @@ export function newRuleID(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 export const makeRule = (kind: RuleKind = "condition"): RuleNode => ({
-  id: newRuleID(), kind, name: "", mode: "live", children: [], left: "Price", comparison: "gte", right: "0", upper: "100", hours: kind === 'cooldown' ? 0 : 3, minimum: 1, gapHours: 6, captures: [],
+  id: newRuleID(), kind, name: "", mode: "live", children: [], left: "Price", comparison: "gt", right: "0", upper: "100", hours: kind === 'cooldown' ? 0 : 3, minimum: 1, gapHours: 6, captures: [],
 })
 export const emptyFilterConfig = (): FilterConfigV2 => ({ version: 2, root: makeRule("all"), definitions: [] })
 export function parseFilterConfig(json: string): FilterConfigV2 {
@@ -109,7 +109,7 @@ export const ruleKinds: { value: RuleKind; label: string }[] = [
   { value: "crossup", label: "Crosses above" }, { value: "crossdown", label: "Crosses below" }, { value: "sequence", label: "Ordered sequence" },
 ]
 export const comparisons = [
-  ["gte", "At least ≥"], ["lte", "At most ≤"], ["gt", "Greater than >"], ["lt", "Less than <"], ["eq", "Equals"], ["neq", "Does not equal"],
+  ["gt", "Greater than >"], ["lt", "Less than <"], ["gte", "At least ≥"], ["lte", "At most ≤"], ["eq", "Equals"], ["neq", "Does not equal"],
   ["between", "Between (inclusive)"], ["abs-gte", "Absolute value ≥"], ["abs-lte", "Absolute value ≤"], ["positive", "Positive"], ["negative", "Negative"], ["zero", "Zero"], ["present", "Available"], ["missing", "Unavailable"],
 ]
 export const unaryComparison = (op: string): boolean => ["positive", "negative", "zero", "present", "missing"].includes(op)
@@ -131,7 +131,7 @@ export const formulaExamples = [
   { label: "Long or Short alignment", source: '(emaTrend == "rising" AND ROC(9) > 0) OR (emaTrend == "falling" AND ROC(9) < 0)' },
   { label: "Relative volume", source: 'let volumeRatio = Volume / mean(lag(Volume, 1), 20);\nvolumeRatio > 2' },
   { label: "Three closed RSI hours", source: 'closed(every(RSI(14) > 50, 3))' },
-  { label: "Break, retest, reclaim", source: 'sequence(6,\n  stage("break", High > PriorHigh(48), 6, capture("level", PriorHigh(48))),\n  stage("retest", Low <= break.level, 6),\n  stage("reclaim", crossUp(Close, break.level), 6)\n)' },
+  { label: "Break, retest, reclaim", source: 'sequence(6,\n  stage("break", High > PriorHigh(48), 6, capture("level", PriorHigh(48))),\n  stage("retest", Low < break.level, 6),\n  stage("reclaim", crossUp(Close, break.level), 6)\n)' },
 ]
 
 export function previewResponseIsCurrent(response: { filterToken: string; revision: number }, token: string, minimumRevision: number): boolean {

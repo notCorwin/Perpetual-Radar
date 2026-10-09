@@ -9,5 +9,5 @@ test('summaries show nested matching logic, thresholds, and closed time windows'
   volume.left = 'Volume'; volume.right = '200'
   window.mode = 'closed'; window.hours = 48; window.children = [price]
   group.children = [window, volume]; config.root.children = [group]
-  assert.equal(filterRuleSummary(config, [], {}), '(Closed (Close ≥ 100 · every hour for 48h) OR Volume ≥ 200)')
+  assert.equal(filterRuleSummary(config, [], {}), '(Closed (Close > 100 · every hour for 48h) OR Volume > 200)')
 })

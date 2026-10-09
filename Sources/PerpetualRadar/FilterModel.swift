@@ -20,7 +20,7 @@ struct FilterNode: Codable, Equatable, Sendable {
     var mode = "live"
     var children: [FilterNode] = []
     var left = "Price"
-    var comparison = "gte"
+    var comparison = "gt"
     var right = "0"
     var upper = "0"
     var hours = 3
@@ -29,7 +29,7 @@ struct FilterNode: Codable, Equatable, Sendable {
     var captures: [FilterDefinition] = []
 
     enum CodingKeys: String, CodingKey { case id, kind, name, mode, children, left, comparison, right, upper, hours, minimum, gapHours, captures }
-    init(kind: String = "all", name: String = "", children: [FilterNode] = [], left: String = "Price", comparison: String = "gte", right: String = "0", upper: String = "0", mode: String = "live", hours: Int = 3, minimum: Int = 1, gapHours: Int = 6, captures: [FilterDefinition] = []) {
+    init(kind: String = "all", name: String = "", children: [FilterNode] = [], left: String = "Price", comparison: String = "gt", right: String = "0", upper: String = "0", mode: String = "live", hours: Int = 3, minimum: Int = 1, gapHours: Int = 6, captures: [FilterDefinition] = []) {
         self.kind = kind; self.name = name; self.children = children; self.left = left; self.comparison = comparison; self.right = right; self.upper = upper
         self.mode = mode; self.hours = hours; self.minimum = minimum; self.gapHours = gapHours; self.captures = captures
     }
@@ -41,7 +41,7 @@ struct FilterNode: Codable, Equatable, Sendable {
         mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? "live"
         children = try c.decodeIfPresent([FilterNode].self, forKey: .children) ?? []
         left = try c.decodeIfPresent(String.self, forKey: .left) ?? "Price"
-        comparison = try c.decodeIfPresent(String.self, forKey: .comparison) ?? "gte"
+        comparison = try c.decodeIfPresent(String.self, forKey: .comparison) ?? "gt"
         right = try c.decodeIfPresent(String.self, forKey: .right) ?? "0"
         upper = try c.decodeIfPresent(String.self, forKey: .upper) ?? "0"
         hours = try c.decodeIfPresent(Int.self, forKey: .hours) ?? 3
@@ -71,11 +71,11 @@ struct FilterConfigV2: Codable, Equatable, Sendable {
               let match = data["match"] as? String, ["all", "any"].contains(match), let rules = data["rules"] as? [[String: String]] else {
             throw FilterError("Invalid legacy filter configuration.")
         }
-        var base = [FilterNode(kind: "condition", name: "Minimum 24h turnover", left: "turnover", right: String(Double(turnover) / 1_000_000))]
+        var base = [FilterNode(kind: "condition", name: "Minimum 24h turnover", left: "turnover", comparison: "gte", right: String(Double(turnover) / 1_000_000))]
         // Preserve the former gate's rounding tolerance as editable formula text,
         // rather than introducing a hidden exception in numeric comparisons.
         if let spread { base.append(FilterNode(kind: "condition", name: "Maximum spread", left: "spread", comparison: "lte", right: "\(spread) + 1e-10")) }
-        if let ageMonths { base.append(FilterNode(kind: "condition", name: "Minimum listing age", left: "ListingAgeMonths", right: String(ageMonths))) }
+        if let ageMonths { base.append(FilterNode(kind: "condition", name: "Minimum listing age", left: "ListingAgeMonths", comparison: "gte", right: String(ageMonths))) }
         if excludeStablecoin { base.append(FilterNode(kind: "condition", name: "Excluded symbol", left: "Symbol", comparison: "neq", right: "\"USDC-USDT-SWAP\"")) }
         let conditions = try rules.map { rule -> FilterNode in
             guard let id = rule["id"], let field = rule["field"], let op = rule["operator"], let value = rule["value"], let upper = rule["upper"], FilterCatalog.fields.contains(field) else { throw FilterError("Invalid legacy condition.") }

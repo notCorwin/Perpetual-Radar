@@ -55,10 +55,10 @@ export function functionCompletion(signature: string, templates = expressionTemp
     all: "all(Close > 0)", any: "any(Close > 0)", "not condition": "NOT (Close > 0)", between: "between(RSI(14), 30, 70)",
     positive: "positive(ROC(9))", negative: "negative(ROC(9))", zero: "zero(ROC(9))", available: "available(oiUSD)", unavailable: "unavailable(oiUSD)",
     absgte: "absGte(ROC(9), 2)", abslte: "absLte(ROC(9), 2)",
-    every: "every(RSI(14) > 50, 3)", recent: "recent(Close > PriorHigh(48), 48)", count: 'count(RSI(14) > 50, 48, "gte", 3)',
-    cooldown: 'cooldown(BTC(ROC(1), "live") <= -2, 0)',
+    every: "every(RSI(14) > 50, 3)", recent: "recent(Close > PriorHigh(48), 48)", count: 'count(RSI(14) > 50, 48, "gt", 3)',
+    cooldown: 'cooldown(BTC(ROC(1), "live") < -2, 0)',
     crossup: "crossUp(Close, EMA(200))", crossdown: "crossDown(Close, EMA(200))",
-    sequence: 'sequence(6, stage("break", High > PriorHigh(48), 6, capture("level", PriorHigh(48))), stage("retest", Low <= break.level, 6), stage("reclaim", crossUp(Close, break.level), 6))',
+    sequence: 'sequence(6, stage("break", High > PriorHigh(48), 6, capture("level", PriorHigh(48))), stage("retest", Low < break.level, 6), stage("reclaim", crossUp(Close, break.level), 6))',
   }
   return rules[signature.split("(")[0].toLowerCase()] ?? signature
 }

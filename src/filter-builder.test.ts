@@ -12,7 +12,7 @@ test('BTC presets expose independent clocks, confirmation, thresholds and disabl
   const rule = crash.create()
   assert.equal(rule.kind, 'cooldown'); assert.equal(rule.hours, 0)
   assert.equal(rule.children[0].kind, 'any')
-  assert.deepEqual(rule.children[0].children.map(node => [node.left, node.comparison, node.right]), [['BTC(ROC(1), "live")', 'lte', '-2'], ['BTC(ROC(3), "live")', 'lte', '-4']])
+  assert.deepEqual(rule.children[0].children.map(node => [node.left, node.comparison, node.right]), [['BTC(ROC(1), "live")', 'lt', '-2'], ['BTC(ROC(3), "live")', 'lt', '-4']])
   const ranging = library.find(item => item.id === 'preset:btc-ranging')!.create()
   assert.equal(ranging.hours, 0)
   assert.equal(ranging.children[0].kind, 'every'); assert.equal(ranging.children[0].hours, 3)
