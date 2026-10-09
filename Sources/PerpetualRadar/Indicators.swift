@@ -58,6 +58,15 @@ func ema200Signal(_ candle: Candle?, _ ema: Double?) -> EMA200Signal? {
     return .unsure
 }
 
+func candleBodyRelation(_ open: Double?, _ close: Double?, _ reference: Double?) -> String? {
+    guard let open, let close, let reference, open.isFinite, close.isFinite, reference.isFinite else { return nil }
+    if min(open, close) > reference { return "above" }
+    if max(open, close) < reference { return "below" }
+    if open < reference && close > reference { return "cross-up" }
+    if open > reference && close < reference { return "cross-down" }
+    return "touching"
+}
+
 func percentChange(_ current: Double?, _ previous: Double?) -> Double? {
     guard let current, let previous, current.isFinite, previous.isFinite else { return nil }
     if previous == 0 {

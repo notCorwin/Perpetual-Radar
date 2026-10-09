@@ -21,14 +21,18 @@ enum LegacyFilterReadings {
         result["liveVolume"] = scalar(finite(n(m["liveVolumeUSDT"])), "Volume"); result["Volume"] = result["liveVolume"]
         for (key, value) in [("emaSlope", percent(ema, previousEMA)), ("emaDistance", percent(close, ema)), ("bodyChange", percent(close, open)), ("candleRange", percent(n(row["currentHigh"]), n(row["currentLow"]))), ("vwapDistance", percent(close, n(m["vwap14"]))) ] { result[key] = scalar(value, key) }
         for (key, value) in [("emaTrend", result["emaSlope"]?.number), ("oiTrend", result["oiChange"]?.number)] { result[key] = value.map { .text($0 > 0 ? "rising" : $0 < 0 ? "falling" : "flat") } ?? .unknown("\(key) is unavailable.") }
-        result["emaBody"] = .unknown("Body or EMA200 is unavailable.")
-        if let open, let close, let ema { result["emaBody"] = .text(min(open, close) > ema ? "above" : max(open, close) < ema ? "below" : open < ema && close > ema ? "cross-up" : open > ema && close < ema ? "cross-down" : "touching") }
+        result["emaBody"] = candleBodyRelation(open, close, ema).map(FilterScalar.text) ?? .unknown("Body or EMA200 is unavailable.")
         result["priceEMA"] = relation(close, ema); result["candleDirection"] = relation(close, open)
         result["rsi6vs12"] = relation(n(row["rsi6"]), n(row["rsi12"])); result["rsi12vs24"] = relation(n(row["rsi12"]), n(row["rsi24"]))
         result["rocVsMaroc"] = relation(n(row["roc"]), n(row["maroc"])); result["buyVsSell"] = relation(n(row["buy"]), n(row["sell"]))
         result["oiUSD"] = scalar(finite(n(m["oiUSD"])).map { $0 / 1_000_000 }, "OI")
         result["turnover"] = scalar(n(row["turnover24hUSDT"]).map { $0 / 1_000_000 }, "Turnover"); result["spread"] = scalar(finite(n(m["spreadPercent"])), "Spread")
         for (key, band) in [("priceUpper", "bbUpper"), ("priceMiddle", "bbMiddle"), ("priceLower", "bbLower")] { result[key] = relation(close, n(m[band])) }
+        result["highUpper"] = relation(finite(n(row["currentHigh"])), finite(n(m["bbUpper"])))
+        result["lowLower"] = relation(finite(n(row["currentLow"])), finite(n(m["bbLower"])))
+        for (key, band) in [("bodyUpper", "bbUpper"), ("bodyLower", "bbLower")] {
+            result[key] = candleBodyRelation(open, close, n(m[band])).map(FilterScalar.text) ?? .unknown("Body or Log BB is unavailable in the live snapshot.")
+        }
         result["bbZone"] = (row["logBBAboveBand"] as? String).map(FilterScalar.text) ?? .unknown("Log BB is unavailable.")
         result["bbWidth"] = scalar(logBBBandWidth(n(m["bbUpper"]), n(m["bbMiddle"]), n(m["bbLower"])), "Bandwidth")
         let expansion = row["logBBExpansion"] as? [String: Any]

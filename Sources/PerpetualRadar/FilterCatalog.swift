@@ -27,6 +27,10 @@ enum FilterCatalog {
         switch key {
         case "oiTrend": return ["OI", "open interest trend", "持仓趋势", "持仓上涨"]
         case "emaBody": return ["candle body", "实体", "K线", "above EMA", "below EMA"]
+        case "highUpper": return ["high", "wick", "upper band", "最高价", "布林上轨"]
+        case "lowLower": return ["low", "wick", "lower band", "最低价", "布林下轨"]
+        case "bodyUpper": return ["candle body", "open close", "upper band", "实体", "布林上轨"]
+        case "bodyLower": return ["candle body", "open close", "lower band", "实体", "布林下轨"]
         case "Volume", "liveVolume": return ["volume", "quote volume", "成交量", "放量"]
         case "turnover": return ["turnover", "liquidity", "成交额"]
         default: return []
@@ -82,8 +86,9 @@ enum FilterCatalog {
         switch key {
         case "emaTrend", "oiTrend": return [.init(value: "rising", label: "Rising"), .init(value: "flat", label: "Flat"), .init(value: "falling", label: "Falling")]
         case "emaBody": return [.init(value: "above", label: "Entire body above"), .init(value: "below", label: "Entire body below"), .init(value: "cross-up", label: "Crossing upward"), .init(value: "cross-down", label: "Crossing downward"), .init(value: "touching", label: "Touching EMA200")]
+        case "bodyUpper", "bodyLower": return [.init(value: "above", label: "Entire body above"), .init(value: "below", label: "Entire body below"), .init(value: "cross-up", label: "Crossing upward"), .init(value: "cross-down", label: "Crossing downward"), .init(value: "touching", label: key == "bodyUpper" ? "Touching upper band" : "Touching lower band")]
         case "candleDirection": return [.init(value: "above", label: "Bullish"), .init(value: "below", label: "Bearish"), .init(value: "equal", label: "Doji")]
-        case "priceEMA", "rsi6vs12", "rsi12vs24", "rocVsMaroc", "buyVsSell", "priceUpper", "priceMiddle", "priceLower", "priceVWAP": return [.init(value: "above", label: "Above / greater"), .init(value: "equal", label: "Equal"), .init(value: "below", label: "Below / less")]
+        case "priceEMA", "rsi6vs12", "rsi12vs24", "rocVsMaroc", "buyVsSell", "priceUpper", "priceMiddle", "priceLower", "highUpper", "lowLower", "priceVWAP": return [.init(value: "above", label: "Above / greater"), .init(value: "equal", label: "Equal"), .init(value: "below", label: "Below / less")]
         case "high48", "high96", "closeHigh48", "closeHigh96", "low48", "low96", "closeLow48", "closeLow96", "recentHigh48", "recentHigh96", "recentLow48", "recentLow96": return [.init(value: "yes", label: "Yes"), .init(value: "no", label: "No")]
         case "bbZone": return [.init(value: "upper", label: "Above upper"), .init(value: "middle", label: "Middle < price ≤ upper"), .init(value: "lower", label: "Lower < price ≤ middle"), .init(value: "below", label: "At / below lower")]
         case "bbExpansionComplete": return [.init(value: "complete", label: "Complete"), .init(value: "partial", label: "Lower bound (≥)")]
@@ -146,6 +151,10 @@ enum FilterCatalog {
         .init(key: "priceUpper", label: "Price vs Log BB upper", group: "Bands & VWAP", description: "Selected hourly close compared with the 20h upper log-price Bollinger band. Equality is explicit.", unit: "category", numeric: false),
         .init(key: "priceMiddle", label: "Price vs Log BB middle", group: "Bands & VWAP", description: "Selected hourly close compared with the 20h middle log-price Bollinger band.", unit: "category", numeric: false),
         .init(key: "priceLower", label: "Price vs Log BB lower", group: "Bands & VWAP", description: "Selected hourly close compared with the 20h lower log-price Bollinger band.", unit: "category", numeric: false),
+        .init(key: "highUpper", label: "High vs Log BB upper", group: "Bands & VWAP", description: "Selected hourly high compared with the 20h upper log-price Bollinger band (2 standard deviations). Includes the upper wick; equality is explicit.", unit: "category", numeric: false),
+        .init(key: "lowLower", label: "Low vs Log BB lower", group: "Bands & VWAP", description: "Selected hourly low compared with the 20h lower log-price Bollinger band (2 standard deviations). Includes the lower wick; equality is explicit.", unit: "category", numeric: false),
+        .init(key: "bodyUpper", label: "Candle body vs Log BB upper", group: "Bands & VWAP", description: "Selected hourly open and close compared with the 20h upper log-price Bollinger band (2 standard deviations). Wicks do not affect this relation. Touching includes equality at either end.", unit: "category", numeric: false),
+        .init(key: "bodyLower", label: "Candle body vs Log BB lower", group: "Bands & VWAP", description: "Selected hourly open and close compared with the 20h lower log-price Bollinger band (2 standard deviations). Wicks do not affect this relation. Touching includes equality at either end.", unit: "category", numeric: false),
         .init(key: "bbZone", label: "Log BB price zone", group: "Bands & VWAP", description: "Matches the list's highest band strictly below the selected hourly close. Equality belongs to the lower zone.", unit: "category", numeric: false),
         .init(key: "bbWidth", label: "Log BB bandwidth (%)", group: "Bands & VWAP", description: "(Upper − Lower) / Middle × 100% for the selected hour's 20h bands.", unit: "%", numeric: true),
         .init(key: "bbExpansion", label: "Known bandwidth expansion (h)", group: "Bands & VWAP", description: "Known consecutive hours of expanding bandwidth. A ≥ reading is a lower bound: use Expansion history = Complete for an exact duration.", unit: "hours", numeric: true),

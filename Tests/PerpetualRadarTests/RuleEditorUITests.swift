@@ -1438,6 +1438,19 @@ final class RuleEditorUITests: XCTestCase {
         XCTAssertEqual(entries.filter { $0.hasPrefix("arithmetic ") }.count, 4)
         _ = try await js(view, "document.querySelector('[data-slot=\"popover-content\"]').dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); true")
         try await wait(view, "document.querySelector('[data-slot=\"popover-content\"]') === null")
+        // Wick/body band relations expose their complete categorical choices through the native catalogue.
+        for key in ["highUpper", "lowLower", "bodyUpper", "bodyLower"] {
+            _ = try await metric(view, key)
+            for choice in FilterCatalog.choices(for: key) {
+                _ = try await openMenu(view, selector: "[aria-label=\"Right value\"]")
+                try await option(view, choice.label); try await validDraft(view)
+            }
+            try await click(view, "Formula")
+            let expected = "(\(key) == \"\(FilterCatalog.choices(for: key).last!.value)\")"
+            try await wait(view, "document.querySelector('textarea')?.value.includes(\(formulaQuote(expected)))")
+            try await click(view, "Rules")
+        }
+        _ = try await metric(view, "Close"); try await validDraft(view)
         // Every scalar template compiles and exposes editable parameters.
         for name in ["EMA", "RSI", "ROC", "MAROC", "LogBBUpper", "LogBBMiddle", "LogBBLower", "VWAP", "PriorHigh", "PriorLow", "BreakoutAge", "BreakdownAge", "abs", "mean", "sum", "highest", "lowest", "stddev", "lag", "change", "closed", "live"] {
             try await expression(view, field: "Right expression", choice: name)

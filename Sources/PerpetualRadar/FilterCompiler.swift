@@ -374,7 +374,7 @@ struct FilterCompiler {
             if ["bbExpansion", "bbExpansionComplete"].contains(key) { return 250 }
             if ["maroc", "marocChange", "rocVsMaroc"].contains(key) { return 18 }
             if ["roc", "rocChange"].contains(key) { return 10 }
-            if key.hasPrefix("bb") || ["priceUpper", "priceMiddle", "priceLower"].contains(key) { return 20 }
+            if key.hasPrefix("bb") || ["priceUpper", "priceMiddle", "priceLower", "highUpper", "lowLower", "bodyUpper", "bodyLower"].contains(key) { return 20 }
             if ["priceVWAP", "vwapDistance"].contains(key) { return 14 }
             return ["priceChange", "oiChange", "oiTrend"].contains(key) ? 1 : 0
         case .unary(_, let x): return try scalarRequirement(x, visiting: visiting)

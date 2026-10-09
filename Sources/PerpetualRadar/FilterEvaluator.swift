@@ -136,8 +136,7 @@ final class FilterEvaluator {
         case "emaDistance": return change(value("Close"), fn("ema", [200]))
         case "priceEMA": return relation(value("Close"), fn("ema", [200]))
         case "emaBody":
-            guard let open = b?.open, let close = b?.close, let ema = fn("ema", [200]).number else { return number(nil, "Body or EMA200 is unavailable.") }
-            return .text(min(open, close) > ema ? "above" : max(open, close) < ema ? "below" : open < ema && close > ema ? "cross-up" : open > ema && close < ema ? "cross-down" : "touching")
+            return candleBodyRelation(b?.open, b?.close, fn("ema", [200]).number).map(FilterScalar.text) ?? number(nil, "Body or EMA200 is unavailable.")
         case "rsi6": return fn("rsi", [6])
         case "rsi12": return fn("rsi", [12])
         case "rsi24": return fn("rsi", [24])
@@ -151,6 +150,11 @@ final class FilterEvaluator {
         case "priceUpper": return relation(value("Close"), fn("logbbupper", [20, 2]))
         case "priceMiddle": return relation(value("Close"), fn("logbbmiddle", [20, 2]))
         case "priceLower": return relation(value("Close"), fn("logbblower", [20, 2]))
+        case "highUpper": return relation(value("High"), fn("logbbupper", [20, 2]))
+        case "lowLower": return relation(value("Low"), fn("logbblower", [20, 2]))
+        case "bodyUpper", "bodyLower":
+            let band = fn(key == "bodyUpper" ? "logbbupper" : "logbblower", [20, 2]).number
+            return candleBodyRelation(b?.open, b?.close, band).map(FilterScalar.text) ?? number(nil, "Body or Log BB history is unavailable.")
         case "bbZone":
             return logBBAboveBand(b?.close, fn("logbbupper", [20, 2]).number, fn("logbbmiddle", [20, 2]).number, fn("logbblower", [20, 2]).number).map { .text($0.rawValue) } ?? number(nil, "Log BB history is unavailable.")
         case "bbWidth": return number(logBBBandWidth(fn("logbbupper", [20, 2]).number, fn("logbbmiddle", [20, 2]).number, fn("logbblower", [20, 2]).number))
