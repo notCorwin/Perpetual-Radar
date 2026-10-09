@@ -9,9 +9,12 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/c
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { SuiteWorkspace } from "@/SuiteWorkspace"
+import { RadarSignalBoard } from "@/RadarSignalBoard"
+import { radarSignals, signalMatches, type SignalTiming } from "@/radar-signals"
 import { ModeTitle } from "@/ModeTitle"
-import { modeTitle } from "@/suite-types"
+import { modeTitle, suiteSpec } from "@/suite-types"
 import { useSuite } from "@/use-suite"
 import { SuitePhaseBadges } from "@/SuitePhaseBadges"
 import type { StrategyProfile, SuiteReading, SuiteRequest, SuiteResponse } from "@/suite-types"
@@ -149,7 +152,7 @@ const MarketRows = memo(function MarketRows({ rows, onSelect, onExplain, confirm
   return <MarketRowsViewport ids={rows.map(row => row.instId)}>{index => <MarketRowView row={rows[index]} index={index} onSelect={onSelect} onExplain={onExplain} confirmed={confirmed[rows[index].instId]} provisional={provisional[rows[index].instId]} />}</MarketRowsViewport>
 })
 
-function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: boolean; onResearch: (inputs: ResearchInputs) => void; onDecisions: (inputs: ResearchInputs) => void; switchingMode: boolean }) {
+function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: boolean; onResearch: (inputs: ResearchInputs, spec?: StudySpec) => void; onDecisions: (inputs: ResearchInputs, tab?: 'rules' | 'signals' | 'positions') => void; switchingMode: boolean }) {
   const revision = useRef(-1)
   const serviceSession = useRef<string | undefined>(undefined)
   const backgroundOpacityDraftDirty = useRef(false)
@@ -162,7 +165,8 @@ function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: 
   const activeProfile = suite.snapshot.profiles.find(p => p.id === suite.snapshot.selectedID)
   const activeProfileRef = useRef<StrategyProfile | undefined>(activeProfile)
   activeProfileRef.current = activeProfile
-  const [phaseView, setPhaseView] = useState('candidates')
+  const [phaseView, setPhaseView] = useState('signals')
+  const [signalTiming, setSignalTiming] = useState<SignalTiming>('both')
   const confirmedPhases = useMemo(() => Object.fromEntries((suite.snapshot.confirmed ?? []).map(r => [r.instrument,r])), [suite.snapshot.confirmed])
   const provisionalPhases = useMemo(() => Object.fromEntries((suite.snapshot.provisional ?? []).map(r => [r.instrument,r])), [suite.snapshot.provisional])
   const [listFilters, setListFilters] = useState<FilterConfigV2>(emptyFilterConfig)
@@ -208,6 +212,7 @@ function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: 
   const [sort, setSort] = useState<SortKey>("opportunity")
   const [descending, setDescending] = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
+  const [signalChartOrder, setSignalChartOrder] = useState<string[] | null>(null)
   useEffect(() => {
     const openContract = () => {
       if (window.radarNotificationContract) {
@@ -357,15 +362,15 @@ function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: 
     return () => { stopped = true; window.clearTimeout(timer) }
   }, [active, lastValidJSON])
 
-  const matchedRows = useMemo(() => rows.filter(row => activeProfile ? confirmedPhases[row.instId]?.universe === "true" : results[row.instId] === "true"), [rows, results,activeProfile,confirmedPhases])
+  const signals = useMemo(() => activeProfile ? radarSignals(suite.snapshot.confirmed ?? [], suite.snapshot.provisional ?? [], activeProfile.id, activeProfile.revision, signalTiming) : [], [activeProfile, suite.snapshot.confirmed, suite.snapshot.provisional, signalTiming])
+  const matchedRows = useMemo(() => rows.filter(row => activeProfile ? confirmedPhases[row.instId]?.universe === "true" || provisionalPhases[row.instId]?.universe === "true" : results[row.instId] === "true"), [rows, results,activeProfile,confirmedPhases,provisionalPhases])
   const searchedRows = useMemo(() => rows.filter(row => row.instId.toLowerCase().includes(query.trim().toLowerCase())), [rows, query])
+  const searchedSignals = useMemo(() => signals.filter(signal => signal.instrument.toLowerCase().includes(query.trim().toLowerCase())), [signals, query])
+  const signalInstruments = useMemo(() => new Set(searchedSignals.filter(signal => signalMatches(signal, 'bullishSetup') || signalMatches(signal, 'bearishReversal')).map(signal => signal.instrument)), [searchedSignals])
   const visible = useMemo(() => searchedRows.filter(row => {
     if (!activeProfile) return results[row.instId] === "true"
-    if (phaseView === 'all') return true
-    const confirmed = confirmedPhases[row.instId], forming = provisionalPhases[row.instId]
-    const phases = phaseView === 'setup' ? ['bullishSetup'] as const : phaseView === 'reversal' ? ['bearishReversal'] as const : ['bullishSetup','bearishReversal'] as const
-    return phases.some(phase => confirmed?.universe === 'true' && confirmed.phases[phase]?.result === 'true' || forming?.universe === 'true' && forming.phases[phase]?.result === 'true')
-  }).sort((a, b) => compareMarketRows(a, b, sort, descending)), [searchedRows, results, sort, descending, activeProfile,phaseView,confirmedPhases,provisionalPhases])
+    return phaseView === 'markets' || signalInstruments.has(row.instId)
+  }).sort((a, b) => compareMarketRows(a, b, sort, descending)), [searchedRows, results, sort, descending, activeProfile, phaseView, signalInstruments])
   const unknownCount = searchedRows.filter(row => results[row.instId] === "unknown").length
   const listOrder = useMemo(() => visible.map(row => row.instId), [visible])
   const turnoverOrder = useMemo(() => [...matchedRows].sort(compareMarketTurnover).map(row => row.instId), [matchedRows])
@@ -375,6 +380,7 @@ function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: 
       appliedJSON.current = activeProfile.universeJSON
     }
   }, [activeProfile])
+  const chooseStrategy = (id: string) => { void suite.perform({ action: 'select', profileID: id === 'none' ? '' : id }).then(() => { setPhaseView('signals'); setFilterDraft(null); setEditor(initialEditorState()) }).catch(() => {}) }
   const saveFilters = async (filters: FilterConfigV2) => {
     if (activeProfile) {
       await suite.perform({ action: "save", profile: { ...activeProfile,universeJSON: JSON.stringify(filters) } })
@@ -460,7 +466,7 @@ function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: 
     </Button>
   }
 
-  if (selected && active) return <MarketChart instId={selected} listOrder={listOrder} turnoverOrder={turnoverOrder} onSelect={setSelected} onBack={() => setSelected(null)} />
+  if (selected && active) return <MarketChart instId={selected} listOrder={signalChartOrder ?? listOrder} turnoverOrder={turnoverOrder} onSelect={setSelected} backLabel={signalChartOrder ? 'Signals' : 'Markets'} onBack={() => { setSelected(null); setSignalChartOrder(null) }} />
 
   return (
     <MarketListViewport>
@@ -530,13 +536,17 @@ function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: 
         </Badge>
         <span className="text-xs text-muted-foreground">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString("en-US")}` : "Waiting for data"}</span>
       </header>
-      {activeProfile && <div className="flex items-center gap-3 px-4 py-2"><Badge variant="secondary">{activeProfile.name} · r{activeProfile.revision}</Badge><ToggleGroup type="single" variant="outline" value={phaseView} onValueChange={value => { if (value) setPhaseView(value) }} aria-label="Radar phase view"><ToggleGroupItem value="candidates">Candidates</ToggleGroupItem><ToggleGroupItem value="setup">Bullish Setup</ToggleGroupItem><ToggleGroupItem value="reversal">Bearish Reversal</ToggleGroupItem><ToggleGroupItem value="all">All Markets</ToggleGroupItem></ToggleGroup><span className="text-xs text-muted-foreground">Provisional previews · Confirmed hourly closes</span></div>}
+      <div className="flex items-center gap-4 border-b px-4 py-3">
+        <Field orientation="horizontal" className="w-fit"><FieldLabel htmlFor="radar-strategy">Active strategy</FieldLabel><Select value={activeProfile?.id ?? 'none'} disabled={suite.pending || filterDraft !== null || editor.source !== null} onValueChange={chooseStrategy}><SelectTrigger id="radar-strategy" className="w-72" aria-label="Active Radar strategy"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Market filters only</SelectItem>{suite.snapshot.profiles.map(profile => <SelectItem key={profile.id} value={profile.id}>{profile.name} · r{profile.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
+        {activeProfile ? <><ToggleGroup type="single" variant="outline" value={phaseView} onValueChange={value => { if (value) setPhaseView(value) }} aria-label="Radar view"><ToggleGroupItem value="signals">Signals</ToggleGroupItem><ToggleGroupItem value="markets">All markets</ToggleGroupItem></ToggleGroup>{phaseView === 'signals' && <ToggleGroup type="single" variant="outline" value={signalTiming} onValueChange={value => { if (value) setSignalTiming(value as SignalTiming) }} aria-label="Signal timing"><ToggleGroupItem value="both">Both hours</ToggleGroupItem><ToggleGroupItem value="confirmed">Confirmed</ToggleGroupItem><ToggleGroupItem value="provisional">Provisional</ToggleGroupItem></ToggleGroup>}</> : <span className="text-xs text-muted-foreground">Choose a shared strategy to watch Bullish Setup and Bearish Reversal together.</span>}
+        <span className="ml-auto text-xs text-muted-foreground">Shared with Research{filterDraft !== null || editor.source !== null ? ' · Apply or discard Universe edits before changing strategy' : ''}</span>
+      </div>
       {suite.error && <p role="alert" className="px-4 text-destructive">{suite.error}</p>}
-      <MarketFilters label={activeProfile ? "Universe rules" : "Filters"} filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics.filter(metric => !compilation.allowedMetrics || compilation.allowedMetrics.includes(metric.key))} functions={functions} templates={templates} preferences={libraryPreferences} onPreferences={saveLibraryPreferences} rows={rows} results={results} previewJSON={previewJSON} revision={revision.current} onExplain={explainMarket} units={compilation.units ?? {}} expressions={editorExpressions} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={activeProfile ? searchedRows.filter(row => results[row.instId] === 'true').length : visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />
+      {(!activeProfile || phaseView === 'markets') && <MarketFilters label={activeProfile ? "Universe rules" : "Filters"} filters={listFilters} draft={filterDraft} editor={editor} onEditorChange={setEditor} onDraftChange={setFilterDraft} onApply={saveFilters} combinations={filterCombinations} combinationId={filterCombinationId} onSelectCombination={selectFilterCombination} onSaveCombination={saveFilterCombination} onDeleteCombination={deleteFilterCombination} metrics={metrics.filter(metric => !compilation.allowedMetrics || compilation.allowedMetrics.includes(metric.key))} functions={functions} templates={templates} preferences={libraryPreferences} onPreferences={saveLibraryPreferences} rows={rows} results={results} previewJSON={previewJSON} revision={revision.current} onExplain={explainMarket} units={compilation.units ?? {}} expressions={editorExpressions} formula={compilation.formula ?? "true"} diagnostics={compilation.diagnostics} valid={valid} compiling={compiling} requiredHours={compilation.requiredHours ?? 0} matches={activeProfile ? searchedRows.filter(row => results[row.instId] === 'true').length : visible.length} total={searchedRows.length} unknown={unknownCount} previewPending={lastValidJSON !== previewJSON} history={history} />}
       {activeProfile && <SuitePhaseExplanation instrument={phaseExplainingID} profile={activeProfile} inputs={{filters:listFilters,combinations:filterCombinations,metrics,templates,functions}} onClose={() => setPhaseExplainingID(null)} />}
       <FilterExplanation open={explanationOpen} onOpenChange={setExplanationOpen} instId={explainingId} onSelect={setExplainingId} rows={rows} results={results} filtersJSON={previewJSON} revision={revision.current} metrics={metrics} expressions={editorExpressions} units={compilation.units ?? {}} templates={templates} />
       {error && <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">{error}</p>}
-      <section aria-label="Perpetual swap markets" className="flex-1">
+      {activeProfile && phaseView === 'signals' ? <RadarSignalBoard profile={activeProfile} signals={searchedSignals} positionReadings={suite.snapshot.confirmed ?? []} rows={rows} positions={suite.snapshot.positions} paused={suite.snapshot.paused} onChart={(instrument, order) => { setSignalChartOrder(order); setSelected(instrument) }} onExplain={explainRow} onPositions={() => onDecisions({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions }, 'positions')} onResearch={() => onResearch({ filters: listFilters, combinations: filterCombinations, metrics, templates, functions }, suiteSpec([activeProfile]))} /> : <section aria-label="Perpetual swap markets" className="flex-1">
         <Table className="table-auto" data-market-count={visible.length} aria-rowcount={visible.length + 1}>
           <TableHeader>
             <TableRow>
@@ -586,7 +596,7 @@ function RadarApp({ active, onResearch, onDecisions, switchingMode }: { active: 
               </Empty>
             </TableCell></TableRow></TableBody>}
         </Table>
-      </section>
+      </section>}
     </main>
     </MarketListViewport>
   )
@@ -597,6 +607,7 @@ function App() {
   const [inputs, setInputs] = useState<ResearchInputs | null>(null)
   const [workspaceError, setWorkspaceError] = useState("")
   const [decisionsMounted, setDecisionsMounted] = useState(false)
+  const [decisionsTab, setDecisionsTab] = useState<'rules' | 'signals' | 'positions'>('rules'), [decisionsRoute, setDecisionsRoute] = useState(0)
   const [researchMounted, setResearchMounted] = useState(false)
   const [switchingMode, setSwitchingMode] = useState(false), switching = useRef(false)
   const scrollPositions = useRef<Record<string, number>>({})
@@ -634,9 +645,9 @@ function App() {
   },[workspace])
   return <Fragment>
     {workspaceError && <p role="alert" className="p-3 text-destructive">{workspaceError}</p>}
-    <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} switchingMode={switchingMode} onResearch={value => void changeWorkspace("research",value)} onDecisions={value => void changeWorkspace("decisions", value)} /></div>
-    {inputs && decisionsMounted && <div hidden={workspace !== "decisions"}><SuiteWorkspace mode="radar" active={workspace === "decisions"} inputs={inputs} switchingMode={switchingMode} onSwitchMode={() => void changeWorkspace("research")} onBack={() => void changeWorkspace("radar")} onResearch={spec => void changeWorkspace("research",undefined,spec)} /></div>}
-    {inputs && researchMounted && <div hidden={workspace !== "research"}><Research key={researchSeed} active={workspace === "research"} switchingMode={switchingMode} inputs={inputs} initialSpec={researchSpec} onSwitchMode={() => void changeWorkspace(researchReturn)} /></div>}
+    <div hidden={workspace !== "radar"}><RadarApp active={workspace === "radar"} switchingMode={switchingMode} onResearch={(value, spec) => void changeWorkspace("research",value,spec)} onDecisions={(value, tab = 'rules') => { setDecisionsTab(tab); setDecisionsRoute(current => current + 1); void changeWorkspace("decisions", value) }} /></div>
+    {inputs && decisionsMounted && <div hidden={workspace !== "decisions"}><SuiteWorkspace mode="radar" active={workspace === "decisions"} inputs={inputs} initialTab={decisionsTab} routeKey={decisionsRoute} switchingMode={switchingMode} onSwitchMode={() => void changeWorkspace("research")} onBack={() => void changeWorkspace("radar")} onResearch={spec => void changeWorkspace("research",undefined,spec)} /></div>}
+    {inputs && researchMounted && <div hidden={workspace !== "research"}><Research key={researchSeed} active={workspace === "research"} switchingMode={switchingMode} inputs={inputs} initialSpec={researchSpec} onRadar={() => void changeWorkspace("radar")} onSwitchMode={() => void changeWorkspace(researchReturn)} /></div>}
   </Fragment>
 }
 

@@ -6,7 +6,7 @@ import { resolve } from 'node:path'
 type SyntaxNode = { type: string; start?: number; [key: string]: unknown }
 const surfaceKinds = new Set(['control', 'panel', 'floating', 'inherited'])
 const surfacePaint: Record<string, Set<string>> = {
-  control: new Set(['control', 'control-hover', 'secondary', 'muted', 'accent', 'selection', 'primary-surface', 'primary-surface-hover', 'destructive-surface', 'destructive-hover', 'chart-annotation']),
+  control: new Set(['control', 'control-hover', 'secondary', 'muted', 'accent', 'selection', 'primary-surface', 'primary-surface-hover', 'destructive-surface', 'destructive-hover', 'positive-surface', 'chart-annotation']),
   panel: new Set(['card', 'sidebar', 'chart-surface']),
   floating: new Set(['popover']),
   inherited: new Set(['table-header', 'border', 'primary', 'foreground', 'overlay', 'chart-capture-flash']),

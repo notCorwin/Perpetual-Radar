@@ -186,6 +186,31 @@ actor SuiteEvaluationWorker {
 }
 
 extension Store {
+    // Modes are views over one library. Research experiments retain their own
+    // immutable snapshots; only editable profiles live in the shared service.
+    func initializeSharedSuiteLibrary(researchURL: URL? = nil) throws {
+        guard try preference(forKey: "suiteProfiles") == nil else { return }
+        func legacy(_ store: Store, _ mode: String) throws -> [StrategyProfile] {
+            try store.preference(forKey: "suiteProfiles.\(mode)").map { try JSONDecoder().decode([StrategyProfile].self, from: Data($0.utf8)) } ?? []
+        }
+        var sources = try legacy(self, "radar") + legacy(self, "research")
+        if let researchURL, FileManager.default.fileExists(atPath: researchURL.path) {
+            sources += try legacy(Store(url: researchURL), "research")
+        }
+        var profiles: [StrategyProfile] = []
+        for var profile in sources where !profiles.contains(where: { $0.id == profile.id }) {
+            if profiles.contains(where: { $0.name.lowercased() == profile.name.lowercased() }) {
+                let base = String(profile.name.prefix(60)); var suffix = 1
+                repeat { profile.name = base + " · Research \(suffix)"; suffix += 1 }
+                while profiles.contains(where: { $0.name.lowercased() == profile.name.lowercased() })
+            }
+            profile.mode = "radar"; profiles.append(profile)
+        }
+        try transaction {
+            try setPreference(try researchJSON(profiles), forKey: "suiteProfiles")
+            try setPreference(try preference(forKey: "suiteSelected.radar") ?? "", forKey: "suiteSelected")
+        }
+    }
     func importLongRecordsIntoSuite() throws {
         guard try preference(forKey: "suiteLongRecordsImported") == nil else { return }
         let disabled = try FilterCompiler.compile(source: "1 > 2").config.json
@@ -204,23 +229,24 @@ extension Store {
             for old in try longPositions() where !positions.contains(where: { $0.id == old.id }) {
                 positions.append(.init(id: old.id,strategyID: old.strategyID,instrument: old.instrument,direction: "Long",enteredAt: old.enteredAt,entryPrice: old.entryPrice,strategy: profile(old.strategy),exitedAt: old.exitedAt,exitPrice: old.exitPrice,exitStrategy: old.exitStrategy.map(profile)))
             }
-            try setPreference(try researchJSON(profiles), forKey: "suiteProfiles.radar")
+            try setPreference(try researchJSON(profiles), forKey: "suiteProfiles")
             try setPreference(try researchJSON(positions), forKey: "suitePositions")
-            if try preference(forKey: "suiteSelected.radar") == nil, let selected = try preference(forKey: "longSelectedStrategy"), profiles.contains(where: { $0.id == selected }) { try setPreference(selected, forKey: "suiteSelected.radar") }
+            if try preference(forKey: "suiteSelected")?.isEmpty != false, let selected = try preference(forKey: "longSelectedStrategy"), profiles.contains(where: { $0.id == selected }) { try setPreference(selected, forKey: "suiteSelected") }
             try setPreference("true", forKey: "suiteLongRecordsImported")
         }
     }
-    func suiteProfiles(_ mode: String) throws -> [StrategyProfile] { try preference(forKey: "suiteProfiles.\(mode)").map { try JSONDecoder().decode([StrategyProfile].self, from: Data($0.utf8)) } ?? [] }
+    func suiteProfiles(_ mode: String) throws -> [StrategyProfile] { try preference(forKey: "suiteProfiles").map { try JSONDecoder().decode([StrategyProfile].self, from: Data($0.utf8)) } ?? [] }
     func suitePositions() throws -> [SuitePosition] {
         let records = try preference(forKey: "suitePositions").map { try JSONDecoder().decode([SuitePosition].self, from: Data($0.utf8)) } ?? []
         return records.map { input in var record = input; record.priceReturn = SuiteEvaluation.relativeReturn(price: record.exitPrice,entry: record.entryPrice,direction: record.direction); return record }
     }
     func selectedSuiteProfile(_ mode: String) throws -> StrategyProfile? {
-        let selected = try preference(forKey: "suiteSelected.\(mode)")
+        let selected = try preference(forKey: "suiteSelected")
         return try suiteProfiles(mode).first { $0.id == selected }
     }
     func saveSuiteProfile(_ input: StrategyProfile, copy: Bool = false) throws -> StrategyProfile {
         var result = input; let rules = try input.compiled()
+        result.mode = "radar"
         result.universeJSON = rules[0].config.json
         for (index, phase) in SuitePhase.allCases.enumerated() { result.phaseRules[phase.rawValue] = rules[index+1].config.json }
         result.name = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -238,13 +264,13 @@ extension Store {
             else { guard result.revision == 0 else { throw FilterError("The strategy was deleted. Save a new copy.") } }
             result.revision += 1; result.updatedAt = researchNow()
             profiles.removeAll { $0.id == result.id }; profiles.insert(result, at: 0)
-            try setPreference(try researchJSON(profiles), forKey: "suiteProfiles.\(result.mode)")
+            try setPreference(try researchJSON(profiles), forKey: "suiteProfiles")
         }
         return result
     }
     func suiteInventory(_ mode: String, saved: StrategyProfile? = nil) throws -> [String: Any] {
         func object<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with: Data(researchJSON(value).utf8)) }
-        var response: [String: Any] = ["profiles": try object(suiteProfiles(mode)), "positions": try object(suitePositions()), "selectedID": try preference(forKey: "suiteSelected.\(mode)") ?? ""]
+        var response: [String: Any] = ["profiles": try object(suiteProfiles(mode)), "positions": try object(suitePositions()), "selectedID": try preference(forKey: "suiteSelected") ?? ""]
         if let draft = try preference(forKey: "suiteDraft.\(mode)"), !draft.isEmpty { response["draft"] = try JSONSerialization.jsonObject(with: Data(draft.utf8)) }
         if let saved { response["saved"] = try object(saved) }
         return response
@@ -267,11 +293,11 @@ extension Store {
             saved = try saveSuiteProfile(profile, copy: action == "copy")
         case "select":
             guard try id.isEmpty || suiteProfiles(mode).contains(where: { $0.id == id }) else { throw FilterError("This strategy no longer exists.") }
-            try setPreference(id, forKey: "suiteSelected.\(mode)")
+            try setPreference(id, forKey: "suiteSelected")
         case "delete":
             guard !(try suitePositions()).contains(where: { $0.strategyID == id && $0.exitedAt == nil }) else { throw FilterError("Close or remove this strategy's actual open positions before deleting it.") }
-            try setPreference(try researchJSON(try suiteProfiles(mode).filter { $0.id != id }), forKey: "suiteProfiles.\(mode)")
-            if try preference(forKey: "suiteSelected.\(mode)") == id { try setPreference("", forKey: "suiteSelected.\(mode)") }
+            try setPreference(try researchJSON(try suiteProfiles(mode).filter { $0.id != id }), forKey: "suiteProfiles")
+            if try preference(forKey: "suiteSelected") == id { try setPreference("", forKey: "suiteSelected") }
         case "open", "close":
             guard mode == "radar", let profile = try suiteProfiles(mode).first(where: { $0.id == id }), let instrument = request["instrument"] as? String,
                   instrument.hasSuffix("-USDT-SWAP"), let price = request["price"] as? Double, price.isFinite, price > 0,

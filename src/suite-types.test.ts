@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { defaultCapital, defaultExecution, SUITE_PHASES, suiteSpec, type StrategyProfile } from './suite-types.ts'
+import { defaultCapital, defaultExecution, sameStrategyVersion, SUITE_PHASES, suiteSpec, type StrategyProfile } from './suite-types.ts'
 const profile = (): StrategyProfile => ({id:'strategy',mode:'radar',name:'Native phases',revision:2,updatedAt:1,execution:defaultExecution(),universeJSON:'universe',phaseRules:{bullishSetup:'setup',bullishExhaustion:'long exit',bearishReversal:'reversal',bearishExhaustion:'short exit'}})
 
 test('study snapshots freeze strategy versions, execution and independent capital overrides',()=>{
@@ -27,4 +27,13 @@ test('saved execution defaults are retained and an empty selection is rejected',
   const p=profile();p.execution.opposite='reverse'
   assert.equal(suiteSpec([p]).execution!.opposite,'reverse')
   assert.throws(()=>suiteSpec([]),/Choose at least one/)
+})
+test('Radar activation reuses only the exact researched rules and execution policy', () => {
+  const saved = profile(), frozen = suiteSpec([saved]).strategySnapshots![0]
+  saved.phaseRules = Object.fromEntries(Object.entries(saved.phaseRules).reverse()) as StrategyProfile['phaseRules']
+  assert.equal(sameStrategyVersion(saved, frozen, frozen.execution), true)
+  assert.equal(sameStrategyVersion(saved, frozen, { ...frozen.execution, opposite: 'reverse' }), false)
+  assert.equal(sameStrategyVersion({ ...saved, revision: 3 }, frozen, frozen.execution), false)
+  assert.equal(sameStrategyVersion(undefined, frozen, frozen.execution), false)
+  assert.equal(sameStrategyVersion({ ...saved, phaseRules: { ...saved.phaseRules, bearishReversal: 'changed' } }, frozen, frozen.execution), false)
 })

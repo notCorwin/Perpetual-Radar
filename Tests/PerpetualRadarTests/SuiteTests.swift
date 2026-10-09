@@ -59,13 +59,52 @@ final class SuiteTests: XCTestCase {
         var researchCopy = p; researchCopy.mode = "research"
         let researchStore = try ResearchStore(directory: directory.appendingPathComponent("research"))
         let independent = try researchStore.database.saveSuiteProfile(researchCopy,copy: true)
-        XCTAssertNotEqual(independent.id,p.id); XCTAssertEqual(try store.suiteProfiles("research").count,0)
+        XCTAssertNotEqual(independent.id,p.id); XCTAssertEqual(try store.suiteProfiles("research").count,3)
         _ = try store.manageSuite(["action":"open","profileID":p.id,"instrument":ResearchFixture.instrument.id,"direction":"Short","price":100.0,"timestamp":hour],mode: "radar")
         let record = try XCTUnwrap(store.suitePositions().first); XCTAssertEqual(record.direction,"Short"); XCTAssertEqual(record.strategy.revision,2)
         p.phaseRules["bearishExhaustion"] = try json("ShortReturn > 10"); p = try store.saveSuiteProfile(p)
         _ = try store.manageSuite(["action":"close","profileID":p.id,"instrument":ResearchFixture.instrument.id,"price":90.0,"timestamp":hour+hourMS],mode: "radar")
         let restored = try Store(url: store.url), closed = try XCTUnwrap(restored.suitePositions().first)
         XCTAssertEqual(closed.strategy.revision,2); XCTAssertEqual(closed.exitStrategy?.revision,3); XCTAssertEqual(closed.exitPrice,90); XCTAssertEqual(Double(closed.priceReturn!),0.1)
+    }
+    func testSharedLibraryRevisionsActivationDraftIsolationAndFrozenStudy() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SharedSuite-\(UUID())")
+        let radar = try Store(url: directory.appendingPathComponent("radar.sqlite3")), research = try Store(url: radar.url)
+        let saved = try radar.saveSuiteProfile(profile())
+        _ = try research.manageSuite(["action":"select","profileID":saved.id],mode:"research")
+        XCTAssertEqual(try radar.selectedSuiteProfile("radar")?.id,saved.id)
+        XCTAssertEqual(try research.suiteProfiles("research").first?.id,saved.id)
+        let frozen = saved
+        var edited = saved; edited.mode = "research"; edited.phaseRules["bearishReversal"] = try json("Close < 100")
+        let raw = try JSONSerialization.jsonObject(with: Data(researchJSON(edited).utf8))
+        _ = try research.manageSuite(["action":"save","profile":raw],mode:"research")
+        XCTAssertEqual(try radar.selectedSuiteProfile("radar")?.revision,2)
+        XCTAssertEqual(try radar.suiteProfiles("radar").first?.phaseRules,edited.phaseRules)
+        XCTAssertEqual(frozen.revision,1); XCTAssertNotEqual(frozen.phaseRules,edited.phaseRules)
+        XCTAssertThrowsError(try radar.saveSuiteProfile(saved))
+        for mode in ["radar","research"] { _ = try radar.manageSuite(["action":"draft","draft":["name":mode+" draft"]],mode:mode) }
+        XCTAssertEqual((try research.suiteInventory("research")["draft"] as? [String:String])?["name"],"research draft")
+        XCTAssertEqual((try radar.suiteInventory("radar")["draft"] as? [String:String])?["name"],"radar draft")
+        _ = try research.manageSuite(["action":"delete","profileID":saved.id],mode:"research")
+        XCTAssertTrue(try radar.suiteProfiles("radar").isEmpty); XCTAssertNil(try radar.selectedSuiteProfile("radar"))
+    }
+    func testExistingModeLibrariesConsolidateWithoutChangingVersionsOrPositionIdentity() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SuiteConsolidation-\(UUID())")
+        let radar = try Store(url: directory.appendingPathComponent("radar.sqlite3"))
+        let research = try Store(url: directory.appendingPathComponent("Research/research.sqlite3"))
+        var live = try profile(); live.revision = 3
+        var historical = try profile(); historical.mode = "research"; historical.revision = 5
+        try radar.setPreference(try researchJSON([live]),forKey:"suiteProfiles.radar")
+        try radar.setPreference(live.id,forKey:"suiteSelected.radar")
+        try research.setPreference(try researchJSON([historical]),forKey:"suiteProfiles.research")
+        try radar.initializeSharedSuiteLibrary(researchURL: research.url)
+        let shared = try radar.suiteProfiles("research")
+        XCTAssertEqual(shared.count,2); XCTAssertEqual(Set(shared.map(\.id)),[live.id,historical.id])
+        XCTAssertEqual(shared.first(where: {$0.id == historical.id})?.revision,5)
+        XCTAssertEqual(try radar.selectedSuiteProfile("research")?.id,live.id)
+        XCTAssertNotEqual(shared[0].name,shared[1].name)
+        try radar.initializeSharedSuiteLibrary(researchURL: research.url)
+        XCTAssertEqual(try radar.suiteProfiles("radar").count,2)
     }
     func testIndependentPhasesConflictUniverseExitsAndShortSignedReadings() async throws {
         let p = try profile(universe: "Close < 0",setup: "Close > 0",longExit: "1 < 2",reversal: "Close > 0",shortExit: "ShortReturn >= 10 AND ShortHeldHours == 2")

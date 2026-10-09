@@ -267,9 +267,6 @@ final class ResearchController {
     func handle(_ request: [String: Any], window: NSWindow? = nil) async throws -> [String: Any] {
         let action = request["action"] as? String ?? "inventory"
         switch action {
-        case "suite":
-            guard let value = request["request"] as? [String: Any] else { throw FilterError("Provide a strategy request.") }
-            return try store.database.manageSuite(value, mode: "research")
         case "plan":
             guard let value = request["spec"] else { throw FilterError("A complete study specification is required.") }
             let spec = try JSONDecoder().decode(StudySpec.self, from: JSONSerialization.data(withJSONObject: value))

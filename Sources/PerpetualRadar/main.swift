@@ -122,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                         monitorClient.workspace = workspace; _ = try await monitorClient.request(["serviceInfo": true])
                         window.title = workspace == "research" ? "Perpetual Swap Research" : "Perpetual Swap Radar"
                     }
-                    if let request = body["suite"] as? [String: Any], request["mode"] as? String == "research" { value = try await researchCache.get().handle(["action":"suite", "request":request]) }
+                    if let request = body["suite"] as? [String: Any] { value = try await monitorClient.request(["suite":request]) }
                     if let request = body["research"] as? [String: Any] { value = try await researchCache.get().handle(request) }
                     if let request = body["monitor"] as? [String: Any] { value = try await monitorClient.request(request) }
                     if body["minimize"] as? Bool == true {
@@ -347,10 +347,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     replyHandler(["ok": true], nil)
                 } catch { monitorClient.workspace = previous; replyHandler(nil, error.localizedDescription) }
             }
-            return
-        }
-        if let request = parameters["suite"] as? [String: Any], request["mode"] as? String == "research" {
-            Task { do { replyHandler(try await researchCache.get().handle(["action": "suite", "request": request], window: window), nil) } catch { replyHandler(nil, error.localizedDescription) } }
             return
         }
         if let request = parameters["research"] as? [String: Any] {

@@ -326,7 +326,7 @@ export const Plot = memo(function Plot({ bars, liveBar, inspected, width, height
   </>
 })
 
-export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack }: { instId: string; listOrder: string[]; turnoverOrder: string[]; onSelect: (id: string) => void; onBack: () => void }) {
+export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack, backLabel = 'Markets' }: { instId: string; listOrder: string[]; turnoverOrder: string[]; onSelect: (id: string) => void; onBack: () => void; backLabel?: string }) {
   const [displayed, setDisplayed] = useState<{ id: string; data: ChartResponse } | null>(null)
   const [historyBars, setHistoryBars] = useState<{ id: string; bars: Bar[] } | null>(null)
   const [historyBoundary, setHistoryBoundary] = useState<{ id: string; oldestHour: number } | null>(null)
@@ -601,7 +601,7 @@ export function MarketChart({ instId, listOrder, turnoverOrder, onSelect, onBack
   const chartDescription = `OKX perpetual · 1h · ${historicalEnd === null ? "Latest 96 hours" : `History through ${time(historicalEnd)}`} · Hold to inspect · Scroll chart for history · 24h turnover rank ${turnoverPosition + 1}/${turnoverOrder.length} · ↑/↓ list order · ← list first · → turnover first`
   return <main className="flex h-svh min-h-0 flex-col overflow-hidden overscroll-none text-sm font-normal tabular-nums">
     <header className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
-      <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Markets</Button>
+      <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />{backLabel}</Button>
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold tracking-tight" title={instId}>{instId.replace(/-SWAP$/, "")}</h1>
         <p className="truncate text-xs text-muted-foreground" title={chartDescription}>{chartDescription}</p>

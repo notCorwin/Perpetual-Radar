@@ -152,6 +152,7 @@ final class Radar {
                 .appendingPathComponent("PerpetualRadar", isDirectory: true)
             store = try Store(url: support.appendingPathComponent("radar.sqlite3"))
         }
+        try store.initializeSharedSuiteLibrary(researchURL: store.url.deletingLastPathComponent().appendingPathComponent("Research/research.sqlite3"))
         try store.importLongRecordsIntoSuite()
         frostedBackgroundEnabled = try store.preference(forKey: frostedBackgroundEnabledKey) != "false"
         let savedOpacity = (try store.preference(forKey: frostedBackgroundOpacityKey)).flatMap(Double.init) ?? 0.3
@@ -393,7 +394,8 @@ final class Radar {
     }
 
     func suiteRequest(_ request: [String: Any]) async throws -> [String: Any] {
-        var response = try store.manageSuite(request, mode: "radar")
+        let mode = request["mode"] as? String ?? "radar"
+        var response = try store.manageSuite(request, mode: mode)
         let action = request["action"] as? String ?? "inventory"
         if ["save", "select", "copy", "delete", "open", "close", "removeTracking"].contains(action) { touch() }
         let profile: StrategyProfile?
@@ -406,6 +408,11 @@ final class Radar {
             let positions = try store.suitePositions()
             let provisional = try await suiteWorker.evaluate(prepared, profile: profile, positions: positions, forming: true, available: running && !monitoringPaused, detail: request["instrument"] as? String)
             let confirmed = try await suiteWorker.evaluate(prepared, profile: profile, positions: positions, forming: false, available: running && !monitoringPaused, detail: request["instrument"] as? String)
+            if action == "evaluate", try store.selectedSuiteProfile("radar")?.id != profile.id || store.selectedSuiteProfile("radar")?.revision != profile.revision {
+                response = try store.suiteInventory(mode)
+                response["confirmed"] = []; response["provisional"] = []
+                return response
+            }
             func object<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with: Data(researchJSON(value).utf8)) }
             response["provisional"] = try object(provisional); response["confirmed"] = try object(confirmed)
             response["rows"] = captured.response["rows"]; response["historyProgress"] = await historyLoader.progress().snapshot

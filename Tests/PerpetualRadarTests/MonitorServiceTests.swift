@@ -182,7 +182,7 @@ final class MonitorServiceTests: XCTestCase {
         let savedSuite=try await request(["suite":["mode":"radar","action":"save","profile":rawProfile]])
         XCTAssertNotNil(savedSuite["saved"])
         let copiedSuite=try await request(["suite":["mode":"research","action":"copy","profile":rawProfile]],interface:true)
-        XCTAssertEqual((copiedSuite["profiles"] as? [[String:Any]])?.count,1)
+        XCTAssertEqual((copiedSuite["profiles"] as? [[String:Any]])?.count,2)
         XCTAssertNotEqual((copiedSuite["saved"] as? [String:Any])?["id"] as? String,phaseProfile.id)
         _ = try await request(["suite":["mode":"radar","action":"open","profileID":phaseProfile.id,"instrument":"BTC-USDT-SWAP","direction":"Short","price":100.0,"timestamp":ResearchFixture.hour]])
         let heldSuite=try await request(["suite":["mode":"radar","action":"inventory"]])

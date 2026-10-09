@@ -54,6 +54,7 @@
     --color-state-secondary: var(--state-secondary);
     --color-state-warning: var(--state-warning);
     --color-destructive-surface: var(--destructive-surface);
+    --color-positive-surface: var(--positive-surface);
     --color-destructive-hover: var(--destructive-hover);
     --color-table-header: var(--table-header);
     --color-overlay: var(--overlay);
@@ -133,6 +134,7 @@
     --primary-surface-foreground: var(--foreground);
     --disabled-foreground: color-mix(in srgb, var(--foreground) 55%, var(--control-base));
     --destructive-surface: color-mix(in srgb, color-mix(in srgb, var(--destructive) 12%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
+    --positive-surface: color-mix(in srgb, color-mix(in srgb, var(--positive) 12%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
     --destructive-hover: color-mix(in srgb, color-mix(in srgb, var(--destructive) 20%, var(--control-base)) calc(var(--control-opacity) * 100%), transparent);
     --popover: color-mix(in srgb, var(--popover-base) calc(var(--floating-opacity) * 100%), transparent);
     --card: color-mix(in srgb, var(--card-base) calc(var(--panel-opacity) * 100%), transparent);

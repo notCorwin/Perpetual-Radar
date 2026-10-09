@@ -26,11 +26,11 @@ import { longPrice } from '@/long-decisions'
 import { researchPercent, researchTime } from '@/research-types'
 import { defaultExecution, requestSuite, SUITE_PHASES, suiteSpec, type StrategyProfile, type SuitePosition, type SuiteReading, type SuiteDraft, type SuiteWorkspaceProps } from '@/suite-types'
 
-export function SuiteWorkspace({ mode, inputs, active, onBack, onResearch, onSwitchMode, switchingMode }: SuiteWorkspaceProps) {
+export function SuiteWorkspace({ mode, inputs, active, initialTab = 'rules', routeKey, onBack, onResearch, onSwitchMode, switchingMode }: SuiteWorkspaceProps) {
   const suite = useSuite(mode, active), snapshot = suite.snapshot
   const [loaded, setLoaded] = useState<StrategyProfile | null>(null), [name, setName] = useState('My strategy')
   const [hydrated, setHydrated] = useState(false)
-  const [execution, setExecution] = useState(defaultExecution), [tab, setTab] = useState('rules'), [phase, setPhase] = useState('universe')
+  const [execution, setExecution] = useState(defaultExecution), [tab, setTab] = useState<string>(initialTab), [phase, setPhase] = useState('universe')
   const [notice, setNotice] = useState(''), [error, setError] = useState(''), [preferences, setPreferences] = useState(initialLibraryPreferences)
   const [page, setPage] = useState(0), [positionPage, setPositionPage] = useState(0), [search, setSearch] = useState('')
   const [chart, setChart] = useState<string | null>(null), [detail, setDetail] = useState<SuiteReading | null>(null)
@@ -63,6 +63,7 @@ export function SuiteWorkspace({ mode, inputs, active, onBack, onResearch, onSwi
     // Initial hydration is applied once; later inventories must preserve edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[suite.ready])
+  useEffect(() => { if (active && hydrated && routeKey !== undefined) setTab(initialTab) }, [routeKey, initialTab, active, hydrated])
   useEffect(()=>{
     if(!suite.ready || !initialized.current)return
     const timer=window.setTimeout(()=>{void requestSuite({mode,action:'draft',draft:JSON.parse(draftJSON) as SuiteDraft}).catch(cause=>setError(String(cause)))},350)
@@ -87,10 +88,14 @@ export function SuiteWorkspace({ mode, inputs, active, onBack, onResearch, onSwi
   const choose = (profile: StrategyProfile | null) => { initialized.current = true; if (dirty) setConfirm({ kind: 'load', profile: profile ?? undefined }); else load(profile) }
   const copy = () => perform(async () => {
     if (!loaded) return
-    const destination = mode === 'radar' ? 'research' : 'radar'
-    await requestSuite({ action: 'copy', mode: destination, profile: loaded })
-    setNotice(`Independent copy created in ${destination === 'radar' ? 'Radar' : 'Research'}. Changes will not synchronize.`)
+    const result = await suite.perform({ action: 'copy', profile: loaded })
+    setNotice('Strategy duplicated in the shared library' + (result.saved ? ': ' + result.saved.name : '') + '. Both modes can use it.')
   })
+  const latestLoaded = snapshot.profiles.find(profile => profile.id === loaded?.id)
+  useEffect(() => {
+    if (!active || !hydrated || dirty || !latestLoaded || latestLoaded.revision === loaded?.revision) return
+    const previousTab = tab; load(latestLoaded); setTab(previousTab)
+  }, [active, hydrated, dirty, latestLoaded, loaded?.revision, load, tab])
   const savePreferences = async (value: typeof preferences) => { await window.webkit.messageHandlers.radar.postMessage({ filterLibraryPreferencesJSON: JSON.stringify(value) }); setPreferences(value) }
   const readings = (snapshot.confirmed ?? []).filter(r => r.instrument.toLowerCase().includes(search.trim().toLowerCase()))
   const activeProfile = snapshot.profiles.find(p => p.id === snapshot.selectedID)
@@ -118,13 +123,15 @@ export function SuiteWorkspace({ mode, inputs, active, onBack, onResearch, onSwi
   if (!hydrated) return <MarketListViewport><main className="flex min-h-[inherit] flex-col gap-4 p-4 tabular-nums" data-suite-workspace={mode}><header className="flex items-center gap-3 border-b pb-3"><Button variant="ghost" onClick={onBack}><ArrowLeft data-icon="inline-start" aria-hidden="true" />{mode === 'radar' ? 'Radar' : 'Research'}</Button><ModeTitle mode={mode} pending={switchingMode} onSwitch={onSwitchMode} /></header>{suite.error ? <Alert variant="destructive"><AlertDescription>{suite.error}</AlertDescription></Alert> : <p role="status" className="flex items-center gap-2 text-sm"><Spinner aria-hidden="true" />Loading saved strategies and drafts…</p>}</main></MarketListViewport>
   if (active && chart) return <MarketChart instId={chart} listOrder={readings.map(r => r.instrument)} turnoverOrder={readings.map(r => r.instrument)} onSelect={setChart} onBack={() => setChart(null)} />
   return <MarketListViewport><main className="flex min-h-[inherit] flex-col gap-4 p-4 tabular-nums" data-suite-workspace={mode}>
-    <header className="flex items-center gap-3 border-b pb-3"><Button variant="ghost" onClick={() => void leave()}><ArrowLeft data-icon="inline-start" aria-hidden="true" />{mode === 'radar' ? 'Radar' : 'Research'}</Button><ModeTitle mode={mode} pending={switchingMode || suite.pending} onSwitch={() => void switchMode()} /><span className="flex-1 text-xs text-muted-foreground">{mode === 'radar' ? 'Strategies & Positions' : 'Strategy Library'} · Independent rules · OKX · 1h</span>{activeProfile && <Badge variant="secondary">Active: {activeProfile.name} · r{activeProfile.revision}</Badge>}</header>
+    <header className="flex items-center gap-3 border-b pb-3"><Button variant="ghost" onClick={() => void leave()}><ArrowLeft data-icon="inline-start" aria-hidden="true" />{mode === 'radar' ? 'Radar' : 'Research'}</Button><ModeTitle mode={mode} pending={switchingMode || suite.pending} onSwitch={() => void switchMode()} /><span className="flex-1 text-xs text-muted-foreground">Shared Strategy Library · Rules for Radar and Research · OKX · 1h</span>{activeProfile && <Badge variant="secondary">Radar: {activeProfile.name} · r{activeProfile.revision}</Badge>}</header>
     {(error || suite.error) && <Alert variant="destructive"><AlertDescription>{error || suite.error}</AlertDescription></Alert>}
     {notice && <p role="status" aria-live="polite" className="text-sm">{notice}</p>}
+    {loaded && latestLoaded && latestLoaded.revision !== loaded.revision && <Alert variant="warning"><AlertDescription>A newer saved revision is available: r{latestLoaded.revision}. Your draft is retained. <Button variant="link" onClick={() => choose(latestLoaded)}>Reload saved strategy…</Button></AlertDescription></Alert>}
+    {loaded && !latestLoaded && <Alert variant="warning"><AlertDescription>This strategy is no longer in the shared library. Duplicate it to restore its saved rules, or choose another strategy.</AlertDescription></Alert>}
     <div className="flex items-center gap-3"><Field className="w-80"><FieldLabel>Saved strategies</FieldLabel><Select value={loaded?.id ?? 'new'} onValueChange={id => choose(snapshot.profiles.find(p => p.id === id) ?? null)}><SelectTrigger aria-label="Saved phase strategies"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="new">New strategy…</SelectItem>{snapshot.profiles.map(p => <SelectItem key={p.id} value={p.id}>{p.name} · r{p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
-      <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void copy()}><Copy data-icon="inline-start" aria-hidden="true" />Copy to {mode === 'radar' ? 'Research' : 'Radar'}</Button>
-      {mode === 'radar' && <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void perform(async () => { await suite.perform({ action: 'select', profileID: loaded!.id }); setNotice('Saved revision activated. Confirmation monitoring starts with a quiet baseline.') })}>Activate saved strategy</Button>}
-      {mode === 'radar' && activeProfile && <Button variant="ghost" onClick={() => void perform(async () => { await suite.perform({ action: 'select', profileID: '' }); setNotice('Phase strategy deactivated. Existing market filters remain available.') })}>Deactivate</Button>}
+      <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void copy()}><Copy data-icon="inline-start" aria-hidden="true" />Duplicate saved strategy</Button>
+      <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void perform(async () => { await suite.perform({ action: 'select', profileID: loaded!.id }); setNotice('Saved revision activated in Radar. Confirmation monitoring starts with a quiet baseline.') })}>{mode === 'radar' ? 'Activate saved strategy' : 'Use saved strategy in Radar'}</Button>
+      {activeProfile && <Button variant="ghost" onClick={() => void perform(async () => { await suite.perform({ action: 'select', profileID: '' }); setNotice('Phase strategy deactivated. Existing market filters remain available.') })}>Deactivate</Button>}
       <Button variant="outline" disabled={!loaded || suite.pending} onClick={() => void perform(async () => { if (loaded) { await requestSuite({mode,action:'draft',draft:JSON.parse(draftJSON) as SuiteDraft});onResearch(suiteSpec([loaded])) } })}>Backtest saved strategy</Button>
       <Button variant="ghost" disabled={!loaded || suite.pending} onClick={() => setConfirm({ kind: 'delete', profile: loaded ?? undefined })}><Trash2 data-icon="inline-start" aria-hidden="true" />Delete…</Button>
     </div>

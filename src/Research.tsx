@@ -21,7 +21,7 @@ import { ModeTitle } from '@/ModeTitle'
 import { SuiteStudyResults } from '@/SuiteStudyResults'
 import { SuiteCapitalFields, SuiteExecutionFields } from '@/SuiteStudyConfiguration'
 import { useSuite } from '@/use-suite'
-import { defaultCapital, defaultExecution, suiteSpec, type StrategyProfile } from '@/suite-types'
+import { defaultCapital, defaultExecution, sameStrategyVersion, suiteSpec, type StrategyProfile } from '@/suite-types'
 import { LongTradeResults } from '@/LongTradeResults'
 import { ResearchChart } from '@/ResearchChart'
 import { emptyFilterConfig, parseFilterConfig, type FilterTrace } from '@/rule-engine'
@@ -47,14 +47,28 @@ function SummaryTable({ rows, report }: { rows: ResearchSummary[]; report: Study
   </Table>
 }
 
-export function Research({ inputs, active, onSwitchMode, switchingMode, initialSpec }: { inputs: ResearchInputs; active: boolean; onSwitchMode: () => void; switchingMode: boolean; initialSpec?: StudySpec | null }) {
+export function Research({ inputs, active, onSwitchMode, onRadar, switchingMode, initialSpec }: { inputs: ResearchInputs; active: boolean; onSwitchMode: () => void; onRadar: () => void; switchingMode: boolean; initialSpec?: StudySpec | null }) {
   const [kind, setKind] = useState<StudySpec['kind']>(initialSpec?.kind ?? 'cycle'), [name, setName] = useState(initialSpec?.name ?? 'Cycle study')
   const researchSuite = useSuite('research', active)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [cycleProfiles, setCycleProfiles] = useState<StrategyProfile[]>(initialSpec?.strategySnapshots ?? [])
   const [cycleExecution, setCycleExecution] = useState(initialSpec?.execution ?? defaultExecution())
   const [cycleCapital, setCycleCapital] = useState(initialSpec?.capital ?? defaultCapital())
+  const seededCycle = useRef(Boolean(initialSpec?.strategySnapshots?.length))
+  useEffect(() => {
+    if (!researchSuite.ready || seededCycle.current) return
+    const profile = researchSuite.snapshot.profiles.find(p => p.id === researchSuite.snapshot.selectedID) ?? researchSuite.snapshot.profiles[0]
+    if (profile) {
+      seededCycle.current = true
+      // Initialize the study once from the native shared inventory; later
+      // revisions must not silently change this selected configuration.
+      // oxlint-disable-next-line react/set-state-in-effect
+      setCycleProfiles(suiteSpec([profile]).strategySnapshots!); setCycleExecution(structuredClone(profile.execution))
+      setName(current => current === 'Cycle study' ? profile.name + ' cycle study' : current)
+    }
+  }, [researchSuite.ready, researchSuite.snapshot.profiles, researchSuite.snapshot.selectedID])
   const chooseCycleSpec = (spec: StudySpec) => {
+    seededCycle.current = true
     setCycleProfiles(spec.strategySnapshots ?? []); setCycleExecution(spec.execution ?? defaultExecution()); setCycleCapital(spec.capital ?? defaultCapital()); setKind('cycle'); setName(spec.name); setLibraryOpen(false); setTab('configure')
   }
   const [frozenRules, setFrozenRules] = useState<(StudyRule & { id: string })[]>(() => initialSpec?.rules.map((r, i) => ({ ...r, id: 'seed:' + i })) ?? [])
@@ -78,6 +92,10 @@ export function Research({ inputs, active, onSwitchMode, switchingMode, initialS
   const options = useMemo(() => [{ id: 'current', name: 'Current applied rules', filtersJSON: JSON.stringify(inputs.filters) }, { id: 'all', name: 'All verified exchange markets', filtersJSON: JSON.stringify(emptyFilterConfig()) },
     ...inputs.combinations.map(c => ({ id: c.id, name: c.name, filtersJSON: c.filterConfigJSON ?? c.filtersJSON })), ...studies.flatMap(s => s.spec.rules.map((r, index) => ({ ...r, id: s.id + ":" + index, name: s.spec.name + " · " + r.name }))), ...frozenRules], [inputs, studies, frozenRules])
   const cycleOptions = useMemo(() => Array.from(new Map([...studies.flatMap(s => s.spec.strategySnapshots ?? []), ...cycleProfiles, ...researchSuite.snapshot.profiles].map(p => [p.id,p])).values()), [studies,cycleProfiles,researchSuite.snapshot.profiles])
+  const outdatedProfiles = cycleProfiles.filter(profile => {
+    const latest = researchSuite.snapshot.profiles.find(saved => saved.id === profile.id.split('@r')[0])
+    return latest && latest.revision !== profile.revision
+  })
   const pageEvents = useCallback(async (id: string, start: number) => {
     const result = await requestResearch({ action: 'events', studyID: id, offset: start })
     setEvents(result.events ?? []); setEventCount(result.count ?? 0); setOffset(start)
@@ -151,6 +169,7 @@ export function Research({ inputs, active, onSwitchMode, switchingMode, initialS
     return requestResearch({ action: 'plan', spec, refresh })
   })
   const duplicate = (saved: ResearchStudy) => {
+    seededCycle.current = true
     const spec = saved.spec
     setCycleProfiles(spec.strategySnapshots ?? []); setCycleExecution(spec.execution ?? defaultExecution()); setCycleCapital(spec.capital ?? defaultCapital())
     setName(spec.name + ' copy'); setKind(spec.kind); setDirection(spec.direction); setSampling(spec.sampling)
@@ -175,14 +194,30 @@ export function Research({ inputs, active, onSwitchMode, switchingMode, initialS
   const resultRows = selectedRows.filter(s => !s.group.startsWith('Score ·'))
   const scoreRows = selectedRows.filter(s => s.group.startsWith('Score · ' + scoreView + ' ·') && (scoreView === 'Thresholds' ? true : !s.group.includes('≥')))
   const context = { metrics: inputs.metrics, expressions: {}, units: {}, templates: inputs.templates }
+  const radarSpec = tab === 'configure'
+    ? kind === 'cycle' && cycleProfiles.length ? suiteSpec(cycleProfiles, cycleExecution, cycleCapital) : null
+    : ['data', 'results', 'scores'].includes(tab) && study?.spec.kind === 'cycle' ? study.spec
+      : tab === 'data' && plan?.spec.kind === 'cycle' ? plan.spec : null
+  const activateVersionInRadar = () => perform(async () => {
+    const frozen = radarSpec?.strategySnapshots?.[0]
+    if (!frozen) throw new Error('Choose a complete strategy version first.')
+    const execution = radarSpec?.execution ?? frozen.execution
+    const saved = researchSuite.snapshot.profiles.find(profile => profile.id === frozen.id.split('@r')[0])
+    const same = sameStrategyVersion(saved, frozen, execution)
+    const profile = same ? saved : (await researchSuite.perform({ action: 'copy', profile: { ...frozen, execution } })).saved
+    if (!profile) throw new Error('Cannot restore this strategy version.')
+    await researchSuite.perform({ action: 'select', profileID: profile.id }); onRadar()
+    return {}
+  })
   if (libraryOpen) return <SuiteWorkspace mode="research" active={active} inputs={inputs} switchingMode={switchingMode} onSwitchMode={onSwitchMode} onBack={() => setLibraryOpen(false)} onResearch={chooseCycleSpec} />
   return <MarketListViewport><main className="flex min-h-[inherit] flex-col gap-4 p-4 tabular-nums" data-research>
     <header className="flex items-center gap-3 border-b pb-3">
       <ModeTitle mode="research" pending={switchingMode} onSwitch={onSwitchMode} />
       <span className="flex-1 text-xs text-muted-foreground">OKX · Hourly close · Fixed local data</span>
+      <Button variant="outline" disabled={!radarSpec || researchSuite.pending || pending} onClick={() => void activateVersionInRadar()}>Use this version in Radar</Button>
       <Badge variant="outline"><Database data-icon="inline-start" aria-hidden="true" />{integer(cache.rows)} cached rows</Badge>
     </header>
-    {(error || pollError || job?.error) && <Alert variant="destructive"><AlertTitle>Research needs attention</AlertTitle><AlertDescription>{error || pollError || job?.error}</AlertDescription></Alert>}
+    {(error || pollError || job?.error || researchSuite.error) && <Alert variant="destructive"><AlertTitle>Research needs attention</AlertTitle><AlertDescription>{error || pollError || job?.error || researchSuite.error}</AlertDescription></Alert>}
     {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
     {job && <section data-surface="panel" className="flex flex-col gap-2 rounded-lg border bg-card p-3" aria-label="Research task">
       <div className="flex items-center gap-3"><Badge variant="secondary">{job.phase}</Badge><span className="min-w-0 flex-1 truncate text-sm" role="status">{job.message || 'Cached files and checkpoints are retained.'}</span>
@@ -201,7 +236,7 @@ export function Research({ inputs, active, onSwitchMode, switchingMode, initialS
               <Field><FieldLabel>Research question</FieldLabel><ToggleGroup type="single" variant="outline" value={kind} disabled={busy} onValueChange={value => {
                 if (!value) return; setKind(value as StudySpec['kind']); if (value === 'score') { setRuleID('all'); setSampling('hourly') } if (value === 'long') { setDirection('Long'); setSampling('entries') }
               }} aria-label="Research question"><ToggleGroupItem value="cycle">Multi-direction cycle</ToggleGroupItem><ToggleGroupItem value="long">Long entry / exit</ToggleGroupItem><ToggleGroupItem value="filter">Filters</ToggleGroupItem><ToggleGroupItem value="score">Opportunity</ToggleGroupItem><ToggleGroupItem value="comparison">Compare rules</ToggleGroupItem></ToggleGroup></Field>
-              {kind === 'cycle' ? <FieldSet><FieldLegend>Four-phase strategy snapshots</FieldLegend><FieldGroup><Field><FieldLabel>Primary strategy</FieldLabel><Select value={cycleProfiles[0]?.id ?? ''} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); if (p) setCycleProfiles([p,...cycleProfiles.slice(1).filter(other => other.id !== id)]) }}><SelectTrigger aria-label="Primary cycle strategy"><SelectValue placeholder="Choose a Research strategy…" /></SelectTrigger><SelectContent><SelectGroup>{cycleOptions.map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Compare with</FieldLabel><Select value={cycleProfiles[1]?.id ?? 'none'} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); setCycleProfiles(current => current[0] ? p ? [current[0],p] : [current[0]] : []) }}><SelectTrigger aria-label="Compare cycle strategy"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Single strategy</SelectItem>{cycleOptions.filter(p => p.id.split('@r')[0] !== cycleProfiles[0]?.id.split('@r')[0] || p.revision !== cycleProfiles[0]?.revision).map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Button type="button" variant="outline" onClick={() => setLibraryOpen(true)}>Strategy Library…</Button><SuiteExecutionFields value={cycleExecution} onChange={setCycleExecution} /></FieldGroup></FieldSet> : <>
+              {kind === 'cycle' ? <FieldSet><FieldLegend>Shared strategy versions</FieldLegend><FieldDescription>Radar and Research use the same saved rules. This study freezes the selected revisions and execution policy. Using an older version in Radar restores it as a separate shared strategy.</FieldDescription><FieldGroup><Field><FieldLabel>Primary strategy</FieldLabel><Select value={cycleProfiles[0]?.id ?? ''} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); if (p) { seededCycle.current = true; setCycleProfiles([suiteSpec([p]).strategySnapshots![0], ...cycleProfiles.slice(1).filter(other => other.id !== id)]); setCycleExecution(structuredClone(p.execution)) } }}><SelectTrigger aria-label="Primary cycle strategy"><SelectValue placeholder="Choose a shared strategy…" /></SelectTrigger><SelectContent><SelectGroup>{cycleOptions.map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Compare with</FieldLabel><Select value={cycleProfiles[1]?.id ?? 'none'} onValueChange={id => { const p = cycleOptions.find(p => p.id === id); setCycleProfiles(current => current[0] ? p ? [current[0], suiteSpec([p]).strategySnapshots![0]] : [current[0]] : []) }}><SelectTrigger aria-label="Compare cycle strategy"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Single strategy</SelectItem>{cycleOptions.filter(p => p.id.split('@r')[0] !== cycleProfiles[0]?.id.split('@r')[0] || p.revision !== cycleProfiles[0]?.revision).map(p => <SelectItem key={p.id} value={p.id}>{p.id.includes('@r') ? 'Frozen: ' : ''}{p.name}{p.id.includes('@r') ? '' : ' · r'+p.revision}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>{outdatedProfiles.length > 0 && <Alert variant="warning"><AlertDescription>New saved revisions exist for {outdatedProfiles.map(p => p.name).join(', ')}. This study keeps its selected versions. <Button type="button" variant="link" disabled={busy} onClick={() => { const profiles = cycleProfiles.map(p => researchSuite.snapshot.profiles.find(saved => saved.id === p.id.split('@r')[0]) ?? p); setCycleProfiles(suiteSpec(profiles).strategySnapshots!); setCycleExecution(structuredClone(profiles[0].execution)) }}>Use latest saved revisions</Button></AlertDescription></Alert>}<Button type="button" variant="outline" onClick={() => setLibraryOpen(true)}>Strategy Library…</Button><SuiteExecutionFields value={cycleExecution} onChange={setCycleExecution} /></FieldGroup></FieldSet> : <>
               <Field><FieldLabel htmlFor="study-rule">{kind === 'long' ? 'Entry filter snapshot' : kind === 'score' ? 'Base universe rules' : 'Complete rule snapshot'}</FieldLabel><Select value={ruleID} disabled={busy} onValueChange={setRuleID}><SelectTrigger id="study-rule"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{options.map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>All conditions and original scoring weights are retained. Missing readings remain Unknown.</FieldDescription></Field>
               {(kind === 'comparison' || kind === 'long') && <Field><FieldLabel htmlFor="study-comparison">{kind === 'long' ? 'Exit filter snapshot' : 'Compare with'}</FieldLabel><Select value={compareID} disabled={busy} onValueChange={setCompareID}><SelectTrigger id="study-comparison"><SelectValue placeholder="Choose another saved combination…" /></SelectTrigger><SelectContent><SelectGroup>{options.filter(o => kind === 'long' || o.id !== ruleID).map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>{kind === 'long' ? 'Start flat. Entry applies while flat, exit while holding. Signals execute at the next hourly open; open trades stay open at the end.' : 'Both snapshots are recomputed on the same frozen data and common evaluable hours.'}</FieldDescription></Field>}
               <Field><FieldLabel>Direction</FieldLabel><ToggleGroup type="single" variant="outline" value={direction} disabled={busy || kind === 'long'} onValueChange={value => { if (value) setDirection(value as StudySpec['direction']) }} aria-label="Study direction">{['auto', 'Long', 'Short'].map(value => <ToggleGroupItem key={value} value={value}>{value === 'auto' ? 'Original EMA direction' : value}</ToggleGroupItem>)}</ToggleGroup></Field>

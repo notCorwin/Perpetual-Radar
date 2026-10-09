@@ -20,6 +20,11 @@ export type SuiteRequest = { draft?: SuiteDraft; mode: SuiteMode; action: string
 export type SuiteResponse = { draft?: SuiteDraft; profiles: StrategyProfile[]; positions: SuitePosition[]; selectedID: string; saved?: StrategyProfile; provisional?: SuiteReading[]; confirmed?: SuiteReading[]; paused?: boolean; rows?: NativeMarketRow[]; revision?: number; historyProgress?: { pending: number; completed: number; error: string } }
 export const requestSuite = (request: SuiteRequest) => window.webkit.messageHandlers.radar.postMessage({ suite: request })
 export const suiteRules = (profile: StrategyProfile) => [{ name: profile.name + ' · Universe', filtersJSON: profile.universeJSON }, ...SUITE_PHASES.map(phase => ({ name: profile.name + ' · ' + phase.label, filtersJSON: profile.phaseRules[phase.key] }))]
+export function sameStrategyVersion(saved: StrategyProfile | undefined, frozen: StrategyProfile, execution: SuiteExecution): boolean {
+  return Boolean(saved && saved.id === frozen.id.split('@r')[0] && saved.revision === frozen.revision &&
+    saved.universeJSON === frozen.universeJSON && SUITE_PHASES.every(phase => saved.phaseRules[phase.key] === frozen.phaseRules[phase.key]) &&
+    saved.execution.opposite === execution.opposite && saved.execution.entry === execution.entry)
+}
 export type SuiteCapitalSettings = { initial: number; allocation: number; leverage: number; maintenanceRate: number | null; liquidationFeeBps: number | null }
 export type SuiteCapital = { defaults: SuiteCapitalSettings; overrides: Record<string, SuiteCapitalSettings> }
 export const defaultCapital = (): SuiteCapital => ({ defaults: { initial: 10_000, allocation: 1, leverage: 1, maintenanceRate: null, liquidationFeeBps: null }, overrides: {} })
@@ -33,4 +38,4 @@ export type SuiteAccount = { profileID: string; profileName: string; instrument:
 export type SuiteSummary = { profileID: string; profileName: string; model: string; instrument?: string; direction?: string; split?: string; count: number; excluded: number; open: number; incomplete: number; uncertain: number; crossSplit: number; purged: number; liquidations: number; winRate?: number; mean?: number; payoffRatio?: number; payoffInfinite: boolean; profitFactor?: number; profitFactorInfinite: boolean; profit?: number; averageHours?: number; averageHoursLow?: number; mfe?: number; mae?: number; intervalLow?: number; intervalHigh?: number }
 export type SuiteStudyReport = { summaries: SuiteSummary[]; accounts: SuiteAccount[] }
 export type SuiteCurvePoint = { timestamp: number; equity: number; drawdown: number; direction?: string; uncertain: boolean }
-export type SuiteWorkspaceProps = { mode: SuiteMode; inputs: ResearchInputs; active: boolean; onBack: () => void; onResearch: (spec: StudySpec) => void; onSwitchMode: () => void; switchingMode: boolean }
+export type SuiteWorkspaceProps = { mode: SuiteMode; inputs: ResearchInputs; active: boolean; initialTab?: 'rules' | 'signals' | 'positions'; routeKey?: number; onBack: () => void; onResearch: (spec: StudySpec) => void; onSwitchMode: () => void; switchingMode: boolean }
